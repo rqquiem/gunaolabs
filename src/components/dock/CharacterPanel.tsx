@@ -13,7 +13,9 @@ import {
   Layers,
   Sparkles,
   PersonStanding,
+  Swords,
 } from 'lucide-react';
+import { ItemHandlingPanel } from './ItemHandlingPanel';
 import { PoseLibraryPanel } from './PoseLibraryPanel';
 import {
   FACE_BROW_STYLES,
@@ -23,6 +25,13 @@ import {
   resolveActorFaceConfig,
 } from '../../engine/faceExpressions';
 import {
+  BUILT_IN_ITEMS,
+  BUILT_IN_PROPS,
+  createEmptyCharacterHeldItems,
+  PROP_CATEGORIES,
+  PROP_CATEGORY_LABELS,
+} from '../../engine/itemCatalog';
+import {
   CLASSIC_BRICK_COLORS,
   cloneBundle,
   ORNAMENT_CATALOG,
@@ -30,6 +39,7 @@ import {
 } from '../../engine/robloxCatalog';
 import {
   AnimationProject,
+  CharacterHeldItems,
   EASING_OPTIONS,
   EasingType,
   EvaluatedActorState,
@@ -39,6 +49,8 @@ import {
   ExpressionPresetId,
   FaceRigConfig,
   GizmoMode,
+  ItemEasingMode,
+  ItemId,
   ORNAMENT_SLOT_LABELS,
   OrnamentSlot,
   POSE_CLIP_LABELS,
@@ -56,7 +68,7 @@ import {
   Vec3Tuple,
 } from '../../engine/types';
 
-type CharacterSubTab = 'face' | 'poses' | 'animation' | 'appearance';
+type CharacterSubTab = 'face' | 'poses' | 'items' | 'animation' | 'appearance';
 
 interface CharacterPanelProps {
   project: AnimationProject;
@@ -70,9 +82,10 @@ interface CharacterPanelProps {
     preset: ExpressionPresetId;
     overrides: Partial<ExpressionParams>;
   } | null;
+  itemDraft: CharacterHeldItems | null;
   onSelectActor: (actorId: string) => void;
   onAddCharacter: (bundleId: string) => void;
-  onAddProp: (propKind: PropKind) => void;
+  onAddProp: (propKind: PropKind, propItemId?: ItemId) => void;
   onDeleteActor: (actorId: string) => void;
   onSetGizmoMode: (mode: GizmoMode) => void;
   onApplyBundle: (actorId: string, bundleId: string) => void;
@@ -84,12 +97,25 @@ interface CharacterPanelProps {
     color: string,
   ) => void;
   onUpdatePropColors: (actorId: string, primary: string, accent: string) => void;
+  onUpdatePropConfig: (
+    actorId: string,
+    propKind: PropKind,
+    propItemId?: ItemId,
+  ) => void;
   onUpdateFaceConfig: (actorId: string, patch: Partial<FaceRigConfig>) => void;
   onPreviewFacePreset: (preset: ExpressionPresetId) => void;
   onPreviewFaceParam: (param: keyof ExpressionParams, value: number) => void;
   onResetFaceDraft: () => void;
   onCommitFaceKeyframe: () => void;
   onFocusActorFace: (actorId: string) => void;
+  onPreviewHeldItems: (next: CharacterHeldItems) => void;
+  onResetItemDraft: () => void;
+  onCommitItemKeyframe: (easing?: ItemEasingMode) => void;
+  onSpawnItemAsProp: (
+    itemId: ItemId,
+    primaryColor: string,
+    accentColor: string,
+  ) => void;
   onChangeClip: (actorId: string, clip: PoseClipId) => void;
   onUpdateActorAnimSettings: (
     actorId: string,
@@ -186,6 +212,7 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   jointDraft,
   hipTiltDraft,
   faceDraft,
+  itemDraft,
   onSelectActor,
   onAddCharacter,
   onAddProp,
@@ -195,12 +222,17 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   onUpdateBodyPartColor,
   onUpdateOrnament,
   onUpdatePropColors,
+  onUpdatePropConfig,
   onUpdateFaceConfig,
   onPreviewFacePreset,
   onPreviewFaceParam,
   onResetFaceDraft,
   onCommitFaceKeyframe,
   onFocusActorFace,
+  onPreviewHeldItems,
+  onResetItemDraft,
+  onCommitItemKeyframe,
+  onSpawnItemAsProp,
   onChangeClip,
   onUpdateActorAnimSettings,
   onUpdateActorRigBehavior,
@@ -262,6 +294,19 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   const activeFacePreset: ExpressionPresetId =
     faceDraft?.preset ?? evaluatedActor?.face.preset ?? 'neutral';
 
+  const activeHeldItems: CharacterHeldItems =
+    itemDraft ??
+    evaluatedActor?.heldItems ??
+    selectedActor?.heldItems ??
+    createEmptyCharacterHeldItems();
+
+  const activeItemKeyframe = selectedActor?.heldItemKeyframes
+    ? selectedActor.heldItemKeyframes.reduce(
+        (best, kf) => (kf.time <= currentTime + 0.04 ? kf : best),
+        selectedActor.heldItemKeyframes[0],
+      )
+    : undefined;
+
   const otherActors = project.actors.filter((a) => a.id !== selectedActorId);
 
   return (
@@ -293,6 +338,7 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
                 [
                   { id: 'face', label: 'Face & Expressions', icon: Smile },
                   { id: 'poses', label: 'Pose Library', icon: PersonStanding },
+                  { id: 'items', label: 'Items & Hands', icon: Swords },
                   { id: 'animation', label: 'Animation & Rig', icon: Layers },
                   { id: 'appearance', label: 'Appearance', icon: Sparkles },
                 ] as const
@@ -370,48 +416,74 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
           </button>
 
           {spawnMenuOpen && (
-            <div className="absolute right-0 bottom-10 z-30 w-56 p-2 rounded-lg bg-[#1e2024] border border-[#393d47] shadow-2xl space-y-1">
-              <div className="text-[11px] font-medium text-slate-400 px-2 py-1">
+            <div className="absolute right-0 bottom-10 z-30 w-72 max-h-72 overflow-y-auto p-2 rounded-lg bg-[#1e2024] border border-[#393d47] shadow-2xl space-y-1.5">
+              <div className="text-[11px] font-medium text-slate-400 px-2 py-0.5">
                 R6 Avatar Bundles
               </div>
-              {ROBLOX_AVATAR_BUNDLES.map((bundle) => (
-                <button
-                  key={bundle.id}
-                  type="button"
-                  onClick={() => {
-                    onAddCharacter(bundle.id);
-                    setSpawnMenuOpen(false);
-                  }}
-                  className="w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-[#2b2e35]"
-                >
-                  + {bundle.name}
-                </button>
-              ))}
-              <div className="border-t border-[#393d47] my-1" />
-              <div className="text-[11px] font-medium text-slate-400 px-2 py-1">
-                Roblox Brick Props
+              <div className="grid grid-cols-2 gap-1">
+                {ROBLOX_AVATAR_BUNDLES.map((bundle) => (
+                  <button
+                    key={bundle.id}
+                    type="button"
+                    onClick={() => {
+                      onAddCharacter(bundle.id);
+                      setSpawnMenuOpen(false);
+                    }}
+                    className="text-left px-2 py-1 rounded text-[11px] text-slate-200 hover:bg-[#2b2e35] truncate"
+                  >
+                    + {bundle.name}
+                  </button>
+                ))}
               </div>
-              {(
-                [
-                  { id: 'spawnpad', label: 'SpawnLocation Pad' },
-                  { id: 'crate', label: 'Studded Crates' },
-                  { id: 'tree', label: 'Classic Roblox Tree' },
-                  { id: 'speeder', label: 'Brick Speeder' },
-                ] as { id: PropKind; label: string }[]
-              ).map((prop) => (
-                <button
-                  key={prop.id}
-                  type="button"
-                  onClick={() => {
-                    onAddProp(prop.id);
-                    setSpawnMenuOpen(false);
-                  }}
-                  className="w-full flex items-center gap-1.5 text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-[#2b2e35]"
-                >
-                  <Box className="w-3 h-3 text-[#00a2ff]" aria-hidden="true" />
-                  <span>+ {prop.label}</span>
-                </button>
-              ))}
+
+              {PROP_CATEGORIES.map((cat) => {
+                const catProps = BUILT_IN_PROPS.filter((p) => p.category === cat);
+                return (
+                  <div key={cat} className="border-t border-[#393d47] pt-1.5 space-y-1">
+                    <div className="text-[11px] font-medium text-slate-400 px-2">
+                      {PROP_CATEGORY_LABELS[cat]}
+                    </div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {catProps.map((prop) => (
+                        <button
+                          key={prop.kind}
+                          type="button"
+                          onClick={() => {
+                            onAddProp(prop.kind);
+                            setSpawnMenuOpen(false);
+                          }}
+                          className="flex items-center gap-1.5 text-left px-2 py-1 rounded text-[11px] text-slate-200 hover:bg-[#2b2e35] truncate"
+                        >
+                          <Box className="w-3 h-3 text-[#00a2ff] shrink-0" aria-hidden="true" />
+                          <span className="truncate">{prop.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+
+              <div className="border-t border-[#393d47] pt-1.5 space-y-1">
+                <div className="text-[11px] font-medium text-slate-400 px-2">
+                  Stage Gear & Handheld Items
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  {BUILT_IN_ITEMS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        onAddProp('heldItem', item.id);
+                        setSpawnMenuOpen(false);
+                      }}
+                      className="flex items-center gap-1.5 text-left px-2 py-1 rounded text-[11px] text-slate-200 hover:bg-[#2b2e35] truncate"
+                    >
+                      <Swords className="w-3 h-3 text-cyan-400 shrink-0" aria-hidden="true" />
+                      <span className="truncate">{item.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -1128,10 +1200,71 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
                 />
               </div>
             )}
+            {subTab === 'items' && (
+              <ItemHandlingPanel
+                currentHeldItems={activeHeldItems}
+                hasDraft={itemDraft !== null}
+                activeEasing={activeItemKeyframe?.easing ?? 'equipPop'}
+                onPreviewHeldItems={onPreviewHeldItems}
+                onResetDraft={onResetItemDraft}
+                onCommitItemKeyframe={onCommitItemKeyframe}
+                onSpawnItemAsProp={onSpawnItemAsProp}
+              />
+            )}
           </>
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-4 pt-2 border-t border-[#393d47]">
-            <div className="flex items-center gap-4 text-xs text-slate-300">
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300">
+              <label className="inline-flex items-center gap-1.5">
+                <span className="text-slate-400">Prop</span>
+                <select
+                  aria-label="Prop Model Type"
+                  value={selectedActor.propKind ?? 'crate'}
+                  onChange={(e) => {
+                    const nextKind = e.target.value as PropKind;
+                    onUpdatePropConfig(
+                      selectedActor.id,
+                      nextKind,
+                      nextKind === 'heldItem'
+                        ? selectedActor.propItemId ?? 'linkedSword'
+                        : undefined,
+                    );
+                  }}
+                  className="px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
+                >
+                  {BUILT_IN_PROPS.map((p) => (
+                    <option key={p.kind} value={p.kind}>
+                      {p.name}
+                    </option>
+                  ))}
+                  <option value="heldItem">Dropped Gear / Item</option>
+                </select>
+              </label>
+
+              {selectedActor.propKind === 'heldItem' && (
+                <label className="inline-flex items-center gap-1.5">
+                  <span className="text-slate-400">Item</span>
+                  <select
+                    aria-label="Dropped Item Model"
+                    value={selectedActor.propItemId ?? 'linkedSword'}
+                    onChange={(e) =>
+                      onUpdatePropConfig(
+                        selectedActor.id,
+                        'heldItem',
+                        e.target.value as ItemId,
+                      )
+                    }
+                    className="px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
+                  >
+                    {BUILT_IN_ITEMS.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
               <label className="inline-flex items-center gap-2">
                 <span className="text-slate-400">Primary Brick</span>
                 <input

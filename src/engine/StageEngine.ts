@@ -16,14 +16,15 @@ import {
   getRobloxLightingSpec,
   StudTexturePair,
 } from './robloxTextures';
+import { getActiveMapSignature } from './mapLibrary';
 import { clamp, degToRad, evaluateProjectAt } from './timeline';
 import {
   AnimationProject,
   CameraFramingPreset,
   CameraMode,
-  EnvironmentId,
   EvaluatedFaceState,
   EvaluatedFrame,
+  EvaluatedHeldItems,
   EvaluatedPose,
   GizmoMode,
   LightingMood,
@@ -111,7 +112,8 @@ export class StageEngine {
   private skyboxTex: THREE.CubeTexture | null = null;
   private currentSkyKey = '';
   private envGroup: THREE.Group | null = null;
-  private currentEnvId: EnvironmentId | null = null;
+  private currentEnvSignature = '';
+  private selectedMapModuleId: string | null = null;
 
   private actors = new Map<string, ManagedActor>();
   private stageLightsMap = new Map<string, ManagedStageLight>();
@@ -125,6 +127,7 @@ export class StageEngine {
   private selectedActorId: string | null = null;
   private poseOverride: { actorId: string; pose: EvaluatedPose } | null = null;
   private faceOverride: { actorId: string; face: EvaluatedFaceState } | null = null;
+  private itemOverride: { actorId: string; heldItems: EvaluatedHeldItems } | null = null;
   private lastEvaluatedFrame: EvaluatedFrame | null = null;
 
   private frameId = 0;
@@ -370,8 +373,12 @@ export class StageEngine {
     this.hemiLight.groundColor.setHex(moodSpec.hemiGround);
     this.hemiLight.intensity = project.ambientIntensity;
 
-    // 2. Environment
-    if (this.currentEnvId !== project.environment) {
+    // 2. Environment & Custom Modular Maps
+    const nextEnvSignature = getActiveMapSignature(
+      project.environment,
+      project.customMap,
+    );
+    if (this.currentEnvSignature !== nextEnvSignature) {
       if (this.envGroup) {
         this.scene.remove(this.envGroup);
         this.disposeObject3D(this.envGroup);
@@ -380,9 +387,11 @@ export class StageEngine {
         project.environment,
         this.renderer.capabilities.getMaxAnisotropy(),
         this.studTextures,
+        project.customMap,
+        this.getVisibleMapModuleId(),
       );
       this.scene.add(this.envGroup);
-      this.currentEnvId = project.environment;
+      this.currentEnvSignature = nextEnvSignature;
     }
 
     // 3. Actors diff
@@ -412,6 +421,7 @@ export class StageEngine {
         !existing ||
         existing.config.kind !== cfg.kind ||
         existing.config.propKind !== cfg.propKind ||
+        existing.config.propItemId !== cfg.propItemId ||
         Boolean(isPropColorChanged);
 
       if (needsRebuild) {
@@ -450,6 +460,7 @@ export class StageEngine {
             this.studTextures,
             this.shadowTex,
             this.renderer.capabilities.getMaxAnisotropy(),
+            cfg.propItemId,
           );
           group.userData.actorId = cfg.id;
           const ring = new THREE.Mesh(
@@ -717,6 +728,34 @@ export class StageEngine {
     this.requestRender();
   }
 
+  public setSelectedMapModuleId(moduleId: string | null) {
+    this.selectedMapModuleId = moduleId;
+    this.updateMapModuleSelectionRings();
+    this.requestRender();
+  }
+
+  private getVisibleMapModuleId(): string | null {
+    if (
+      this.cameraMode !== 'orbit' ||
+      this.isPlaying ||
+      this.isRecordingExport
+    ) {
+      return null;
+    }
+    return this.selectedMapModuleId;
+  }
+
+  private updateMapModuleSelectionRings() {
+    if (!this.envGroup) return;
+    const visibleId = this.getVisibleMapModuleId();
+    this.envGroup.traverse((obj) => {
+      const ringId = obj.userData?.mapModuleRingId as string | undefined;
+      if (ringId !== undefined) {
+        obj.visible = visibleId !== null && ringId === visibleId;
+      }
+    });
+  }
+
   private updateCameraRigVisibility() {
     const showCam =
       this.cameraMode === 'orbit' && this.showCameraRig && !this.isRecordingExport;
@@ -733,6 +772,7 @@ export class StageEngine {
       managed.helper.visible = showLights && managed.config.enabled;
       managed.fixtureGroup.visible = showLights;
     });
+    this.updateMapModuleSelectionRings();
   }
 
   public setPoseOverride(actorId: string | null, pose: EvaluatedPose | null) {
@@ -750,6 +790,16 @@ export class StageEngine {
       this.faceOverride = { actorId, face };
     } else {
       this.faceOverride = null;
+    }
+    this.evaluateAndApply(this.currentTime);
+    this.requestRender();
+  }
+
+  public setItemOverride(actorId: string | null, heldItems: EvaluatedHeldItems | null) {
+    if (actorId && heldItems) {
+      this.itemOverride = { actorId, heldItems };
+    } else {
+      this.itemOverride = null;
     }
     this.evaluateAndApply(this.currentTime);
     this.requestRender();
@@ -796,11 +846,14 @@ export class StageEngine {
     if (playing) {
       this.poseOverride = null;
       this.faceOverride = null;
+      this.itemOverride = null;
       this.transformControls.detach();
+      this.updateMapModuleSelectionRings();
       this.lastTickMs = performance.now();
       this.startLoop();
     } else {
       this.selectActor(this.selectedActorId);
+      this.updateMapModuleSelectionRings();
       this.requestRender();
     }
   }
@@ -963,9 +1016,25 @@ export class StageEngine {
         } else {
           managed.rig.applyPose(actorState.pose);
         }
+        const activeItems =
+          this.itemOverride && this.itemOverride.actorId === id && !this.isPlaying
+            ? this.itemOverride.heldItems
+            : actorState.heldItems;
+        if (activeItems) {
+          managed.rig.setHeldItems(activeItems);
+        }
         managed.rig.applySecondaryMotion(actorState.secondaryMotion);
       } else if (managed.config.propKind === 'speeder') {
         managed.group.position.y += Math.sin(time * 2.8) * 0.06;
+      } else if (managed.config.propKind === 'campfire') {
+        managed.group.traverse((obj) => {
+          if (obj.userData?.isCampfireFlame) {
+            const phase = (obj.userData.phaseOffset as number) ?? 0;
+            const sy = 0.88 + Math.sin(time * 9.5 + phase) * 0.16;
+            const sxz = 0.94 + Math.cos(time * 7.2 + phase) * 0.08;
+            obj.scale.set(sxz, sy, sxz);
+          }
+        });
       }
       managed.group.updateMatrixWorld(true);
     }

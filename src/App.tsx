@@ -24,6 +24,7 @@ import {
   deleteActorKeyframe,
   deleteCameraKeyframe,
   deleteFaceKeyframe,
+  deleteItemKeyframe,
   deleteLightingKeyframe,
   deleteStageLight,
   deleteSubtitleCue,
@@ -33,28 +34,61 @@ import {
   moveActorKeyframeTime,
   moveCameraKeyframeTime,
   moveFaceKeyframeTime,
+  moveItemKeyframeTime,
   moveLightingKeyframeTime,
   parseProjectJson,
   serializeProject,
   upsertActorKeyframe,
   upsertCameraKeyframe,
   upsertFaceKeyframe,
+  upsertItemKeyframe,
   upsertLightingKeyframe,
   upsertStageLight,
   upsertSubtitleCue,
 } from './engine/timeline';
+import {
+  cloneCharacterHeldItems,
+  createEmptyCharacterHeldItems,
+  getItemMeta,
+  getPropMeta,
+} from './engine/itemCatalog';
+import {
+  BUILT_IN_MAPS,
+  applyMapToProject,
+  cloneMapForBuilder,
+  createBlankCustomMap,
+  loadCustomMaps,
+  parseMapLibraryJson,
+  saveCustomMaps,
+  serializeMapLibrary,
+  serializeSingleMap,
+} from './engine/mapLibrary';
+import {
+  BUILT_IN_SCENES,
+  cloneProject,
+  createSceneEntryFromProject,
+  loadCustomScenes,
+  parseSceneLibraryJson,
+  saveCustomScenes,
+  serializeSceneLibrary,
+  serializeSingleSceneEntry,
+} from './engine/sceneLibrary';
 import {
   AnimationProject,
   ActorKeyframe,
   CameraFramingPreset,
   CameraKeyframe,
   CameraMode,
+  CharacterHeldItems,
   DockTab,
   EasingType,
   ExpressionParams,
   ExpressionPresetId,
   FaceRigConfig,
   GizmoMode,
+  ItemEasingMode,
+  ItemId,
+  MapDefinition,
   OrnamentSlot,
   PoseCategory,
   PoseClipId,
@@ -62,6 +96,8 @@ import {
   PropKind,
   R6BodyPartId,
   SceneActorConfig,
+  SceneCategory,
+  SceneLibraryEntry,
   StageLightConfig,
   SubtitleCue,
   UpperBodyClipId,
@@ -109,7 +145,13 @@ export default function App() {
     preset: ExpressionPresetId;
     overrides: Partial<ExpressionParams>;
   } | null>(null);
+  const [itemDraft, setItemDraft] = useState<CharacterHeldItems | null>(null);
   const [customPoses, setCustomPoses] = useState<PosePreset[]>(() => loadCustomPoses());
+  const [customMaps, setCustomMaps] = useState<MapDefinition[]>(() => loadCustomMaps());
+  const [customScenes, setCustomScenes] = useState<SceneLibraryEntry[]>(() =>
+    loadCustomScenes(),
+  );
+  const [selectedMapModuleId, setSelectedMapModuleId] = useState<string | null>(null);
   const [activePosePreviewId, setActivePosePreviewId] = useState<string | null>(null);
   const [poseMirrored, setPoseMirrored] = useState(false);
   const [includePoseExpression, setIncludePoseExpression] = useState(true);
@@ -157,10 +199,12 @@ export default function App() {
         setJointDraft({});
         setHipTiltDraft(null);
         setFaceDraft(null);
+        setItemDraft(null);
         setActivePosePreviewId(null);
         setPoseMirrored(false);
         engineRef.current?.setPoseOverride(null, null);
         engineRef.current?.setFaceOverride(null, null);
+        engineRef.current?.setItemOverride(null, null);
       },
       onActorTransformCommit: (actorId, position, rotation, scale) => {
         const proj = projectRef.current;
@@ -227,6 +271,20 @@ export default function App() {
     saveCustomPoses(customPoses);
   }, [customPoses]);
 
+  useEffect(() => {
+    saveCustomMaps(customMaps);
+  }, [customMaps]);
+
+  useEffect(() => {
+    saveCustomScenes(customScenes);
+  }, [customScenes]);
+
+  useEffect(() => {
+    engineRef.current?.setSelectedMapModuleId(
+      activeTab === 'scene' ? selectedMapModuleId : null,
+    );
+  }, [activeTab, selectedMapModuleId]);
+
   const handleTogglePlay = useCallback(() => {
     setIsPlaying((prev) => {
       const next = !prev;
@@ -234,6 +292,7 @@ export default function App() {
         setJointDraft({});
         setHipTiltDraft(null);
         setFaceDraft(null);
+        setItemDraft(null);
         setActivePosePreviewId(null);
         setPoseMirrored(false);
       }
@@ -246,10 +305,12 @@ export default function App() {
     setJointDraft({});
     setHipTiltDraft(null);
     setFaceDraft(null);
+    setItemDraft(null);
     setActivePosePreviewId(null);
     setPoseMirrored(false);
     engineRef.current?.setPoseOverride(null, null);
     engineRef.current?.setFaceOverride(null, null);
+    engineRef.current?.setItemOverride(null, null);
     engineRef.current?.setTime(time);
     setCurrentTime(time);
   }, []);
@@ -259,10 +320,12 @@ export default function App() {
     setJointDraft({});
     setHipTiltDraft(null);
     setFaceDraft(null);
+    setItemDraft(null);
     setActivePosePreviewId(null);
     setPoseMirrored(false);
     engineRef.current?.setPoseOverride(null, null);
     engineRef.current?.setFaceOverride(null, null);
+    engineRef.current?.setItemOverride(null, null);
     engineRef.current?.selectActor(actorId);
   }, []);
 
@@ -367,6 +430,52 @@ export default function App() {
     engineRef.current?.setFaceOverride(null, null);
   }, [selectedActorId, project.actors, project.subtitles, currentTime, faceDraft]);
 
+  const handlePreviewHeldItems = useCallback(
+    (next: CharacterHeldItems) => {
+      if (!selectedActorId) return;
+      const cloned = cloneCharacterHeldItems(next);
+      setItemDraft(cloned);
+      engineRef.current?.setItemOverride(selectedActorId, {
+        right: { ...cloned.right, visibilityScale: 1 },
+        left: { ...cloned.left, visibilityScale: 1 },
+      });
+    },
+    [selectedActorId],
+  );
+
+  const handleResetItemDraft = useCallback(() => {
+    setItemDraft(null);
+    engineRef.current?.setItemOverride(null, null);
+  }, []);
+
+  const handleCommitItemKeyframe = useCallback(
+    (easing: ItemEasingMode = 'equipPop') => {
+      if (!selectedActorId) return;
+      const actor = project.actors.find((a) => a.id === selectedActorId);
+      if (!actor || actor.kind !== 'character') return;
+      const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+      const source =
+        itemDraft ??
+        evalState.heldItems ??
+        actor.heldItems ??
+        createEmptyCharacterHeldItems();
+      const cloned = cloneCharacterHeldItems(source);
+
+      setProject((prev) =>
+        upsertItemKeyframe(prev, selectedActorId, {
+          id: `ikf_${Date.now()}`,
+          time: currentTime,
+          easing,
+          right: cloned.right,
+          left: cloned.left,
+        }),
+      );
+      setItemDraft(null);
+      engineRef.current?.setItemOverride(null, null);
+    },
+    [selectedActorId, project.actors, project.subtitles, currentTime, itemDraft],
+  );
+
   const handleKeyCameraAtCurrentTime = useCallback(() => {
     const pose = engineRef.current?.getOrbitCameraPose() ?? {
       position: [5, 3, 6] as Vec3Tuple,
@@ -435,6 +544,7 @@ export default function App() {
         bodyColors: cloned.bodyColors,
         ornaments: cloned.ornaments,
         faceConfig: cloned.faceConfig,
+        heldItems: cloned.heldItems,
         lookAtTarget: 'camera',
         lookAtWeight: 0.55,
         secondaryMotion: true,
@@ -462,6 +572,15 @@ export default function App() {
             easing: 'easeInOut',
           },
         ],
+        heldItemKeyframes: [
+          {
+            id: `ikf_${Date.now()}`,
+            time: 0,
+            easing: 'step',
+            right: cloned.heldItems.right,
+            left: cloned.heldItems.left,
+          },
+        ],
       };
       setProject((prev) => ({
         ...prev,
@@ -474,20 +593,44 @@ export default function App() {
   );
 
   const handleAddProp = useCallback(
-    (propKind: PropKind) => {
+    (
+      propKind: PropKind,
+      propItemId?: ItemId,
+      customPos?: Vec3Tuple,
+      customColors?: { primary: string; accent: string },
+    ) => {
       const idx = project.actors.filter((a) => a.kind === 'prop').length + 1;
+      const itemMeta =
+        propKind === 'heldItem' ? getItemMeta(propItemId ?? 'linkedSword') : null;
+      const propMeta = propKind !== 'heldItem' ? getPropMeta(propKind) : null;
+      const baseName =
+        itemMeta?.name ?? propMeta?.name ?? `${propKind[0].toUpperCase()}${propKind.slice(1)}`;
+      const primaryColor =
+        customColors?.primary ??
+        itemMeta?.defaultPrimaryColor ??
+        propMeta?.defaultPrimaryColor ??
+        '#635f62';
+      const accentColor =
+        customColors?.accent ??
+        itemMeta?.defaultAccentColor ??
+        propMeta?.defaultAccentColor ??
+        '#f5cd30';
+
       const newProp: SceneActorConfig = {
         id: `prop_${Date.now()}`,
-        name: `${propKind[0].toUpperCase()}${propKind.slice(1)} ${idx}`,
+        name: `${baseName} ${idx}`,
         kind: 'prop',
         propKind,
-        primaryColor: propKind === 'speeder' ? '#0d69ac' : '#635f62',
-        accentColor: propKind === 'spawnpad' ? '#f2f3f3' : '#f5cd30',
+        ...(propKind === 'heldItem'
+          ? { propItemId: propItemId ?? 'linkedSword' }
+          : {}),
+        primaryColor,
+        accentColor,
         keyframes: [
           {
             id: `pkf_${Date.now()}`,
             time: 0,
-            position: [idx * 1.1 - 1.5, 0, -1.2],
+            position: customPos ?? [((idx - 1) % 5) * 1.3 - 2.2, 0, -1.2],
             rotation: [0, 0, 0],
             scale: [1, 1, 1],
             clip: 'idle',
@@ -504,6 +647,51 @@ export default function App() {
       setTimeout(() => engineRef.current?.selectActor(newProp.id), 0);
     },
     [project.actors],
+  );
+
+  const handleSpawnItemAsProp = useCallback(
+    (itemId: ItemId, primaryColor: string, accentColor: string) => {
+      const basePos = evaluatedSelectedActor?.position ?? [0, 0, 0];
+      handleAddProp(
+        'heldItem',
+        itemId,
+        [
+          Number((basePos[0] + 0.95).toFixed(2)),
+          0,
+          Number((basePos[2] + 0.35).toFixed(2)),
+        ],
+        { primary: primaryColor, accent: accentColor },
+      );
+    },
+    [evaluatedSelectedActor, handleAddProp],
+  );
+
+  const handleUpdatePropConfig = useCallback(
+    (actorId: string, propKind: PropKind, propItemId?: ItemId) => {
+      const itemMeta =
+        propKind === 'heldItem' ? getItemMeta(propItemId ?? 'linkedSword') : null;
+      const propMeta = propKind !== 'heldItem' ? getPropMeta(propKind) : null;
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) => {
+          if (a.id !== actorId) return a;
+          return {
+            ...a,
+            propKind,
+            propItemId: propKind === 'heldItem' ? propItemId ?? 'linkedSword' : undefined,
+            primaryColor:
+              itemMeta?.defaultPrimaryColor ??
+              propMeta?.defaultPrimaryColor ??
+              a.primaryColor,
+            accentColor:
+              itemMeta?.defaultAccentColor ??
+              propMeta?.defaultAccentColor ??
+              a.accentColor,
+          };
+        }),
+      }));
+    },
+    [],
   );
 
   const handleDeleteActor = useCallback((actorId: string) => {
@@ -1043,7 +1231,8 @@ export default function App() {
         | { kind: 'camera'; keyframeId: string }
         | { kind: 'lighting'; keyframeId: string }
         | { kind: 'actor'; actorId: string; keyframeId: string }
-        | { kind: 'face'; actorId: string; keyframeId: string },
+        | { kind: 'face'; actorId: string; keyframeId: string }
+        | { kind: 'item'; actorId: string; keyframeId: string },
       easing: EasingType,
     ) => {
       setProject((prev) => {
@@ -1078,6 +1267,9 @@ export default function App() {
             ),
           };
         }
+        if (ref.kind === 'item') {
+          return prev;
+        }
         return {
           ...prev,
           actors: prev.actors.map((a) =>
@@ -1096,21 +1288,230 @@ export default function App() {
     [],
   );
 
+  const handleUpdateItemKeyframeCurve = useCallback(
+    (actorId: string, keyframeId: string, easing: ItemEasingMode) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) =>
+          a.id === actorId
+            ? {
+                ...a,
+                heldItemKeyframes: (a.heldItemKeyframes ?? []).map((k) =>
+                  k.id === keyframeId ? { ...k, easing } : k,
+                ),
+              }
+            : a,
+        ),
+      }));
+    },
+    [],
+  );
+
   const handleLoadPreset = useCallback((preset: AnimationProject) => {
+    const cloned = cloneProject(preset);
     setIsPlaying(false);
     engineRef.current?.setPlaying(false);
-    setProject(preset);
+    setProject(cloned);
     setCurrentTime(0);
     engineRef.current?.setTime(0);
-    setSelectedActorId(preset.actors[0]?.id ?? null);
+    setSelectedActorId(cloned.actors[0]?.id ?? null);
+    setSelectedMapModuleId(null);
     setJointDraft({});
     setHipTiltDraft(null);
     setFaceDraft(null);
+    setItemDraft(null);
     setActivePosePreviewId(null);
     setPoseMirrored(false);
     engineRef.current?.setPoseOverride(null, null);
     engineRef.current?.setFaceOverride(null, null);
+    engineRef.current?.setItemOverride(null, null);
   }, []);
+
+  const handleApplyMap = useCallback(
+    (map: MapDefinition, applyAtmosphere: boolean) => {
+      setProject((prev) => applyMapToProject(prev, map, applyAtmosphere));
+      setSelectedMapModuleId(null);
+    },
+    [],
+  );
+
+  const handleCloneMapToBuilder = useCallback((map: MapDefinition) => {
+    const cloned = cloneMapForBuilder(map);
+    setProject((prev) => applyMapToProject(prev, cloned, false));
+    setSelectedMapModuleId(cloned.modules[0]?.id ?? null);
+  }, []);
+
+  const handleCreateBlankMap = useCallback(() => {
+    const blank = createBlankCustomMap();
+    setProject((prev) => applyMapToProject(prev, blank, false));
+    setSelectedMapModuleId(blank.modules[0]?.id ?? null);
+  }, []);
+
+  const handleUpdateCustomMap = useCallback(
+    (updater: (prev: MapDefinition) => MapDefinition) => {
+      setProject((prev) => {
+        if (prev.environment !== 'custom' || !prev.customMap) return prev;
+        const nextMap = updater(prev.customMap);
+        return {
+          ...prev,
+          mapId: nextMap.id,
+          customMap: nextMap,
+        };
+      });
+    },
+    [],
+  );
+
+  const handleSaveCustomMap = useCallback((map: MapDefinition) => {
+    const savedCopy: MapDefinition = {
+      ...map,
+      builtIn: false,
+      baseplate: { ...map.baseplate },
+      recommendedLighting: { ...map.recommendedLighting },
+      modules: map.modules.map((m) => ({
+        ...m,
+        position: [...m.position] as Vec3Tuple,
+      })),
+    };
+    setCustomMaps((prev) => {
+      const idx = prev.findIndex((m) => m.id === savedCopy.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = savedCopy;
+        return next;
+      }
+      return [savedCopy, ...prev];
+    });
+  }, []);
+
+  const handleDeleteCustomMap = useCallback((mapId: string) => {
+    setCustomMaps((prev) => prev.filter((m) => m.id !== mapId));
+  }, []);
+
+  const handleExportMaps = useCallback(() => {
+    const toExport = customMaps.length > 0 ? customMaps : BUILT_IN_MAPS;
+    const json = serializeMapLibrary(toExport);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download =
+      customMaps.length > 0
+        ? 'stagecraft-custom-maps.json'
+        : 'stagecraft-builtin-maps.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, [customMaps]);
+
+  const handleExportSingleMap = useCallback((map: MapDefinition) => {
+    const json = serializeSingleMap(map);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${map.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.map.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, []);
+
+  const handleImportMapsJson = useCallback(
+    (raw: string): { ok: boolean; message: string } => {
+      try {
+        const imported = parseMapLibraryJson(raw);
+        setCustomMaps((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id));
+          const deduped = imported.map((m, idx) =>
+            existingIds.has(m.id)
+              ? { ...m, id: `${m.id}_${Date.now()}_${idx}` }
+              : m,
+          );
+          return [...deduped, ...prev];
+        });
+        const first = imported[0];
+        if (first) {
+          setProject((prev) => applyMapToProject(prev, first, false));
+          setSelectedMapModuleId(first.modules[0]?.id ?? null);
+        }
+        return {
+          ok: true,
+          message: `Imported ${imported.length} map${imported.length === 1 ? '' : 's'} and loaded "${first?.name}".`,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          message:
+            err instanceof Error ? err.message : 'Unable to parse map JSON.',
+        };
+      }
+    },
+    [],
+  );
+
+  const handleSaveCurrentScene = useCallback(
+    (name: string, category: SceneCategory) => {
+      const entry = createSceneEntryFromProject(projectRef.current, name, category);
+      setCustomScenes((prev) => [entry, ...prev]);
+    },
+    [],
+  );
+
+  const handleDeleteCustomScene = useCallback((sceneId: string) => {
+    setCustomScenes((prev) => prev.filter((s) => s.id !== sceneId));
+  }, []);
+
+  const handleExportScenes = useCallback(() => {
+    const toExport = customScenes.length > 0 ? customScenes : BUILT_IN_SCENES;
+    const json = serializeSceneLibrary(toExport);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download =
+      customScenes.length > 0
+        ? 'stagecraft-custom-scenes.json'
+        : 'stagecraft-builtin-scenes.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, [customScenes]);
+
+  const handleExportSingleScene = useCallback((scene: SceneLibraryEntry) => {
+    const json = serializeSingleSceneEntry(scene);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${scene.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.scene.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, []);
+
+  const handleImportScenesJson = useCallback(
+    (raw: string): { ok: boolean; message: string } => {
+      try {
+        const imported = parseSceneLibraryJson(raw);
+        setCustomScenes((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const deduped = imported.map((s, idx) =>
+            existingIds.has(s.id)
+              ? { ...s, id: `${s.id}_${Date.now()}_${idx}` }
+              : s,
+          );
+          return [...deduped, ...prev];
+        });
+        return {
+          ok: true,
+          message: `Imported ${imported.length} scene${imported.length === 1 ? '' : 's'} into Scene Library.`,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          message:
+            err instanceof Error ? err.message : 'Unable to parse scene JSON.',
+        };
+      }
+    },
+    [],
+  );
 
   const handleCapturePng = useCallback(() => {
     const url = engineRef.current?.capturePngDataUrl();
@@ -1253,6 +1654,8 @@ export default function App() {
       setCurrentTime(0);
       engineRef.current?.setTime(0);
       setSelectedActorId(parsed.actors[0]?.id ?? null);
+      setItemDraft(null);
+      engineRef.current?.setItemOverride(null, null);
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : 'Unable to parse project file.';
@@ -1352,6 +1755,7 @@ export default function App() {
             onSelectActor={handleSelectActor}
             onKeyActorAtCurrentTime={handleKeyActorAtCurrentTime}
             onKeyFaceAtCurrentTime={handleCommitFaceKeyframe}
+            onKeyItemAtCurrentTime={() => handleCommitItemKeyframe('equipPop')}
             onKeyCameraAtCurrentTime={handleKeyCameraAtCurrentTime}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
             onMoveActorKeyframe={(actorId, kfId, newTime) =>
@@ -1360,6 +1764,9 @@ export default function App() {
             onMoveFaceKeyframe={(actorId, kfId, newTime) =>
               setProject((p) => moveFaceKeyframeTime(p, actorId, kfId, newTime))
             }
+            onMoveItemKeyframe={(actorId, kfId, newTime) =>
+              setProject((p) => moveItemKeyframeTime(p, actorId, kfId, newTime))
+            }
             onMoveCameraKeyframe={(kfId, newTime) =>
               setProject((p) => moveCameraKeyframeTime(p, kfId, newTime))
             }
@@ -1367,11 +1774,15 @@ export default function App() {
               setProject((p) => moveLightingKeyframeTime(p, kfId, newTime))
             }
             onUpdateKeyframeEasing={handleUpdateKeyframeEasing}
+            onUpdateItemKeyframeCurve={handleUpdateItemKeyframeCurve}
             onDeleteActorKeyframe={(actorId, kfId) =>
               setProject((p) => deleteActorKeyframe(p, actorId, kfId))
             }
             onDeleteFaceKeyframe={(actorId, kfId) =>
               setProject((p) => deleteFaceKeyframe(p, actorId, kfId))
+            }
+            onDeleteItemKeyframe={(actorId, kfId) =>
+              setProject((p) => deleteItemKeyframe(p, actorId, kfId))
             }
             onDeleteCameraKeyframe={(kfId) =>
               setProject((p) => deleteCameraKeyframe(p, kfId))
@@ -1387,6 +1798,11 @@ export default function App() {
             project={project}
             currentTime={currentTime}
             showLightHelpers={showLightHelpers}
+            builtInMaps={BUILT_IN_MAPS}
+            customMaps={customMaps}
+            builtInScenes={BUILT_IN_SCENES}
+            customScenes={customScenes}
+            selectedMapModuleId={selectedMapModuleId}
             onUpdateProject={(updater) => setProject(updater)}
             onLoadPreset={handleLoadPreset}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
@@ -1401,6 +1817,21 @@ export default function App() {
             onDeleteStageLight={(lightId) =>
               setProject((p) => deleteStageLight(p, lightId))
             }
+            onApplyMap={handleApplyMap}
+            onCloneMapToBuilder={handleCloneMapToBuilder}
+            onCreateBlankMap={handleCreateBlankMap}
+            onSelectMapModule={setSelectedMapModuleId}
+            onUpdateCustomMap={handleUpdateCustomMap}
+            onSaveCustomMap={handleSaveCustomMap}
+            onDeleteCustomMap={handleDeleteCustomMap}
+            onExportMaps={handleExportMaps}
+            onExportSingleMap={handleExportSingleMap}
+            onImportMapsJson={handleImportMapsJson}
+            onSaveCurrentScene={handleSaveCurrentScene}
+            onDeleteCustomScene={handleDeleteCustomScene}
+            onExportScenes={handleExportScenes}
+            onExportSingleScene={handleExportSingleScene}
+            onImportScenesJson={handleImportScenesJson}
           />
         )}
 
@@ -1414,6 +1845,7 @@ export default function App() {
             jointDraft={jointDraft}
             hipTiltDraft={hipTiltDraft}
             faceDraft={faceDraft}
+            itemDraft={itemDraft}
             onSelectActor={handleSelectActor}
             onAddCharacter={handleAddCharacter}
             onAddProp={handleAddProp}
@@ -1430,12 +1862,17 @@ export default function App() {
                 ),
               }))
             }
+            onUpdatePropConfig={handleUpdatePropConfig}
             onUpdateFaceConfig={handleUpdateFaceConfig}
             onPreviewFacePreset={handlePreviewFacePreset}
             onPreviewFaceParam={handlePreviewFaceParam}
             onResetFaceDraft={handleResetFaceDraft}
             onCommitFaceKeyframe={handleCommitFaceKeyframe}
             onFocusActorFace={handleFocusActorFace}
+            onPreviewHeldItems={handlePreviewHeldItems}
+            onResetItemDraft={handleResetItemDraft}
+            onCommitItemKeyframe={handleCommitItemKeyframe}
+            onSpawnItemAsProp={handleSpawnItemAsProp}
             onChangeClip={handleChangeClip}
             onUpdateActorAnimSettings={handleUpdateActorAnimSettings}
             onUpdateActorRigBehavior={handleUpdateActorRigBehavior}

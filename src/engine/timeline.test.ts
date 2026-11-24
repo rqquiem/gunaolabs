@@ -6,9 +6,11 @@ import {
   catmullRomScalar,
   deleteActorKeyframe,
   deleteFaceKeyframe,
+  deleteItemKeyframe,
   deleteLightingKeyframe,
   deleteStageLight,
   evaluateActorAt,
+  evaluateActorItemsAt,
   evaluateCameraAt,
   evaluateLightingAt,
   evaluateProceduralClipPose,
@@ -18,14 +20,25 @@ import {
   lerpAngleRad,
   moveActorKeyframeTime,
   moveFaceKeyframeTime,
+  moveItemKeyframeTime,
   parseProjectJson,
   serializeProject,
   upsertActorKeyframe,
   upsertCameraKeyframe,
   upsertFaceKeyframe,
+  upsertItemKeyframe,
   upsertLightingKeyframe,
   upsertStageLight,
 } from './timeline';
+import {
+  applyGripPresetToHandState,
+  BUILT_IN_ITEMS,
+  BUILT_IN_PROPS,
+  createDefaultHandStateForItem,
+  createEmptyHandState,
+  DUAL_WIELD_COMBOS,
+  formatHeldItemsSummary,
+} from './itemCatalog';
 import {
   evaluateActorFaceAt,
   evaluateAutoBlink,
@@ -38,7 +51,11 @@ import {
   parsePoseLibraryJson,
   serializePoseLibrary,
 } from './poseLibrary';
-import { CROSSROADS_SHOWDOWN_PROJECT } from './presets';
+import {
+  BEDROOM_SKIT_PROJECT,
+  CROSSROADS_SHOWDOWN_PROJECT,
+  ROBLOXIAN_TOWN_PROJECT,
+} from './presets';
 import { cloneBundle, ORNAMENT_CATALOG } from './robloxCatalog';
 import { ORNAMENT_SLOTS, R6_BODY_PARTS } from './types';
 import {
@@ -46,6 +63,23 @@ import {
   pickMediaRecorderMp4MimeType,
   resolveExportDimensions,
 } from './mp4Recorder';
+import {
+  BUILT_IN_MAPS,
+  MAP_MODULE_CATALOG,
+  applyMapToProject,
+  cloneMapForBuilder,
+  createBlankCustomMap,
+  getActiveMapSignature,
+  parseMapLibraryJson,
+  serializeMapLibrary,
+  serializeSingleMap,
+} from './mapLibrary';
+import {
+  BUILT_IN_SCENES,
+  createSceneEntryFromProject,
+  parseSceneLibraryJson,
+  serializeSceneLibrary,
+} from './sceneLibrary';
 
 test('easing functions return exact boundary values and step behavior', () => {
   assert.equal(applyEasing(0, 'linear'), 0);
@@ -441,5 +475,302 @@ test('MP4 recorder dimension alignment, Constrained Baseline H.264 priority, and
     }
   }
 });
+
+test('Map Library catalog, hot-swap preservation, and custom map builder helpers', () => {
+  assert.equal(BUILT_IN_MAPS.length, 7);
+  assert.equal(MAP_MODULE_CATALOG.length, 19);
+
+  const lunar = BUILT_IN_MAPS.find((m) => m.builtInSourceId === 'lunarOutpost')!;
+  const swappedKeepMood = applyMapToProject(CROSSROADS_SHOWDOWN_PROJECT, lunar, false);
+  assert.equal(swappedKeepMood.environment, 'lunarOutpost');
+  assert.equal(swappedKeepMood.lightingMood, CROSSROADS_SHOWDOWN_PROJECT.lightingMood);
+  assert.equal(swappedKeepMood.actors.length, CROSSROADS_SHOWDOWN_PROJECT.actors.length);
+  assert.equal(
+    swappedKeepMood.cameraTrack.length,
+    CROSSROADS_SHOWDOWN_PROJECT.cameraTrack.length,
+  );
+  assert.equal(
+    swappedKeepMood.subtitles.length,
+    CROSSROADS_SHOWDOWN_PROJECT.subtitles.length,
+  );
+
+  const swappedWithMood = applyMapToProject(CROSSROADS_SHOWDOWN_PROJECT, lunar, true);
+  assert.equal(swappedWithMood.environment, 'lunarOutpost');
+  assert.equal(swappedWithMood.lightingMood, 'midnight');
+  assert.equal(swappedWithMood.sunAzimuth, lunar.recommendedLighting.sunAzimuth);
+
+  const remixed = cloneMapForBuilder(lunar);
+  assert.equal(remixed.builtIn, false);
+  assert.equal(remixed.modules.length, lunar.modules.length);
+  const sigBefore = getActiveMapSignature('custom', remixed);
+  remixed.modules[0].position[0] += 2;
+  const sigAfter = getActiveMapSignature('custom', remixed);
+  assert.notEqual(sigBefore, sigAfter);
+});
+
+test('Map & Scene Library JSON roundtrip and embedded customMap preservation in AnimationProject', () => {
+  const customMap = createBlankCustomMap('Neon Arena Test');
+  customMap.baseplate.groundColor = '#1e293b';
+
+  const bundleJson = serializeMapLibrary([customMap]);
+  const parsedMaps = parseMapLibraryJson(bundleJson);
+  assert.equal(parsedMaps.length, 1);
+  assert.equal(parsedMaps[0].name, 'Neon Arena Test');
+  assert.equal(parsedMaps[0].baseplate.groundColor, '#1e293b');
+
+  const singleJson = serializeSingleMap(customMap);
+  const parsedSingle = parseMapLibraryJson(singleJson);
+  assert.equal(parsedSingle.length, 1);
+  assert.equal(parsedSingle[0].name, 'Neon Arena Test');
+
+  const projWithCustomMap = applyMapToProject(CROSSROADS_SHOWDOWN_PROJECT, customMap, true);
+  assert.equal(projWithCustomMap.environment, 'custom');
+  const projJson = serializeProject(projWithCustomMap);
+  const parsedProj = parseProjectJson(projJson);
+  assert.equal(parsedProj.environment, 'custom');
+  assert.equal(parsedProj.customMap?.name, 'Neon Arena Test');
+  assert.equal(parsedProj.customMap?.modules.length, customMap.modules.length);
+
+  assert.equal(BUILT_IN_SCENES.length, 8);
+  const snapshot = createSceneEntryFromProject(
+    projWithCustomMap,
+    'Custom Arena Snapshot',
+    'showcase',
+  );
+  const scenesJson = serializeSceneLibrary([snapshot]);
+  const parsedScenes = parseSceneLibraryJson(scenesJson);
+  assert.equal(parsedScenes.length, 1);
+  assert.equal(parsedScenes[0].name, 'Custom Arena Snapshot');
+  assert.equal(parsedScenes[0].project.environment, 'custom');
+  assert.equal(parsedScenes[0].project.customMap?.name, 'Neon Arena Test');
+});
+
+test('Item & Prop catalog completeness, dual-wield grip presets, and summary formatting', () => {
+  assert.equal(BUILT_IN_ITEMS.length, 12);
+  assert.equal(BUILT_IN_PROPS.length, 20);
+  assert.equal(DUAL_WIELD_COMBOS.length, 6);
+
+  const shieldR = createDefaultHandStateForItem('heaterShield', 'right');
+  const shieldL = createDefaultHandStateForItem('heaterShield', 'left');
+  assert.equal(shieldR.gripPreset, 'forearm');
+  assert.equal(shieldR.positionOffset[0], -0.24);
+  assert.equal(shieldL.positionOffset[0], 0.24);
+  assert.equal(shieldR.rotationDeg[1], -90);
+  assert.equal(shieldL.rotationDeg[1], 90);
+
+  const reversed = applyGripPresetToHandState(
+    createDefaultHandStateForItem('linkedSword', 'right'),
+    'reverse',
+    'right',
+  );
+  assert.equal(reversed.gripPreset, 'reverse');
+  assert.equal(reversed.rotationDeg[0], 180);
+
+  assert.equal(
+    formatHeldItemsSummary({
+      right: createDefaultHandStateForItem('laserBlaster', 'right'),
+      left: createDefaultHandStateForItem('laserBlaster', 'left'),
+    }),
+    'Dual Laser Blaster',
+  );
+  assert.equal(
+    formatHeldItemsSummary({
+      right: createEmptyHandState(),
+      left: createEmptyHandState(),
+    }),
+    'Empty Hands',
+  );
+});
+
+test('Held item timeline evaluation (equipPop, swap, hide) and keyframe CRUD + JSON roundtrip', () => {
+  const noob = CROSSROADS_SHOWDOWN_PROJECT.actors.find((a) => a.id === 'actor-noob')!;
+  const atStart = evaluateActorItemsAt(noob, 0);
+  assert.equal(atStart.right.itemId, 'bloxyCola');
+  assert.equal(atStart.left.itemId, 'none');
+
+  // At 5.5s Noob equips pizzaSlice in left hand via equipPop
+  const atPopStart = evaluateActorItemsAt(noob, 5.52);
+  assert.equal(atPopStart.left.itemId, 'pizzaSlice');
+  assert.ok(atPopStart.left.visibilityScale < 1);
+  const atSettled = evaluateActorItemsAt(noob, 6.0);
+  assert.equal(atSettled.left.itemId, 'pizzaSlice');
+  assert.equal(atSettled.left.visibilityScale, 1);
+
+  // Upsert, move, and delete item keyframes
+  let proj = upsertItemKeyframe(CROSSROADS_SHOWDOWN_PROJECT, 'actor-noob', {
+    id: 'test-ikf-hide',
+    time: 7.5,
+    easing: 'step',
+    right: createEmptyHandState(),
+    left: createEmptyHandState(),
+  });
+  const afterHide = evaluateActorItemsAt(
+    proj.actors.find((a) => a.id === 'actor-noob')!,
+    7.6,
+  );
+  assert.equal(afterHide.right.itemId, 'none');
+  assert.equal(afterHide.left.itemId, 'none');
+
+  proj = moveItemKeyframeTime(proj, 'actor-noob', 'test-ikf-hide', 8.0);
+  const movedKf = proj.actors
+    .find((a) => a.id === 'actor-noob')!
+    .heldItemKeyframes!.find((k) => k.id === 'test-ikf-hide')!;
+  assert.equal(movedKf.time, 8.0);
+
+  proj = deleteItemKeyframe(proj, 'actor-noob', 'test-ikf-hide');
+  assert.equal(
+    proj.actors
+      .find((a) => a.id === 'actor-noob')!
+      .heldItemKeyframes!.some((k) => k.id === 'test-ikf-hide'),
+    false,
+  );
+
+  // Extended propKind + heldItem prop serialization & sanitization
+  const withProps = {
+    ...proj,
+    actors: [
+      ...proj.actors,
+      {
+        id: 'prop-chest-test',
+        name: 'Treasure Chest 1',
+        kind: 'prop' as const,
+        propKind: 'chest' as const,
+        primaryColor: '#8a5a36',
+        accentColor: '#f5cd30',
+        keyframes: [
+          {
+            id: 'pk-1',
+            time: 0,
+            position: [1, 0, 1] as [number, number, number],
+            rotation: [0, 0, 0] as [number, number, number],
+            scale: [1, 1, 1] as [number, number, number],
+            clip: 'idle' as const,
+            clipSpeed: 1,
+            easing: 'linear' as const,
+          },
+        ],
+      },
+      {
+        id: 'prop-item-test',
+        name: 'Energy Blade Drop',
+        kind: 'prop' as const,
+        propKind: 'heldItem' as const,
+        propItemId: 'energyBlade' as const,
+        primaryColor: '#1b2a35',
+        accentColor: '#22d3ee',
+        keyframes: [
+          {
+            id: 'pk-2',
+            time: 0,
+            position: [-1, 0, 1] as [number, number, number],
+            rotation: [0, 0, 0] as [number, number, number],
+            scale: [1, 1, 1] as [number, number, number],
+            clip: 'idle' as const,
+            clipSpeed: 1,
+            easing: 'linear' as const,
+          },
+        ],
+      },
+    ],
+  };
+
+  const parsed = parseProjectJson(serializeProject(withProps));
+  const parsedChest = parsed.actors.find((a) => a.id === 'prop-chest-test')!;
+  const parsedDrop = parsed.actors.find((a) => a.id === 'prop-item-test')!;
+  assert.equal(parsedChest.propKind, 'chest');
+  assert.equal(parsedDrop.propKind, 'heldItem');
+  assert.equal(parsedDrop.propItemId, 'energyBlade');
+  assert.equal(
+    parsed.actors.find((a) => a.id === 'actor-knight')!.heldItemKeyframes!.length,
+    2,
+  );
+});
+
+test('Robloxian Town neighborhood map, Cozy Gamer Bedroom scene, and bedroom/town prop serialization', () => {
+  const townMap = BUILT_IN_MAPS.find((m) => m.builtInSourceId === 'robloxianTown')!;
+  const bedroomMap = BUILT_IN_MAPS.find((m) => m.builtInSourceId === 'cozyBedroom')!;
+  assert.equal(townMap.category, 'town');
+  assert.equal(townMap.baseplate.pathStyle, 'street');
+  assert.equal(townMap.baseplate.perimeter, 'picketFence');
+  assert.equal(bedroomMap.category, 'interior');
+  assert.equal(bedroomMap.baseplate.pathStyle, 'hardwood');
+  assert.equal(bedroomMap.baseplate.perimeter, 'bedroomCorner');
+
+  // Verify Bedroom Skit scene evaluates cleanly and preserves item swaps + subtitles
+  const parsedBedroom = parseProjectJson(serializeProject(BEDROOM_SKIT_PROJECT));
+  assert.equal(parsedBedroom.environment, 'cozyBedroom');
+  assert.equal(parsedBedroom.actors.length, 2);
+  assert.equal(parsedBedroom.subtitles.length, 3);
+  const evalBedFrame = evaluateProjectAt(parsedBedroom, 4.5);
+  const gamerState = evalBedFrame.actors['actor-bedroom-gamer'];
+  assert.ok(gamerState);
+  assert.equal(gamerState.heldItems?.right.itemId, 'pizzaSlice');
+  assert.equal(gamerState.heldItems?.left.itemId, 'bloxyCola');
+
+  // Verify Robloxian Town scene preserves environment and actors
+  const parsedTown = parseProjectJson(serializeProject(ROBLOXIAN_TOWN_PROJECT));
+  assert.equal(parsedTown.environment, 'robloxianTown');
+  assert.equal(parsedTown.actors.length, 3);
+
+  // Verify new bedroom & town standalone PropKinds survive sanitization
+  const withNewProps = {
+    ...parsedBedroom,
+    actors: [
+      ...parsedBedroom.actors,
+      {
+        id: 'prop-bed-extra',
+        name: 'Gamer Bed 1',
+        kind: 'prop' as const,
+        propKind: 'gamerBed' as const,
+        primaryColor: '#1d4ed8',
+        accentColor: '#38bdf8',
+        keyframes: [
+          {
+            id: 'pb-0',
+            time: 0,
+            position: [0, 0, 0] as [number, number, number],
+            rotation: [0, 0, 0] as [number, number, number],
+            scale: [1, 1, 1] as [number, number, number],
+            clip: 'idle' as const,
+            clipSpeed: 1,
+            easing: 'linear' as const,
+          },
+        ],
+      },
+      {
+        id: 'prop-house-extra',
+        name: 'Town House 1',
+        kind: 'prop' as const,
+        propKind: 'suburbanHouse' as const,
+        primaryColor: '#e2e8f0',
+        accentColor: '#b91c1c',
+        keyframes: [
+          {
+            id: 'ph-0',
+            time: 0,
+            position: [4, 0, 0] as [number, number, number],
+            rotation: [0, 0, 0] as [number, number, number],
+            scale: [1, 1, 1] as [number, number, number],
+            clip: 'idle' as const,
+            clipSpeed: 1,
+            easing: 'linear' as const,
+          },
+        ],
+      },
+    ],
+  };
+  const parsedWithProps = parseProjectJson(serializeProject(withNewProps));
+  assert.equal(
+    parsedWithProps.actors.find((a) => a.id === 'prop-bed-extra')?.propKind,
+    'gamerBed',
+  );
+  assert.equal(
+    parsedWithProps.actors.find((a) => a.id === 'prop-house-extra')?.propKind,
+    'suburbanHouse',
+  );
+});
+
+
+
 
 

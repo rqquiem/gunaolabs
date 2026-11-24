@@ -5,10 +5,13 @@ import {
   createStudBrickMaterial,
   StudTexturePair,
 } from './robloxTextures';
+import { buildItemModelGroup } from './robloxItems';
 import {
   EvaluatedFaceState,
+  EvaluatedHeldItems,
   EvaluatedPose,
   FaceRigConfig,
+  HandSlot,
   OrnamentSlot,
   R6_BODY_PARTS,
   R6BodyColors,
@@ -27,6 +30,7 @@ export interface RobloxR6CharacterRig {
   torsoPivot: THREE.Group;
   pivots: Record<R6BodyPartId, THREE.Group>;
   sockets: Record<OrnamentSlot, THREE.Group>;
+  handSockets: Record<HandSlot, THREE.Group>;
   faceRig: Roblox3DFaceRig;
   selectionRing: THREE.Mesh;
   applyPose: (pose: EvaluatedPose) => void;
@@ -38,6 +42,7 @@ export interface RobloxR6CharacterRig {
   applySecondaryMotion: (sec: SecondaryMotionState) => void;
   setBodyColors: (colors: R6BodyColors) => void;
   setOrnaments: (ornaments: R6Ornaments) => void;
+  setHeldItems: (heldItems: EvaluatedHeldItems) => void;
   setFaceConfig: (config: FaceRigConfig) => void;
 }
 
@@ -259,6 +264,28 @@ export function buildRobloxR6CharacterRig(
   armSocket.position.set(0, -1.78 * R6_STUD, 0.35 * R6_STUD);
   rightArmPivot.add(armSocket);
 
+  // Dual-hand held item sockets (separate from wearable armor/ornaments)
+  const rightHandSocket = new THREE.Group();
+  rightHandSocket.position.set(0, -1.76 * R6_STUD, 0.36 * R6_STUD);
+  rightArmPivot.add(rightHandSocket);
+  const rightGripPivot = new THREE.Group();
+  rightHandSocket.add(rightGripPivot);
+
+  const leftHandSocket = new THREE.Group();
+  leftHandSocket.position.set(0, -1.76 * R6_STUD, 0.36 * R6_STUD);
+  leftArmPivot.add(leftHandSocket);
+  const leftGripPivot = new THREE.Group();
+  leftHandSocket.add(leftGripPivot);
+
+  const handSockets: Record<HandSlot, THREE.Group> = {
+    right: rightHandSocket,
+    left: leftHandSocket,
+  };
+  const handGripPivots: Record<HandSlot, THREE.Group> = {
+    right: rightGripPivot,
+    left: leftGripPivot,
+  };
+
   const backSocket = new THREE.Group();
   backSocket.position.set(0, 0.1 * R6_STUD, -0.52 * R6_STUD);
   torsoPivot.add(backSocket);
@@ -282,6 +309,8 @@ export function buildRobloxR6CharacterRig(
   };
 
   let currentOrnamentsJson = '';
+  let currentHandSignatures: Record<HandSlot, string> = { right: '', left: '' };
+  let rightHandHasActiveItem = false;
   let capeDrapePivot: THREE.Group | null = null;
   let leftWingPivot: THREE.Group | null = null;
   let rightWingPivot: THREE.Group | null = null;
@@ -301,6 +330,12 @@ export function buildRobloxR6CharacterRig(
     buildHeadOrnament(headSocket, ornaments.head.id, ornaments.head.color);
     buildHatOrnament(hatSocket, ornaments.hat.id, ornaments.hat.color);
     buildArmOrnament(armSocket, ornaments.arm.id, ornaments.arm.color);
+    // Avoid overlapping legacy held arm ornaments when rightHandSocket has a held item
+    const isLegacyHeldOrnament =
+      ornaments.arm.id === 'sword' ||
+      ornaments.arm.id === 'bloxyCola' ||
+      ornaments.arm.id === 'shield';
+    armSocket.visible = !(rightHandHasActiveItem && isLegacyHeldOrnament);
     const backHandles = buildBackOrnament(
       backSocket,
       ornaments.back.id,
@@ -319,6 +354,67 @@ export function buildRobloxR6CharacterRig(
   };
 
   rebuildOrnaments(initialOrnaments);
+
+  const applyHeldHand = (
+    hand: HandSlot,
+    state: EvaluatedHeldItems['right'],
+  ) => {
+    const gripPivot = handGripPivots[hand];
+    const sig =
+      state.itemId === 'none'
+        ? 'none'
+        : `${state.itemId}|${state.primaryColor}|${state.accentColor}`;
+
+    if (sig !== currentHandSignatures[hand]) {
+      currentHandSignatures[hand] = sig;
+      disposeGroupContents(gripPivot);
+      if (state.itemId !== 'none') {
+        const itemMesh = buildItemModelGroup(
+          state.itemId,
+          state.primaryColor,
+          state.accentColor,
+          studTextures,
+        );
+        gripPivot.add(itemMesh);
+      }
+    }
+
+    const visible = state.itemId !== 'none' && state.visibilityScale > 0.005;
+    gripPivot.visible = visible;
+    if (visible) {
+      gripPivot.position.set(
+        state.positionOffset[0],
+        state.positionOffset[1],
+        state.positionOffset[2],
+      );
+      gripPivot.rotation.set(
+        (state.rotationDeg[0] * Math.PI) / 180,
+        (state.rotationDeg[1] * Math.PI) / 180,
+        (state.rotationDeg[2] * Math.PI) / 180,
+      );
+      const effScale = Math.max(0.01, state.scale * state.visibilityScale);
+      gripPivot.scale.setScalar(effScale);
+    }
+  };
+
+  const setHeldItems = (heldItems: EvaluatedHeldItems) => {
+    applyHeldHand('right', heldItems.right);
+    applyHeldHand('left', heldItems.left);
+    rightHandHasActiveItem = heldItems.right.itemId !== 'none';
+    const isLegacyHeldOrnament =
+      initialOrnaments.arm.id === 'sword' ||
+      initialOrnaments.arm.id === 'bloxyCola' ||
+      initialOrnaments.arm.id === 'shield';
+    if (currentOrnamentsJson) {
+      const parsed = JSON.parse(currentOrnamentsJson) as { arm?: { id: string } };
+      const armId = parsed.arm?.id;
+      const legacy =
+        armId === 'sword' || armId === 'bloxyCola' || armId === 'shield';
+      armSocket.visible = !(rightHandHasActiveItem && legacy);
+    } else {
+      armSocket.visible = !(rightHandHasActiveItem && isLegacyHeldOrnament);
+    }
+  };
 
   let baseHeadRot: [number, number, number] = [0, 0, 0];
 
@@ -365,8 +461,10 @@ export function buildRobloxR6CharacterRig(
     }
     // Hat / hair subtle inertia lag
     hatSocket.rotation.set(sec.hatLagX, 0, sec.hatLagZ);
-    // Held prop follow-through
+    // Held prop follow-through (both hands + legacy arm socket)
     armSocket.rotation.x = sec.propSwing;
+    rightHandSocket.rotation.x = sec.propSwing;
+    leftHandSocket.rotation.x = -sec.propSwing * 0.7;
   };
 
   const setBodyColors = (colors: R6BodyColors) => {
@@ -382,6 +480,7 @@ export function buildRobloxR6CharacterRig(
     torsoPivot,
     pivots,
     sockets,
+    handSockets,
     faceRig,
     selectionRing,
     applyPose,
@@ -390,6 +489,7 @@ export function buildRobloxR6CharacterRig(
     applySecondaryMotion,
     setBodyColors,
     setOrnaments: rebuildOrnaments,
+    setHeldItems,
     setFaceConfig: (config) => faceRig.setConfig(config),
   };
 }

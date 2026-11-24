@@ -1,4 +1,10 @@
 import {
+  cloneCharacterHeldItems,
+  createDefaultHandStateForItem,
+  createEmptyHandState,
+} from './itemCatalog';
+import {
+  CharacterHeldItems,
   FaceRigConfig,
   OrnamentSlot,
   R6BodyColors,
@@ -86,6 +92,7 @@ export interface AvatarBundlePreset {
   bodyColors: R6BodyColors;
   ornaments: R6Ornaments;
   faceConfig: FaceRigConfig;
+  defaultHeldItems: CharacterHeldItems;
 }
 
 export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
@@ -104,7 +111,7 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       head: { id: 'none', color: '#1b2a35' },
       hat: { id: 'none', color: '#c4281c' },
       face: { id: 'smile', color: '#111827' },
-      arm: { id: 'bloxyCola', color: '#c4281c' },
+      arm: { id: 'none', color: '#c4281c' },
       back: { id: 'none', color: '#a3a2a5' },
       legs: { id: 'none', color: '#635f62' },
     },
@@ -120,6 +127,10 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       autoBlink: true,
       autoLipSync: true,
       gazeTarget: 'camera',
+    },
+    defaultHeldItems: {
+      right: createDefaultHandStateForItem('bloxyCola', 'right'),
+      left: createEmptyHandState(),
     },
   },
   {
@@ -137,7 +148,7 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       head: { id: 'none', color: '#1b2a35' },
       hat: { id: 'valkyrie', color: '#f5cd30' },
       face: { id: 'determined', color: '#111827' },
-      arm: { id: 'sword', color: '#a3a2a5' },
+      arm: { id: 'none', color: '#a3a2a5' },
       back: { id: 'cape', color: '#c4281c' },
       legs: { id: 'kneepads', color: '#a3a2a5' },
     },
@@ -153,6 +164,10 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       autoBlink: true,
       autoLipSync: true,
       gazeTarget: 'camera',
+    },
+    defaultHeldItems: {
+      right: createDefaultHandStateForItem('linkedSword', 'right'),
+      left: createDefaultHandStateForItem('heaterShield', 'left'),
     },
   },
   {
@@ -187,6 +202,10 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       autoLipSync: true,
       gazeTarget: 'camera',
     },
+    defaultHeldItems: {
+      right: createDefaultHandStateForItem('holoScanner', 'right'),
+      left: createDefaultHandStateForItem('glowLantern', 'left'),
+    },
   },
   {
     id: 'guest',
@@ -220,6 +239,10 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       autoLipSync: true,
       gazeTarget: 'camera',
     },
+    defaultHeldItems: {
+      right: createEmptyHandState(),
+      left: createDefaultHandStateForItem('pizzaSlice', 'left'),
+    },
   },
   {
     id: 'bloxxer',
@@ -236,7 +259,7 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       head: { id: 'visor', color: '#00a2ff' },
       hat: { id: 'tophat', color: '#1b2a35' },
       face: { id: 'visorEyes', color: '#00a2ff' },
-      arm: { id: 'shield', color: '#0d69ac' },
+      arm: { id: 'none', color: '#0d69ac' },
       back: { id: 'katana', color: '#1b2a35' },
       legs: { id: 'thrusters', color: '#da8541' },
     },
@@ -253,6 +276,10 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       autoLipSync: true,
       gazeTarget: 'camera',
     },
+    defaultHeldItems: {
+      right: createDefaultHandStateForItem('laserBlaster', 'right'),
+      left: createDefaultHandStateForItem('energyBlade', 'left'),
+    },
   },
 ];
 
@@ -260,6 +287,7 @@ export function cloneBundle(bundleId: string): {
   bodyColors: R6BodyColors;
   ornaments: R6Ornaments;
   faceConfig: FaceRigConfig;
+  heldItems: CharacterHeldItems;
 } {
   const found =
     ROBLOX_AVATAR_BUNDLES.find((b) => b.id === bundleId) ??
@@ -275,5 +303,6 @@ export function cloneBundle(bundleId: string): {
       legs: { ...found.ornaments.legs },
     },
     faceConfig: { ...found.faceConfig },
+    heldItems: cloneCharacterHeldItems(found.defaultHeldItems),
   };
 }

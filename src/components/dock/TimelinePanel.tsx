@@ -9,7 +9,9 @@ import {
   Video,
   Move3d,
   Smile,
+  Swords,
 } from 'lucide-react';
+import { formatHeldItemsSummary } from '../../engine/itemCatalog';
 import { clamp, formatTimecode } from '../../engine/timeline';
 import {
   AnimationProject,
@@ -17,13 +19,15 @@ import {
   EASING_OPTIONS,
   EasingType,
   EXPRESSION_PRESET_LABELS,
+  ItemEasingMode,
 } from '../../engine/types';
 
 type SelectedKeyRef =
   | { kind: 'camera'; keyframeId: string }
   | { kind: 'lighting'; keyframeId: string }
   | { kind: 'actor'; actorId: string; keyframeId: string }
-  | { kind: 'face'; actorId: string; keyframeId: string };
+  | { kind: 'face'; actorId: string; keyframeId: string }
+  | { kind: 'item'; actorId: string; keyframeId: string };
 
 interface TimelinePanelProps {
   project: AnimationProject;
@@ -40,15 +44,23 @@ interface TimelinePanelProps {
   onSelectActor: (actorId: string) => void;
   onKeyActorAtCurrentTime: () => void;
   onKeyFaceAtCurrentTime: () => void;
+  onKeyItemAtCurrentTime: () => void;
   onKeyCameraAtCurrentTime: () => void;
   onKeyLightingAtCurrentTime: () => void;
   onMoveActorKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveFaceKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
+  onMoveItemKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveCameraKeyframe: (keyframeId: string, newTime: number) => void;
   onMoveLightingKeyframe: (keyframeId: string, newTime: number) => void;
   onUpdateKeyframeEasing: (ref: SelectedKeyRef, easing: EasingType) => void;
+  onUpdateItemKeyframeCurve: (
+    actorId: string,
+    keyframeId: string,
+    easing: ItemEasingMode,
+  ) => void;
   onDeleteActorKeyframe: (actorId: string, keyframeId: string) => void;
   onDeleteFaceKeyframe: (actorId: string, keyframeId: string) => void;
+  onDeleteItemKeyframe: (actorId: string, keyframeId: string) => void;
   onDeleteCameraKeyframe: (keyframeId: string) => void;
   onDeleteLightingKeyframe: (keyframeId: string) => void;
 }
@@ -68,15 +80,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onSelectActor,
   onKeyActorAtCurrentTime,
   onKeyFaceAtCurrentTime,
+  onKeyItemAtCurrentTime,
   onKeyCameraAtCurrentTime,
   onKeyLightingAtCurrentTime,
   onMoveActorKeyframe,
   onMoveFaceKeyframe,
+  onMoveItemKeyframe,
   onMoveCameraKeyframe,
   onMoveLightingKeyframe,
   onUpdateKeyframeEasing,
+  onUpdateItemKeyframeCurve,
   onDeleteActorKeyframe,
   onDeleteFaceKeyframe,
+  onDeleteItemKeyframe,
   onDeleteCameraKeyframe,
   onDeleteLightingKeyframe,
 }) => {
@@ -107,7 +123,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     if (!trackEl) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     setSelectedKey(ref);
-    if (ref.kind === 'actor' || ref.kind === 'face') {
+    if (ref.kind === 'actor' || ref.kind === 'face' || ref.kind === 'item') {
       onSelectActor(ref.actorId);
     }
     dragStateRef.current = {
@@ -134,6 +150,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       onMoveActorKeyframe(state.ref.actorId, state.ref.keyframeId, snapped);
     } else if (state.ref.kind === 'face') {
       onMoveFaceKeyframe(state.ref.actorId, state.ref.keyframeId, snapped);
+    } else if (state.ref.kind === 'item') {
+      onMoveItemKeyframe(state.ref.actorId, state.ref.keyframeId, snapped);
     } else if (state.ref.kind === 'camera') {
       onMoveCameraKeyframe(state.ref.keyframeId, snapped);
     } else if (state.ref.kind === 'lighting') {
@@ -207,9 +225,29 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       return {
         label: `${actor.name} Face (${EXPRESSION_PRESET_LABELS[kf.preset]}) · ${formatTimecode(kf.time)}`,
         easing: kf.easing,
+        isItem: false as const,
         canDelete: true,
         onDelete: () => {
           onDeleteFaceKeyframe(actor.id, kf.id);
+          setSelectedKey(null);
+        },
+      };
+    }
+    if (selectedKey.kind === 'item') {
+      const actor = project.actors.find((a) => a.id === selectedKey.actorId);
+      const kf = actor?.heldItemKeyframes?.find(
+        (k) => k.id === selectedKey.keyframeId,
+      );
+      if (!actor || !kf) return null;
+      return {
+        label: `${actor.name} Items (${formatHeldItemsSummary({ right: kf.right, left: kf.left })}) · ${formatTimecode(kf.time)}`,
+        itemEasing: kf.easing,
+        actorId: actor.id,
+        keyframeId: kf.id,
+        isItem: true as const,
+        canDelete: true,
+        onDelete: () => {
+          onDeleteItemKeyframe(actor.id, kf.id);
           setSelectedKey(null);
         },
       };
@@ -221,8 +259,10 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     if (!selectedKey || selectedKey.kind !== ref.kind) return false;
     if (selectedKey.keyframeId !== ref.keyframeId) return false;
     if (
-      (ref.kind === 'actor' || ref.kind === 'face') &&
-      (selectedKey.kind === 'actor' || selectedKey.kind === 'face')
+      (ref.kind === 'actor' || ref.kind === 'face' || ref.kind === 'item') &&
+      (selectedKey.kind === 'actor' ||
+        selectedKey.kind === 'face' ||
+        selectedKey.kind === 'item')
     ) {
       return selectedKey.actorId === ref.actorId;
     }
@@ -345,6 +385,16 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
           <button
             type="button"
+            onClick={onKeyItemAtCurrentTime}
+            disabled={!selectedActor || selectedActor.kind !== 'character'}
+            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+          >
+            <Swords className="w-3.5 h-3.5 text-cyan-400" aria-hidden="true" />
+            <span>Key Item</span>
+          </button>
+
+          <button
+            type="button"
             onClick={onKeyCameraAtCurrentTime}
             className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
           >
@@ -386,23 +436,41 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           </span>
         ) : resolvedSelectedKey && selectedKey ? (
           <div className="flex items-center gap-2 text-xs shrink-0">
-            <span className="text-slate-300 font-mono-tabular truncate max-w-[200px]">
+            <span className="text-slate-300 font-mono-tabular truncate max-w-[240px]">
               {resolvedSelectedKey.label}
             </span>
-            <select
-              aria-label="Selected Keyframe Easing"
-              value={resolvedSelectedKey.easing}
-              onChange={(e) =>
-                onUpdateKeyframeEasing(selectedKey, e.target.value as EasingType)
-              }
-              className="px-1.5 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
-            >
-              {EASING_OPTIONS.map((opt) => (
-                <option key={opt.id} value={opt.id}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+            {resolvedSelectedKey.isItem ? (
+              <select
+                aria-label="Selected Item Keyframe Transition"
+                value={resolvedSelectedKey.itemEasing}
+                onChange={(e) =>
+                  onUpdateItemKeyframeCurve(
+                    resolvedSelectedKey.actorId,
+                    resolvedSelectedKey.keyframeId,
+                    e.target.value as ItemEasingMode,
+                  )
+                }
+                className="px-1.5 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+              >
+                <option value="equipPop">Equip Pop</option>
+                <option value="step">Instant Cut</option>
+              </select>
+            ) : (
+              <select
+                aria-label="Selected Keyframe Easing"
+                value={resolvedSelectedKey.easing}
+                onChange={(e) =>
+                  onUpdateKeyframeEasing(selectedKey, e.target.value as EasingType)
+                }
+                className="px-1.5 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+              >
+                {EASING_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            )}
             {resolvedSelectedKey.canDelete && (
               <button
                 type="button"
@@ -617,6 +685,56 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                             sel
                               ? 'bg-white ring-2 ring-emerald-400'
                               : 'bg-emerald-400 hover:bg-emerald-200'
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Dedicated Held Items & Gear Track */}
+              {actor.kind === 'character' && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSelectActor(actor.id)}
+                    className="text-left text-[11px] text-cyan-400/90 hover:text-cyan-300 w-24 truncate shrink-0 pl-2"
+                  >
+                    Items & Hands
+                  </button>
+                  <div className="relative flex-1 h-5 rounded bg-[#14161a]/80 border border-[#393d47]/80">
+                    <div
+                      className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                      style={{ left: `${pct}%` }}
+                    />
+
+                    {(actor.heldItemKeyframes ?? []).map((kf) => {
+                      const left = (kf.time / project.duration) * 100;
+                      const ref: SelectedKeyRef = {
+                        kind: 'item',
+                        actorId: actor.id,
+                        keyframeId: kf.id,
+                      };
+                      const sel = isKeySelected(ref);
+                      const summary = formatHeldItemsSummary({
+                        right: kf.right,
+                        left: kf.left,
+                      });
+                      return (
+                        <button
+                          key={kf.id}
+                          type="button"
+                          onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                          onPointerMove={handleKeyPointerMove}
+                          onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                          title={`Drag or click · ${actor.name} Items (${summary}, ${kf.easing}) at ${formatTimecode(kf.time)}`}
+                          aria-label={`${actor.name} item keyframe at ${formatTimecode(kf.time)}`}
+                          style={{ left: `${left}%` }}
+                          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                            sel
+                              ? 'bg-white ring-2 ring-cyan-400'
+                              : 'bg-cyan-400 hover:bg-cyan-200'
                           }`}
                         />
                       );

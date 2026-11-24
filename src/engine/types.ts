@@ -1,4 +1,13 @@
-export type EnvironmentId = 'crossroads' | 'town';
+export type BuiltInMapId =
+  | 'crossroads'
+  | 'town'
+  | 'robloxianTown'
+  | 'cozyBedroom'
+  | 'skyObby'
+  | 'lunarOutpost'
+  | 'dojoCourtyard';
+
+export type EnvironmentId = BuiltInMapId | 'custom';
 
 export type LightingMood = 'noon' | 'sunset' | 'midnight' | 'overcast';
 
@@ -57,7 +66,83 @@ export type R6Ornaments = Record<OrnamentSlot, OrnamentSelection>;
 
 export type R6BodyColors = Record<R6BodyPartId, string>;
 
-export type PropKind = 'spawnpad' | 'crate' | 'tree' | 'speeder';
+export type PropKind =
+  | 'spawnpad'
+  | 'crate'
+  | 'tree'
+  | 'speeder'
+  | 'chest'
+  | 'barrel'
+  | 'flag'
+  | 'bench'
+  | 'targetDummy'
+  | 'campfire'
+  | 'pedestal'
+  | 'lanternPost'
+  | 'gamerBed'
+  | 'pcDesk'
+  | 'areaRug'
+  | 'bookshelf'
+  | 'suburbanHouse'
+  | 'picketFence'
+  | 'streetLamp'
+  | 'mailbox'
+  | 'heldItem';
+
+export type PropCategory = 'bedroom' | 'town' | 'furniture' | 'battle' | 'classic';
+
+export type ItemCategory = 'gear' | 'scifiFantasy' | 'props';
+
+export type ItemId =
+  | 'linkedSword'
+  | 'laserBlaster'
+  | 'bloxyCola'
+  | 'pizzaSlice'
+  | 'speedCoil'
+  | 'gravityHammer'
+  | 'heaterShield'
+  | 'arcaneStaff'
+  | 'glowLantern'
+  | 'energyBlade'
+  | 'holoScanner'
+  | 'teamFlag';
+
+export type HandSlot = 'right' | 'left';
+export type HandTargetMode = 'right' | 'left' | 'dual';
+export type GripPreset = 'standard' | 'reverse' | 'forearm' | 'carry';
+export type ItemEasingMode = 'step' | 'equipPop';
+
+export interface HeldHandItemState {
+  itemId: ItemId | 'none';
+  primaryColor: string;
+  accentColor: string;
+  positionOffset: Vec3Tuple;
+  rotationDeg: Vec3Tuple;
+  scale: number;
+  gripPreset: GripPreset;
+}
+
+export interface CharacterHeldItems {
+  right: HeldHandItemState;
+  left: HeldHandItemState;
+}
+
+export interface HeldItemKeyframe {
+  id: string;
+  time: number;
+  easing: ItemEasingMode;
+  right: HeldHandItemState;
+  left: HeldHandItemState;
+}
+
+export interface EvaluatedHandItemState extends HeldHandItemState {
+  visibilityScale: number;
+}
+
+export interface EvaluatedHeldItems {
+  right: EvaluatedHandItemState;
+  left: EvaluatedHandItemState;
+}
 
 export type ActorKind = 'character' | 'prop';
 
@@ -271,10 +356,13 @@ export interface SceneActorConfig {
   ornaments?: R6Ornaments;
   faceConfig?: FaceRigConfig;
   faceKeyframes?: FaceKeyframe[];
+  heldItems?: CharacterHeldItems;
+  heldItemKeyframes?: HeldItemKeyframe[];
   lookAtTarget?: 'none' | 'camera' | string;
   lookAtWeight?: number;
   secondaryMotion?: boolean;
   propKind?: PropKind;
+  propItemId?: ItemId;
   primaryColor: string;
   accentColor: string;
   keyframes: ActorKeyframe[];
@@ -341,6 +429,8 @@ export interface AnimationProject {
   fps: number;
   loop: boolean;
   environment: EnvironmentId;
+  mapId?: string;
+  customMap?: MapDefinition;
   lightingMood: LightingMood;
   keyIntensity: number;
   rimIntensity: number;
@@ -382,6 +472,7 @@ export interface EvaluatedActorState {
   upperBodyWeight: number;
   pose: EvaluatedPose;
   face: EvaluatedFaceState;
+  heldItems?: EvaluatedHeldItems;
   secondaryMotion: SecondaryMotionState;
 }
 
@@ -484,4 +575,140 @@ export interface PosePreset {
   hipTilt: Vec3Tuple;
   expression?: PoseExpressionBundle;
 }
+
+// =========================================================================
+// Map, Modular Map Builder & Scene Library Framework Types
+// =========================================================================
+
+export type MapCategory = 'arena' | 'town' | 'interior' | 'nature' | 'scifi' | 'custom';
+
+export const MAP_CATEGORIES: MapCategory[] = [
+  'arena',
+  'town',
+  'interior',
+  'nature',
+  'scifi',
+  'custom',
+];
+
+export const MAP_CATEGORY_LABELS: Record<MapCategory, string> = {
+  arena: 'Arena',
+  town: 'Town',
+  interior: 'Interior',
+  nature: 'Nature',
+  scifi: 'Sci-Fi',
+  custom: 'Custom',
+};
+
+export type MapPathStyle = 'none' | 'cross' | 'plaza' | 'runway' | 'street' | 'hardwood';
+
+export type MapPerimeterStyle =
+  | 'open'
+  | 'trees'
+  | 'rocks'
+  | 'neonRim'
+  | 'picketFence'
+  | 'bedroomCorner';
+
+export type MapModuleKind =
+  | 'tower'
+  | 'fortWall'
+  | 'archBridge'
+  | 'shopFront'
+  | 'treeGrove'
+  | 'spawnPad'
+  | 'crateCluster'
+  | 'rampStairs'
+  | 'waterPool'
+  | 'neonBeacon'
+  | 'rockOutcrop'
+  | 'pillarGate'
+  | 'gamerBed'
+  | 'pcDesk'
+  | 'areaRug'
+  | 'bookshelf'
+  | 'suburbanHouse'
+  | 'picketFence'
+  | 'streetLamp';
+
+export interface MapBaseplateConfig {
+  size: number;
+  groundColor: string;
+  trimColor: string;
+  pathStyle: MapPathStyle;
+  studDensity: number;
+  perimeter: MapPerimeterStyle;
+}
+
+export interface MapModuleInstance {
+  id: string;
+  kind: MapModuleKind;
+  label: string;
+  position: Vec3Tuple;
+  rotationYDeg: number;
+  scale: number;
+  primaryColor: string;
+  accentColor: string;
+}
+
+export interface MapLightingPreset {
+  mood: LightingMood;
+  sunAzimuth: number;
+  sunElevation: number;
+  keyIntensity: number;
+  rimIntensity: number;
+  ambientIntensity: number;
+  exposure: number;
+}
+
+export interface MapDefinition {
+  id: string;
+  name: string;
+  category: MapCategory;
+  builtIn: boolean;
+  builtInSourceId?: BuiltInMapId;
+  description: string;
+  recommendedLighting: MapLightingPreset;
+  baseplate: MapBaseplateConfig;
+  modules: MapModuleInstance[];
+  suggestedCamera?: {
+    position: Vec3Tuple;
+    target: Vec3Tuple;
+    fov: number;
+  };
+}
+
+export type SceneCategory =
+  | 'action'
+  | 'comedy'
+  | 'showcase'
+  | 'template'
+  | 'custom';
+
+export const SCENE_CATEGORIES: SceneCategory[] = [
+  'action',
+  'comedy',
+  'showcase',
+  'template',
+  'custom',
+];
+
+export const SCENE_CATEGORY_LABELS: Record<SceneCategory, string> = {
+  action: 'Action',
+  comedy: 'Comedy',
+  showcase: 'Showcase',
+  template: 'Template',
+  custom: 'Custom',
+};
+
+export interface SceneLibraryEntry {
+  id: string;
+  name: string;
+  category: SceneCategory;
+  builtIn: boolean;
+  description: string;
+  savedAt?: string;
+  project: AnimationProject;
+}
+
 

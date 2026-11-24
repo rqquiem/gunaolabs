@@ -26,8 +26,10 @@ export interface RobloxLightingSpec {
 
 export function getRobloxLightingSpec(
   mood: LightingMood,
-  _env: EnvironmentId,
+  env: EnvironmentId,
 ): RobloxLightingSpec {
+  const isBedroom = env === 'cozyBedroom';
+  const indoorFogScale = isBedroom ? 0.35 : 1;
   switch (mood) {
     case 'sunset':
       return {
@@ -38,14 +40,14 @@ export function getRobloxLightingSpec(
         cloudColor: '#ffe3c2',
         cloudShadow: '#e28f6e',
         sunColor: '#fff0b3',
-        fogColor: 0xe9a372,
-        fogDensity: 0.009,
+        fogColor: isBedroom ? 0x1e2235 : 0xe9a372,
+        fogDensity: 0.009 * indoorFogScale,
         keyColor: 0xffb76b,
         rimColor: 0x7dd3fc,
         hemiSky: 0xfdba74,
         hemiGround: 0x475569,
         exposure: 1.08,
-        isNight: false,
+        isNight: isBedroom,
       };
     case 'midnight':
       return {
@@ -57,7 +59,7 @@ export function getRobloxLightingSpec(
         cloudShadow: '#233154',
         sunColor: '#e2e8f0',
         fogColor: 0x162244,
-        fogDensity: 0.012,
+        fogDensity: 0.012 * indoorFogScale,
         keyColor: 0x93c5fd,
         rimColor: 0x38bdf8,
         hemiSky: 0x3b82f6,
@@ -74,8 +76,8 @@ export function getRobloxLightingSpec(
         cloudColor: '#eef4fa',
         cloudShadow: '#a6b7c9',
         sunColor: '#f8fafc',
-        fogColor: 0xc2d0de,
-        fogDensity: 0.011,
+        fogColor: isBedroom ? 0x2a3142 : 0xc2d0de,
+        fogDensity: 0.011 * indoorFogScale,
         keyColor: 0xf1f5f9,
         rimColor: 0x93c5fd,
         hemiSky: 0xe2e8f0,
@@ -93,8 +95,8 @@ export function getRobloxLightingSpec(
         cloudColor: '#ffffff',
         cloudShadow: '#cfe7fa',
         sunColor: '#fffbeb',
-        fogColor: 0xa8dcff,
-        fogDensity: 0.007,
+        fogColor: isBedroom ? 0x242c3d : 0xa8dcff,
+        fogDensity: 0.007 * indoorFogScale,
         keyColor: 0xfff3d6,
         rimColor: 0x7dd3fc,
         hemiSky: 0xbae6fd,

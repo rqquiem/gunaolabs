@@ -1,15 +1,30 @@
 import { evaluateActorFaceAt } from './faceExpressions';
 import {
+  cloneCharacterHeldItems,
+  cloneHandItemState,
+  createEmptyCharacterHeldItems,
+  createEmptyHandState,
+  isValidItemId,
+  isValidPropKind,
+} from './itemCatalog';
+import { isBuiltInMapId, sanitizeMapDefinition } from './mapLibrary';
+import {
   ActorKeyframe,
   AnimationProject,
   CameraKeyframe,
+  CharacterHeldItems,
   EasingType,
+  EnvironmentId,
   EvaluatedActorState,
   EvaluatedCameraState,
   EvaluatedFrame,
+  EvaluatedHandItemState,
+  EvaluatedHeldItems,
   EvaluatedLightingState,
   EvaluatedPose,
   FaceKeyframe,
+  HeldHandItemState,
+  HeldItemKeyframe,
   LightingKeyframe,
   PoseClipId,
   R6_BODY_PARTS,
@@ -579,6 +594,65 @@ function evaluateSecondaryMotion(
   };
 }
 
+export function evaluateActorItemsAt(
+  actor: SceneActorConfig,
+  time: number,
+): EvaluatedHeldItems {
+  const baseline = actor.heldItems ?? createEmptyCharacterHeldItems();
+  const kfs = actor.heldItemKeyframes;
+
+  if (!kfs || kfs.length === 0) {
+    return {
+      right: { ...cloneHandItemState(baseline.right), visibilityScale: 1 },
+      left: { ...cloneHandItemState(baseline.left), visibilityScale: 1 },
+    };
+  }
+
+  const sorted = sortByTime(kfs);
+  let activeIdx = 0;
+  if (time > sorted[0].time) {
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].time <= time + 0.0001) {
+        activeIdx = i;
+      } else {
+        break;
+      }
+    }
+  }
+
+  const activeKf = sorted[activeIdx];
+  const prevKf = activeIdx > 0 ? sorted[activeIdx - 1] : null;
+  const elapsedSinceKey = Math.max(0, time - activeKf.time);
+  const popWindow = 0.22;
+
+  const evalHand = (
+    hand: 'right' | 'left',
+    cur: HeldHandItemState,
+    prev: HeldHandItemState | null,
+  ): EvaluatedHandItemState => {
+    const cloned = cloneHandItemState(cur);
+    let visibilityScale = 1;
+    if (
+      activeKf.easing === 'equipPop' &&
+      cur.itemId !== 'none' &&
+      elapsedSinceKey < popWindow &&
+      (!prev || prev.itemId !== cur.itemId)
+    ) {
+      const u = clamp(elapsedSinceKey / popWindow, 0, 1);
+      visibilityScale = 0.2 + 0.8 * applyEasing(u, 'easeOutBack');
+    }
+    return {
+      ...cloned,
+      visibilityScale: clamp(visibilityScale, 0.05, 1.35),
+    };
+  };
+
+  return {
+    right: evalHand('right', activeKf.right, prevKf?.right ?? null),
+    left: evalHand('left', activeKf.left, prevKf?.left ?? null),
+  };
+}
+
 export function evaluateActorAt(
   actor: SceneActorConfig,
   time: number,
@@ -586,6 +660,8 @@ export function evaluateActorAt(
 ): EvaluatedActorState {
   const sorted = sortByTime(actor.keyframes);
   const face = evaluateActorFaceAt(actor, time, subtitles, applyEasing);
+  const heldItems =
+    actor.kind === 'character' ? evaluateActorItemsAt(actor, time) : undefined;
 
   if (sorted.length === 0) {
     return {
@@ -598,6 +674,7 @@ export function evaluateActorAt(
       upperBodyWeight: 0,
       pose: evaluateProceduralClipPose('idle', time, 1),
       face,
+      heldItems,
       secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, 'idle', 'none'),
     };
   }
@@ -632,6 +709,7 @@ export function evaluateActorAt(
       upperBodyWeight: first.upperBodyWeight ?? (upper !== 'none' ? 0.85 : 0),
       pose: evalKeyframePose(first),
       face,
+      heldItems,
       secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, first.clip, upper),
     };
   }
@@ -649,6 +727,7 @@ export function evaluateActorAt(
       upperBodyWeight: last.upperBodyWeight ?? (upper !== 'none' ? 0.85 : 0),
       pose: evalKeyframePose(last),
       face,
+      heldItems,
       secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, last.clip, upper),
     };
   }
@@ -708,6 +787,7 @@ export function evaluateActorAt(
     upperBodyWeight: clamp(activeUpperW, 0, 1),
     pose,
     face,
+    heldItems,
     secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, activeClip, activeUpper),
   };
 }
@@ -1116,6 +1196,89 @@ export function deleteFaceKeyframe(
   };
 }
 
+export function upsertItemKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframe: HeldItemKeyframe,
+): AnimationProject {
+  const snapTime = Math.round(keyframe.time * 100) / 100;
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.heldItemKeyframes ?? [];
+      const existingIdx = current.findIndex(
+        (kf) => kf.id === keyframe.id || Math.abs(kf.time - snapTime) < 0.04,
+      );
+      const nextKfs = [...current];
+      const normalized: HeldItemKeyframe = {
+        ...keyframe,
+        time: snapTime,
+        right: cloneHandItemState(keyframe.right),
+        left: cloneHandItemState(keyframe.left),
+      };
+      if (existingIdx >= 0) {
+        nextKfs[existingIdx] = {
+          ...nextKfs[existingIdx],
+          ...normalized,
+          id: nextKfs[existingIdx].id,
+        };
+      } else {
+        nextKfs.push(normalized);
+      }
+      nextKfs.sort((a, b) => a.time - b.time);
+      return {
+        ...actor,
+        heldItems: nextKfs[0]
+          ? {
+              right: cloneHandItemState(nextKfs[0].right),
+              left: cloneHandItemState(nextKfs[0].left),
+            }
+          : actor.heldItems,
+        heldItemKeyframes: nextKfs,
+      };
+    }),
+  };
+}
+
+export function moveItemKeyframeTime(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.heldItemKeyframes ?? [];
+      const nextKfs = current
+        .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+        .sort((a, b) => a.time - b.time);
+      return { ...actor, heldItemKeyframes: nextKfs };
+    }),
+  };
+}
+
+export function deleteItemKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+): AnimationProject {
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.heldItemKeyframes ?? [];
+      return {
+        ...actor,
+        heldItemKeyframes: current.filter((kf) => kf.id !== keyframeId),
+      };
+    }),
+  };
+}
+
 export function upsertCameraKeyframe(
   project: AnimationProject,
   keyframe: CameraKeyframe,
@@ -1274,6 +1437,77 @@ export function serializeProject(project: AnimationProject): string {
   return JSON.stringify(project, null, 2);
 }
 
+function sanitizeHandItemState(raw: unknown): HeldHandItemState {
+  if (!raw || typeof raw !== 'object') {
+    return createEmptyHandState();
+  }
+  const obj = raw as Partial<HeldHandItemState>;
+  const itemId = obj.itemId === 'none' || isValidItemId(obj.itemId) ? obj.itemId : 'none';
+  const gripPreset =
+    obj.gripPreset === 'reverse' ||
+    obj.gripPreset === 'forearm' ||
+    obj.gripPreset === 'carry'
+      ? obj.gripPreset
+      : 'standard';
+  const toVec3 = (v: unknown): Vec3Tuple =>
+    Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number')
+      ? [v[0], v[1], v[2]]
+      : [0, 0, 0];
+
+  return {
+    itemId,
+    primaryColor: typeof obj.primaryColor === 'string' ? obj.primaryColor : '#cbd5e1',
+    accentColor: typeof obj.accentColor === 'string' ? obj.accentColor : '#635f62',
+    positionOffset: toVec3(obj.positionOffset),
+    rotationDeg: toVec3(obj.rotationDeg),
+    scale: typeof obj.scale === 'number' ? clamp(obj.scale, 0.2, 3) : 1,
+    gripPreset,
+  };
+}
+
+function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
+  const propKind =
+    actor.kind === 'prop'
+      ? isValidPropKind(actor.propKind)
+        ? actor.propKind
+        : 'crate'
+      : actor.propKind;
+  const propItemId =
+    actor.kind === 'prop' && propKind === 'heldItem'
+      ? isValidItemId(actor.propItemId)
+        ? actor.propItemId
+        : 'linkedSword'
+      : actor.propItemId;
+
+  const heldItems = actor.heldItems
+    ? cloneCharacterHeldItems({
+        right: sanitizeHandItemState(actor.heldItems.right),
+        left: sanitizeHandItemState(actor.heldItems.left),
+      })
+    : undefined;
+
+  const heldItemKeyframes = Array.isArray(actor.heldItemKeyframes)
+    ? actor.heldItemKeyframes
+        .filter((k) => k && typeof k.time === 'number')
+        .map((k, idx) => ({
+          id: typeof k.id === 'string' ? k.id : `ikf_${idx}`,
+          time: Math.max(0, k.time),
+          easing: k.easing === 'equipPop' ? ('equipPop' as const) : ('step' as const),
+          right: sanitizeHandItemState(k.right),
+          left: sanitizeHandItemState(k.left),
+        }))
+        .sort((a, b) => a.time - b.time)
+    : undefined;
+
+  return {
+    ...actor,
+    ...(propKind ? { propKind } : {}),
+    ...(propItemId ? { propItemId } : {}),
+    ...(heldItems ? { heldItems } : {}),
+    ...(heldItemKeyframes ? { heldItemKeyframes } : {}),
+  };
+}
+
 export function parseProjectJson(raw: string): AnimationProject {
   let parsed: unknown;
   try {
@@ -1296,7 +1530,15 @@ export function parseProjectJson(raw: string): AnimationProject {
     throw new Error('Project JSON is missing required fields (name, duration, actors, cameraTrack).');
   }
 
-  const env = obj.environment === 'town' ? 'town' : 'crossroads';
+  const customMap =
+    obj.customMap ? sanitizeMapDefinition(obj.customMap, true) ?? undefined : undefined;
+  let env: EnvironmentId = 'crossroads';
+  if (obj.environment === 'custom' && customMap) {
+    env = 'custom';
+  } else if (isBuiltInMapId(obj.environment)) {
+    env = obj.environment;
+  }
+
   const mood =
     obj.lightingMood === 'sunset' ||
     obj.lightingMood === 'midnight' ||
@@ -1311,6 +1553,8 @@ export function parseProjectJson(raw: string): AnimationProject {
     fps: typeof obj.fps === 'number' ? clamp(obj.fps, 12, 60) : 30,
     loop: typeof obj.loop === 'boolean' ? obj.loop : true,
     environment: env,
+    ...(typeof obj.mapId === 'string' ? { mapId: obj.mapId } : {}),
+    ...(customMap ? { customMap } : {}),
     lightingMood: mood,
     keyIntensity: typeof obj.keyIntensity === 'number' ? obj.keyIntensity : 2.3,
     rimIntensity: typeof obj.rimIntensity === 'number' ? obj.rimIntensity : 1.1,
@@ -1320,7 +1564,7 @@ export function parseProjectJson(raw: string): AnimationProject {
     exposure: typeof obj.exposure === 'number' ? obj.exposure : 1.06,
     lightingTrack: Array.isArray(obj.lightingTrack) ? obj.lightingTrack : [],
     stageLights: Array.isArray(obj.stageLights) ? obj.stageLights : [],
-    actors: obj.actors,
+    actors: obj.actors.map((a) => sanitizeActorConfig(a)),
     cameraTrack: obj.cameraTrack,
     subtitles: Array.isArray(obj.subtitles) ? obj.subtitles : [],
   };
