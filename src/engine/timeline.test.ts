@@ -41,6 +41,11 @@ import {
 import { CROSSROADS_SHOWDOWN_PROJECT } from './presets';
 import { cloneBundle, ORNAMENT_CATALOG } from './robloxCatalog';
 import { ORNAMENT_SLOTS, R6_BODY_PARTS } from './types';
+import {
+  getH264CodecCandidates,
+  pickMediaRecorderMp4MimeType,
+  resolveExportDimensions,
+} from './mp4Recorder';
 
 test('easing functions return exact boundary values and step behavior', () => {
   assert.equal(applyEasing(0, 'linear'), 0);
@@ -400,6 +405,41 @@ test('pose library JSON serialization roundtrip and validation', () => {
   assert.throws(() => parsePoseLibraryJson('{broken'), /Invalid JSON/);
   assert.throws(() => parsePoseLibraryJson('{"foo":1}'), /missing a valid "poses" array/);
   assert.throws(() => parsePoseLibraryJson('{"poses":[]}'), /No valid R6 pose/);
+});
+
+test('MP4 recorder dimension alignment, Constrained Baseline H.264 priority, and MP4-only MIME check', () => {
+  const fakeCanvas = { clientWidth: 1003, clientHeight: 571, width: 1003, height: 571 } as HTMLCanvasElement;
+  assert.deepEqual(resolveExportDimensions(fakeCanvas, '720p'), { width: 1280, height: 720 });
+  assert.deepEqual(resolveExportDimensions(fakeCanvas, '1080p'), { width: 1920, height: 1080 });
+  const nativeDims = resolveExportDimensions(fakeCanvas, 'native');
+  assert.equal(nativeDims.width % 16, 0);
+  assert.equal(nativeDims.height % 16, 0);
+
+  const hdCandidates = getH264CodecCandidates(1280, 720, 30, 8_000_000);
+  assert.ok(hdCandidates[0].startsWith('avc1.42e0'), `Expected Constrained Baseline first, got ${hdCandidates[0]}`);
+  const fhdCandidates = getH264CodecCandidates(1920, 1080, 60, 14_000_000);
+  assert.ok(fhdCandidates[0].startsWith('avc1.42e0'), `Expected Constrained Baseline first for 1080p60, got ${fhdCandidates[0]}`);
+
+  // In Node environment without MediaRecorder, returns null; with mock MediaRecorder, never selects WebM
+  assert.equal(pickMediaRecorderMp4MimeType(), null);
+  const prevMR = (globalThis as Record<string, unknown>).MediaRecorder;
+  try {
+    (globalThis as Record<string, unknown>).MediaRecorder = {
+      isTypeSupported: (mime: string) => mime.includes('webm'),
+    };
+    assert.equal(pickMediaRecorderMp4MimeType(), null);
+
+    (globalThis as Record<string, unknown>).MediaRecorder = {
+      isTypeSupported: (mime: string) => mime === 'video/mp4;codecs=avc1.42e01f',
+    };
+    assert.equal(pickMediaRecorderMp4MimeType(), 'video/mp4;codecs=avc1.42e01f');
+  } finally {
+    if (prevMR === undefined) {
+      delete (globalThis as Record<string, unknown>).MediaRecorder;
+    } else {
+      (globalThis as Record<string, unknown>).MediaRecorder = prevMR;
+    }
+  }
 });
 
 

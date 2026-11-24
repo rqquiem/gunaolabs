@@ -417,23 +417,29 @@ export type GizmoMode = 'translate' | 'rotate' | 'scale';
 
 export type DockTab = 'timeline' | 'scene' | 'character' | 'cutscene' | 'export';
 
-export type WebmResolution = '720p' | '1080p' | 'native';
+export type VideoResolution = '720p' | '1080p' | 'native';
 
-export interface WebmExportOptions {
-  resolution: WebmResolution;
+export type VideoEncoderBackend = 'webcodecs' | 'mediarecorder';
+
+export interface VideoExportOptions {
+  resolution: VideoResolution;
   fps: 24 | 30 | 60;
   bitrateMbps: 4 | 8 | 14;
   burnSubtitles: boolean;
   burnLetterbox: boolean;
 }
 
-export interface WebmRecordingState {
+export interface VideoRecordingState {
   status: 'idle' | 'recording' | 'processing' | 'ready' | 'error';
   progress: number;
   elapsedSec: number;
   durationSec: number;
+  currentFrame: number;
+  totalFrames: number;
+  encoderBackend: VideoEncoderBackend | null;
   blobUrl: string | null;
   mimeType: string | null;
+  fileExtension: 'mp4' | null;
   fileSizeBytes: number | null;
   error: string | null;
 }

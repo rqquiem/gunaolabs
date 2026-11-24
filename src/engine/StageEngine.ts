@@ -30,9 +30,14 @@ import {
   SceneActorConfig,
   StageLightConfig,
   Vec3Tuple,
-  WebmExportOptions,
+  VideoEncoderBackend,
+  VideoExportOptions,
 } from './types';
-import { WebmCutsceneRecorder, WebmRecordedResult } from './webmRecorder';
+import {
+  Mp4CutsceneRecorder,
+  resolveExportDimensions,
+  VideoRecordedResult,
+} from './mp4Recorder';
 
 export interface StageEngineCallbacks {
   onSelectActor: (actorId: string | null) => void;
@@ -131,13 +136,10 @@ export class StageEngine {
 
   private pointerDownPos = { x: 0, y: 0 };
   private isDraggingGizmo = false;
-  private webmRecorder: WebmCutsceneRecorder | null = null;
+  private mp4Recorder: Mp4CutsceneRecorder | null = null;
   private isRecordingExport = false;
-  private exportCallbacks: {
-    onProgress: (elapsed: number, duration: number) => void;
-    onComplete: (result: WebmRecordedResult) => void;
-    onError: (message: string) => void;
-  } | null = null;
+  private exportStopRequested = false;
+  private exportCancelRequested = false;
 
   private resizeObserver: ResizeObserver;
 
@@ -296,7 +298,7 @@ export class StageEngine {
   };
 
   private handleResize() {
-    if (this.disposed) return;
+    if (this.disposed || this.isRecordingExport) return;
     const width = Math.max(this.container.clientWidth, 320);
     const height = Math.max(this.container.clientHeight, 240);
     const aspect = width / height;
@@ -664,13 +666,19 @@ export class StageEngine {
   public selectActor(actorId: string | null) {
     this.selectedActorId = actorId;
     this.actors.forEach((managed, id) => {
-      const isSelected = id === actorId && this.cameraMode === 'orbit';
+      const isSelected =
+        id === actorId && this.cameraMode === 'orbit' && !this.isRecordingExport;
       if (managed.selectionRing) {
         managed.selectionRing.visible = isSelected;
       }
     });
 
-    if (actorId && this.cameraMode === 'orbit' && !this.isPlaying) {
+    if (
+      actorId &&
+      this.cameraMode === 'orbit' &&
+      !this.isPlaying &&
+      !this.isRecordingExport
+    ) {
       const target = this.actors.get(actorId);
       if (target) {
         this.transformControls.attach(target.group);
@@ -689,6 +697,7 @@ export class StageEngine {
   }
 
   public setCameraMode(mode: CameraMode) {
+    if (this.isRecordingExport) return;
     this.cameraMode = mode;
     this.orbitControls.enabled = mode === 'orbit';
     this.updateCameraRigVisibility();
@@ -780,6 +789,7 @@ export class StageEngine {
   }
 
   public setPlaying(playing: boolean) {
+    if (this.isRecordingExport) return;
     if (this.isPlaying === playing) return;
     this.isPlaying = playing;
 
@@ -1111,7 +1121,7 @@ export class StageEngine {
 
       let nextTime = this.currentTime + dt * this.playbackSpeed;
       if (nextTime >= this.project.duration) {
-        if (this.project.loop && !this.isRecordingExport) {
+        if (this.project.loop) {
           nextTime = nextTime % this.project.duration;
         } else {
           nextTime = this.project.duration;
@@ -1120,10 +1130,6 @@ export class StageEngine {
           this.currentTime = nextTime;
           this.evaluateAndApply(nextTime);
           this.renderCurrentCamera();
-          if (this.isRecordingExport && this.webmRecorder) {
-            this.compositeExportFrame();
-            this.stopWebmExport();
-          }
           this.callbacks.onPlaybackEnded();
           return;
         }
@@ -1135,9 +1141,6 @@ export class StageEngine {
         this.orbitControls.update();
       }
       this.renderCurrentCamera();
-      if (this.isRecordingExport && this.webmRecorder) {
-        this.compositeExportFrame();
-      }
 
       if (this.isSoftwareGl) {
         this.afterDraw(tick);
@@ -1192,91 +1195,181 @@ export class StageEngine {
     return this.renderer.domElement.toDataURL('image/png');
   }
 
-  public startWebmExport(
-    options: WebmExportOptions,
+  public startMp4Export(
+    options: VideoExportOptions,
     callbacks: {
-      onProgress: (elapsed: number, duration: number) => void;
-      onComplete: (result: WebmRecordedResult) => void;
+      onProgress: (info: {
+        elapsedSec: number;
+        durationSec: number;
+        currentFrame: number;
+        totalFrames: number;
+        encoderBackend: VideoEncoderBackend;
+      }) => void;
+      onFinalizing: (encoderBackend: VideoEncoderBackend) => void;
+      onComplete: (result: VideoRecordedResult) => void;
       onError: (message: string) => void;
     },
   ): boolean {
-    if (this.isRecordingExport) return false;
-    try {
-      this.isRecordingExport = true;
-      this.exportCallbacks = callbacks;
-      this.transformControls.detach();
-      this.updateCameraRigVisibility();
+    if (this.isRecordingExport || this.disposed) return false;
+    this.isRecordingExport = true;
+    this.exportStopRequested = false;
+    this.exportCancelRequested = false;
+    void this.runOfflineMp4Export(options, callbacks);
+    return true;
+  }
 
-      this.webmRecorder = new WebmCutsceneRecorder(
+  private async runOfflineMp4Export(
+    options: VideoExportOptions,
+    callbacks: {
+      onProgress: (info: {
+        elapsedSec: number;
+        durationSec: number;
+        currentFrame: number;
+        totalFrames: number;
+        encoderBackend: VideoEncoderBackend;
+      }) => void;
+      onFinalizing: (encoderBackend: VideoEncoderBackend) => void;
+      onComplete: (result: VideoRecordedResult) => void;
+      onError: (message: string) => void;
+    },
+  ) {
+    const prevCameraMode = this.cameraMode;
+    const prevSelectedActor = this.selectedActorId;
+    const prevTime = this.currentTime;
+    const prevPixelRatio = this.renderer.getPixelRatio();
+
+    // Pause live playback cleanly and switch to Director camera with helpers hidden
+    this.isPlaying = false;
+    this.isLoopActive = false;
+    cancelAnimationFrame(this.frameId);
+    clearTimeout(this.frameId);
+    this.poseOverride = null;
+    this.faceOverride = null;
+    this.cameraMode = 'director';
+    this.orbitControls.enabled = false;
+    this.transformControls.detach();
+    this.actors.forEach((m) => {
+      if (m.selectionRing) m.selectionRing.visible = false;
+    });
+    this.updateCameraRigVisibility();
+
+    let recorder: Mp4CutsceneRecorder | null = null;
+
+    try {
+      const targetDims = resolveExportDimensions(
+        this.renderer.domElement,
+        options.resolution,
+      );
+
+      // Render WebGL buffer directly at target resolution before initializing encoder
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(targetDims.width, targetDims.height, false);
+      this.directorCamera.aspect = targetDims.width / targetDims.height;
+      this.directorCamera.updateProjectionMatrix();
+
+      recorder = await Mp4CutsceneRecorder.create(
         this.renderer.domElement,
         options,
-        (result) => {
-          this.isRecordingExport = false;
-          this.webmRecorder = null;
-          this.updateCameraRigVisibility();
-          this.selectActor(this.selectedActorId);
-          this.exportCallbacks?.onComplete(result);
-        },
-        (err) => {
-          this.isRecordingExport = false;
-          this.webmRecorder = null;
-          this.updateCameraRigVisibility();
-          this.selectActor(this.selectedActorId);
-          this.exportCallbacks?.onError(err);
-        },
       );
+      this.mp4Recorder = recorder;
 
-      this.setPlaying(false);
-      this.currentTime = 0;
-      this.evaluateAndApply(0);
-      this.renderCurrentCamera();
-      this.webmRecorder.start();
-      this.compositeExportFrame();
-      this.setPlaying(true);
-      return true;
+      if (this.disposed || this.exportCancelRequested) {
+        await recorder.cancel();
+        return;
+      }
+
+      const fps = options.fps;
+      const duration = Math.max(0.1, this.project.duration);
+      const totalFrames = Math.max(2, Math.round(duration * fps));
+      const frameDurationSec = 1 / fps;
+      const keyIntervalFrames = fps * 2;
+      const gl = this.renderer.getContext();
+
+      for (let frameIdx = 0; frameIdx < totalFrames; frameIdx++) {
+        if (this.disposed || this.exportCancelRequested) {
+          break;
+        }
+        if (this.exportStopRequested && frameIdx >= 2) {
+          break;
+        }
+
+        const t = Math.min(duration, frameIdx * frameDurationSec);
+        this.currentTime = t;
+        this.evaluateAndApply(t);
+        this.renderer.render(this.scene, this.directorCamera);
+        gl.flush();
+
+        const sub = this.lastEvaluatedFrame?.subtitle ?? null;
+        await recorder.addFrame(
+          this.renderer.domElement,
+          sub ? { speaker: sub.speaker, text: sub.text } : null,
+          frameIdx * frameDurationSec,
+          frameDurationSec,
+          frameIdx % keyIntervalFrames === 0,
+        );
+
+        callbacks.onProgress({
+          elapsedSec: Math.min(duration, (frameIdx + 1) * frameDurationSec),
+          durationSec: duration,
+          currentFrame: frameIdx + 1,
+          totalFrames,
+          encoderBackend: recorder.backend,
+        });
+
+        // Yield to keep UI controls (Stop Early / Cancel) and progress bar responsive
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      }
+
+      if (this.disposed || this.exportCancelRequested) {
+        await recorder.cancel();
+        return;
+      }
+
+      callbacks.onFinalizing(recorder.backend);
+      const result = await recorder.finalize();
+      if (!this.disposed && !this.exportCancelRequested) {
+        callbacks.onComplete(result);
+      }
     } catch (err) {
+      if (recorder) {
+        await recorder.cancel().catch(() => undefined);
+      }
+      if (!this.disposed && !this.exportCancelRequested) {
+        callbacks.onError(
+          err instanceof Error ? err.message : 'Unable to export cutscene MP4.',
+        );
+      }
+    } finally {
+      this.mp4Recorder = null;
       this.isRecordingExport = false;
-      this.webmRecorder = null;
-      this.updateCameraRigVisibility();
-      callbacks.onError(
-        err instanceof Error ? err.message : 'Unable to start WebM recording.',
-      );
-      return false;
+      this.exportStopRequested = false;
+      this.exportCancelRequested = false;
+
+      if (!this.disposed) {
+        this.renderer.setPixelRatio(prevPixelRatio);
+        this.cameraMode = prevCameraMode;
+        this.orbitControls.enabled = prevCameraMode === 'orbit';
+        this.handleResize();
+        this.updateCameraRigVisibility();
+        this.currentTime = prevTime;
+        this.evaluateAndApply(prevTime);
+        this.selectActor(prevSelectedActor);
+        this.requestRender();
+      }
     }
   }
 
-  private compositeExportFrame() {
-    if (!this.webmRecorder) return;
-    const sub = this.lastEvaluatedFrame?.subtitle;
-    this.webmRecorder.compositeFrame(
-      this.renderer.domElement,
-      sub ? { speaker: sub.speaker, text: sub.text } : null,
-    );
-    this.exportCallbacks?.onProgress(this.currentTime, this.project.duration);
+  public stopMp4Export() {
+    if (!this.isRecordingExport) return;
+    this.exportStopRequested = true;
   }
 
-  public stopWebmExport() {
-    this.isRecordingExport = false;
-    this.setPlaying(false);
-    if (this.webmRecorder) {
-      const rec = this.webmRecorder;
-      this.webmRecorder = null;
-      rec.stop();
+  public cancelMp4Export() {
+    if (!this.isRecordingExport) return;
+    this.exportCancelRequested = true;
+    if (this.mp4Recorder) {
+      void this.mp4Recorder.cancel();
     }
-    this.updateCameraRigVisibility();
-  }
-
-  public cancelWebmExport() {
-    this.isRecordingExport = false;
-    this.setPlaying(false);
-    if (this.webmRecorder) {
-      const rec = this.webmRecorder;
-      this.webmRecorder = null;
-      rec.cancel();
-    }
-    this.updateCameraRigVisibility();
-    this.selectActor(this.selectedActorId);
-    this.requestRender();
   }
 
   private disposeObject3D(root: THREE.Object3D) {
@@ -1298,11 +1391,12 @@ export class StageEngine {
 
   public dispose() {
     this.disposed = true;
+    this.exportCancelRequested = true;
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
-    if (this.webmRecorder) {
-      this.webmRecorder.cancel();
-      this.webmRecorder = null;
+    if (this.mp4Recorder) {
+      void this.mp4Recorder.cancel();
+      this.mp4Recorder = null;
     }
     this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.handlePointerDown);

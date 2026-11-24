@@ -1,23 +1,23 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Camera, Film, Download, Upload, Square, X, Trash2 } from 'lucide-react';
 import { formatTimecode } from '../../engine/timeline';
 import {
   AnimationProject,
-  WebmExportOptions,
-  WebmRecordingState,
-  WebmResolution,
+  VideoExportOptions,
+  VideoRecordingState,
+  VideoResolution,
 } from '../../engine/types';
 
 interface ExportPanelProps {
   project: AnimationProject;
-  exportOptions: WebmExportOptions;
-  recordingState: WebmRecordingState;
-  onChangeExportOptions: (opts: WebmExportOptions) => void;
+  exportOptions: VideoExportOptions;
+  recordingState: VideoRecordingState;
+  onChangeExportOptions: (opts: VideoExportOptions) => void;
   onCapturePng: () => void;
-  onStartWebm: () => void;
-  onStopWebm: () => void;
-  onCancelWebm: () => void;
-  onDiscardWebm: () => void;
+  onStartExport: () => void;
+  onStopExport: () => void;
+  onCancelExport: () => void;
+  onDiscardExport: () => void;
   onExportJson: () => void;
   onImportJson: (raw: string) => string | null;
 }
@@ -28,24 +28,38 @@ function formatBytes(bytes: number | null): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatBackendLabel(backend: VideoRecordingState['encoderBackend']): string {
+  if (backend === 'webcodecs') return 'WebCodecs H.264';
+  if (backend === 'mediarecorder') return 'MediaRecorder MP4';
+  return 'H.264 MP4';
+}
+
 export const ExportPanel: React.FC<ExportPanelProps> = ({
   project,
   exportOptions,
   recordingState,
   onChangeExportOptions,
   onCapturePng,
-  onStartWebm,
-  onStopWebm,
-  onCancelWebm,
-  onDiscardWebm,
+  onStartExport,
+  onStopExport,
+  onCancelExport,
+  onDiscardExport,
   onExportJson,
   onImportJson,
 }) => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [statusNote, setStatusNote] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
-  const isRecording = recordingState.status === 'recording';
+  useEffect(() => {
+    setVideoError(null);
+  }, [recordingState.blobUrl]);
+
+  const isExporting =
+    recordingState.status === 'recording' ||
+    recordingState.status === 'processing';
+  const isFinalizing = recordingState.status === 'processing';
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -70,10 +84,10 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
       <div className="space-y-2.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-slate-400">
-            WebM Cutscene Recorder
+            MP4 Cutscene Recorder
           </span>
           <span className="text-[11px] font-mono-tabular text-slate-500">
-            {exportOptions.resolution} · {exportOptions.fps}fps · {exportOptions.bitrateMbps} Mbps
+            {exportOptions.resolution} · {exportOptions.fps}fps · {exportOptions.bitrateMbps} Mbps · H.264 MP4
           </span>
         </div>
 
@@ -81,13 +95,13 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <label className="flex flex-col gap-0.5 text-[11px] text-slate-400">
             <span>Resolution</span>
             <select
-              aria-label="WebM Resolution"
-              disabled={isRecording}
+              aria-label="MP4 Resolution"
+              disabled={isExporting}
               value={exportOptions.resolution}
               onChange={(e) =>
                 onChangeExportOptions({
                   ...exportOptions,
-                  resolution: e.target.value as WebmResolution,
+                  resolution: e.target.value as VideoResolution,
                 })
               }
               className="px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200 disabled:opacity-50"
@@ -101,8 +115,8 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <label className="flex flex-col gap-0.5 text-[11px] text-slate-400">
             <span>Frame Rate</span>
             <select
-              aria-label="WebM Frame Rate"
-              disabled={isRecording}
+              aria-label="MP4 Frame Rate"
+              disabled={isExporting}
               value={exportOptions.fps}
               onChange={(e) =>
                 onChangeExportOptions({
@@ -121,8 +135,8 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <label className="flex flex-col gap-0.5 text-[11px] text-slate-400">
             <span>Quality</span>
             <select
-              aria-label="WebM Bitrate"
-              disabled={isRecording}
+              aria-label="MP4 Bitrate"
+              disabled={isExporting}
               value={exportOptions.bitrateMbps}
               onChange={(e) =>
                 onChangeExportOptions({
@@ -143,7 +157,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <label className="inline-flex items-center gap-1.5 cursor-pointer">
             <input
               type="checkbox"
-              disabled={isRecording}
+              disabled={isExporting}
               checked={exportOptions.burnSubtitles}
               onChange={(e) =>
                 onChangeExportOptions({
@@ -159,7 +173,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <label className="inline-flex items-center gap-1.5 cursor-pointer">
             <input
               type="checkbox"
-              disabled={isRecording}
+              disabled={isExporting}
               checked={exportOptions.burnLetterbox}
               onChange={(e) =>
                 onChangeExportOptions({
@@ -173,13 +187,14 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           </label>
         </div>
 
-        {isRecording ? (
+        {isExporting ? (
           <div className="p-2.5 rounded bg-[#14161a] border border-[#00a2ff]/50 space-y-2">
-            <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center justify-between gap-2 text-xs">
               <span className="font-medium text-[#38bdf8]">
-                Recording Cutscene...
+                {isFinalizing ? 'Finalizing MP4...' : 'Rendering Cutscene MP4...'}
               </span>
               <span className="font-mono-tabular text-slate-200">
+                Frame {recordingState.currentFrame} / {recordingState.totalFrames} ·{' '}
                 {formatTimecode(recordingState.elapsedSec)} /{' '}
                 {formatTimecode(recordingState.durationSec)} ·{' '}
                 {Math.round(recordingState.progress * 100)}%
@@ -191,23 +206,31 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
                 style={{ width: `${Math.min(100, Math.round(recordingState.progress * 100))}%` }}
               />
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onStopWebm}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#00a2ff] text-slate-950 text-xs font-semibold hover:bg-[#33b5ff] whitespace-nowrap"
-              >
-                <Square className="w-3 h-3" aria-hidden="true" />
-                <span>Stop Early & Preview</span>
-              </button>
-              <button
-                type="button"
-                onClick={onCancelWebm}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#2b2e35] border border-[#393d47] text-xs text-slate-300 hover:bg-[#363a43] whitespace-nowrap"
-              >
-                <X className="w-3 h-3" aria-hidden="true" />
-                <span>Cancel</span>
-              </button>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isFinalizing}
+                  onClick={onStopExport}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#00a2ff] text-slate-950 text-xs font-semibold hover:bg-[#33b5ff] disabled:opacity-50 whitespace-nowrap"
+                >
+                  <Square className="w-3 h-3" aria-hidden="true" />
+                  <span>Stop Early & Finalize</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancelExport}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#2b2e35] border border-[#393d47] text-xs text-slate-300 hover:bg-[#363a43] whitespace-nowrap"
+                >
+                  <X className="w-3 h-3" aria-hidden="true" />
+                  <span>Cancel</span>
+                </button>
+              </div>
+              {recordingState.encoderBackend && (
+                <span className="text-[11px] font-mono-tabular text-slate-500 whitespace-nowrap">
+                  {formatBackendLabel(recordingState.encoderBackend)}
+                </span>
+              )}
             </div>
           </div>
         ) : (
@@ -226,11 +249,11 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
 
             <button
               type="button"
-              onClick={onStartWebm}
+              onClick={onStartExport}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#00a2ff] text-slate-950 text-xs font-semibold hover:bg-[#33b5ff] transition-colors whitespace-nowrap"
             >
               <Film className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Record Cutscene WebM</span>
+              <span>Record Cutscene MP4</span>
             </button>
           </div>
         )}
@@ -247,32 +270,44 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <div className="p-2.5 rounded bg-[#14161a] border border-[#393d47] space-y-2">
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="font-medium text-emerald-400">
-                Recorded WebM Ready ({formatBytes(recordingState.fileSizeBytes)})
+                Recorded MP4 Ready ({formatBytes(recordingState.fileSizeBytes)})
               </span>
-              <span className="font-mono-tabular text-[11px] text-slate-500 truncate max-w-40">
-                {recordingState.mimeType}
+              <span className="font-mono-tabular text-[11px] text-slate-500 truncate max-w-48">
+                {formatBackendLabel(recordingState.encoderBackend)} · {recordingState.mimeType}
               </span>
             </div>
             <video
+              key={recordingState.blobUrl}
               src={recordingState.blobUrl}
               controls
               loop
               playsInline
-              aria-label="Recorded Cutscene WebM Preview"
-              className="w-full max-h-24 rounded bg-black border border-[#393d47]"
+              preload="auto"
+              onError={() =>
+                setVideoError(
+                  'Browser preview could not decode this MP4 stream. Download the MP4 file or try re-exporting at 720p.',
+                )
+              }
+              aria-label="Recorded Cutscene MP4 Preview"
+              className="w-full aspect-video max-h-44 object-contain rounded bg-black border border-[#393d47]"
             />
+            {videoError && (
+              <p role="alert" className="text-xs text-amber-400">
+                {videoError}
+              </p>
+            )}
             <div className="flex items-center gap-2">
               <a
                 href={recordingState.blobUrl}
-                download={`${project.id}-cutscene.webm`}
+                download={`${project.id}-cutscene.mp4`}
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#00a2ff] text-slate-950 text-xs font-semibold hover:bg-[#33b5ff] whitespace-nowrap"
               >
                 <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Download WebM</span>
+                <span>Download MP4</span>
               </a>
               <button
                 type="button"
-                onClick={onDiscardWebm}
+                onClick={onDiscardExport}
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#2b2e35] border border-[#393d47] text-xs text-slate-300 hover:bg-[#363a43] whitespace-nowrap"
               >
                 <Trash2 className="w-3 h-3" aria-hidden="true" />
@@ -326,7 +361,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
               <p className="text-xs text-emerald-400">{statusNote}</p>
             )}
             <p className="text-xs text-slate-500">
-              Recordings capture from 00:00.0 to {formatTimecode(project.duration)} and open an inline WebM preview player here.
+              Offline export renders 00:00.0 to {formatTimecode(project.duration)} from the Director camera at target resolution with helpers hidden.
             </p>
           </div>
         )}

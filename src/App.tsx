@@ -66,8 +66,8 @@ import {
   SubtitleCue,
   UpperBodyClipId,
   Vec3Tuple,
-  WebmExportOptions,
-  WebmRecordingState,
+  VideoExportOptions,
+  VideoRecordingState,
 } from './engine/types';
 
 function getActiveActorKeyframe(
@@ -117,20 +117,24 @@ export default function App() {
     speaker: string | null;
     text: string;
   } | null>(null);
-  const [exportOptions, setExportOptions] = useState<WebmExportOptions>({
+  const [exportOptions, setExportOptions] = useState<VideoExportOptions>({
     resolution: '720p',
     fps: 30,
     bitrateMbps: 8,
     burnSubtitles: true,
     burnLetterbox: true,
   });
-  const [recordingState, setRecordingState] = useState<WebmRecordingState>({
+  const [recordingState, setRecordingState] = useState<VideoRecordingState>({
     status: 'idle',
     progress: 0,
     elapsedSec: 0,
     durationSec: CROSSROADS_SHOWDOWN_PROJECT.duration,
+    currentFrame: 0,
+    totalFrames: Math.round(CROSSROADS_SHOWDOWN_PROJECT.duration * 30),
+    encoderBackend: null,
     blobUrl: null,
     mimeType: null,
+    fileExtension: null,
     fileSizeBytes: null,
     error: null,
   });
@@ -1117,7 +1121,12 @@ export default function App() {
     link.click();
   }, [project.id]);
 
-  const handleStartWebm = useCallback(() => {
+  const handleStartExport = useCallback(() => {
+    const totalFrames = Math.max(
+      1,
+      Math.round(Math.max(0.1, project.duration) * exportOptions.fps),
+    );
+    setIsPlaying(false);
     setRecordingState((prev) => {
       if (prev.blobUrl) URL.revokeObjectURL(prev.blobUrl);
       return {
@@ -1125,35 +1134,55 @@ export default function App() {
         progress: 0,
         elapsedSec: 0,
         durationSec: project.duration,
+        currentFrame: 0,
+        totalFrames,
+        encoderBackend: null,
         blobUrl: null,
         mimeType: null,
+        fileExtension: null,
         fileSizeBytes: null,
         error: null,
       };
     });
 
-    const started = engineRef.current?.startWebmExport(exportOptions, {
-      onProgress: (elapsed, duration) => {
+    engineRef.current?.startMp4Export(exportOptions, {
+      onProgress: (info) => {
         setRecordingState((prev) => ({
           ...prev,
           status: 'recording',
-          elapsedSec: elapsed,
-          durationSec: duration,
-          progress: duration > 0 ? Math.min(1, elapsed / duration) : 0,
+          elapsedSec: info.elapsedSec,
+          durationSec: info.durationSec,
+          currentFrame: info.currentFrame,
+          totalFrames: info.totalFrames,
+          encoderBackend: info.encoderBackend,
+          progress:
+            info.totalFrames > 0
+              ? Math.min(1, info.currentFrame / info.totalFrames)
+              : 0,
+        }));
+      },
+      onFinalizing: (encoderBackend) => {
+        setRecordingState((prev) => ({
+          ...prev,
+          status: 'processing',
+          encoderBackend,
         }));
       },
       onComplete: (result) => {
         setIsPlaying(false);
-        setRecordingState({
+        setRecordingState((prev) => ({
+          ...prev,
           status: 'ready',
           progress: 1,
-          elapsedSec: projectRef.current.duration,
+          elapsedSec: prev.elapsedSec || projectRef.current.duration,
           durationSec: projectRef.current.duration,
+          encoderBackend: result.encoderBackend,
           blobUrl: result.blobUrl,
           mimeType: result.mimeType,
+          fileExtension: result.fileExtension,
           fileSizeBytes: result.fileSizeBytes,
           error: null,
-        });
+        }));
       },
       onError: (msg) => {
         setIsPlaying(false);
@@ -1164,29 +1193,27 @@ export default function App() {
         }));
       },
     });
-    if (started) {
-      setIsPlaying(true);
-    }
   }, [exportOptions, project.duration]);
 
-  const handleStopWebm = useCallback(() => {
-    engineRef.current?.stopWebmExport();
-    setIsPlaying(false);
+  const handleStopExport = useCallback(() => {
+    engineRef.current?.stopMp4Export();
   }, []);
 
-  const handleCancelWebm = useCallback(() => {
-    engineRef.current?.cancelWebmExport();
+  const handleCancelExport = useCallback(() => {
+    engineRef.current?.cancelMp4Export();
     setIsPlaying(false);
     setRecordingState((prev) => ({
       ...prev,
       status: 'idle',
       progress: 0,
       elapsedSec: 0,
+      currentFrame: 0,
+      encoderBackend: null,
       error: null,
     }));
   }, []);
 
-  const handleDiscardWebm = useCallback(() => {
+  const handleDiscardExport = useCallback(() => {
     setRecordingState((prev) => {
       if (prev.blobUrl) URL.revokeObjectURL(prev.blobUrl);
       return {
@@ -1194,13 +1221,17 @@ export default function App() {
         progress: 0,
         elapsedSec: 0,
         durationSec: projectRef.current.duration,
+        currentFrame: 0,
+        totalFrames: Math.round(projectRef.current.duration * exportOptions.fps),
+        encoderBackend: null,
         blobUrl: null,
         mimeType: null,
+        fileExtension: null,
         fileSizeBytes: null,
         error: null,
       };
     });
-  }, []);
+  }, [exportOptions.fps]);
 
   const handleExportJson = useCallback(() => {
     const json = serializeProject(project);
@@ -1469,10 +1500,10 @@ export default function App() {
             recordingState={recordingState}
             onChangeExportOptions={setExportOptions}
             onCapturePng={handleCapturePng}
-            onStartWebm={handleStartWebm}
-            onStopWebm={handleStopWebm}
-            onCancelWebm={handleCancelWebm}
-            onDiscardWebm={handleDiscardWebm}
+            onStartExport={handleStartExport}
+            onStopExport={handleStopExport}
+            onCancelExport={handleCancelExport}
+            onDiscardExport={handleDiscardExport}
             onExportJson={handleExportJson}
             onImportJson={handleImportJson}
           />
