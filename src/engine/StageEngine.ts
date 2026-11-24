@@ -4,12 +4,18 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { resolveActorFaceConfig } from './faceExpressions';
 import { buildRobloxR6CharacterRig, RobloxR6CharacterRig } from './robloxCharacter';
-import { cloneBundle, resolveActorClothing, resolveActorHair } from './robloxCatalog';
+import {
+  cloneBundle,
+  resolveActorClothing,
+  resolveActorHair,
+  resolveActorOrnaments,
+} from './robloxCatalog';
 import {
   buildRobloxEnvironmentGroup,
   buildRobloxPropGroup,
 } from './robloxEnvironments';
 import { animateIdiomProp } from './idiomAssets';
+import { animateHeldItemGroup } from './robloxItems';
 import {
   createClassicSkyboxCubeTexture,
   createContactShadowTexture,
@@ -216,7 +222,7 @@ export class StageEngine {
       computeResponsiveFov(this.orbitBaseFov, initialAspect),
       initialAspect,
       0.1,
-      160,
+      360,
     );
     this.orbitCamera.position.set(6.4, 3.8, 8.2);
 
@@ -224,7 +230,7 @@ export class StageEngine {
       computeResponsiveFov(52, initialAspect),
       initialAspect,
       0.25,
-      80,
+      260,
     );
     this.scene.add(this.directorCamera);
 
@@ -385,7 +391,7 @@ export class StageEngine {
     mood: LightingMood,
     forceCustomRebuild = false,
   ) {
-    // 1. Skybox & Fog
+    // 1. Skybox, Fog, Orbit Range & Adaptive Shadow Frustum for compact vs. metropolitan stages
     const moodSpec = getRobloxLightingSpec(mood, env);
     const skyKey = `${mood}:${env}`;
     if (this.currentSkyKey !== skyKey) {
@@ -394,7 +400,35 @@ export class StageEngine {
       this.scene.background = this.skyboxTex;
       this.currentSkyKey = skyKey;
     }
-    this.scene.fog = new THREE.FogExp2(moodSpec.fogColor, moodSpec.fogDensity);
+
+    const activeBaseplateSize =
+      env === 'robloxCity'
+        ? 88
+        : env === 'custom' && customMap
+          ? customMap.baseplate.size
+          : 36;
+    const hasCitySkyline =
+      env === 'robloxCity' ||
+      (env === 'custom' && customMap?.baseplate.perimeter === 'citySkyline');
+    const isLargeCity = activeBaseplateSize >= 56;
+
+    const fogDensityScale = isLargeCity ? 0.5 : hasCitySkyline ? 0.62 : 1.0;
+    this.scene.fog = new THREE.FogExp2(
+      moodSpec.fogColor,
+      moodSpec.fogDensity * fogDensityScale,
+    );
+
+    this.orbitControls.maxDistance = isLargeCity ? 96 : hasCitySkyline ? 56 : 36;
+    const shadowHalf = isLargeCity ? 40 : 14;
+    const shadowFar = isLargeCity ? 120 : 42;
+    if (this.keyLight.shadow.camera.right !== shadowHalf) {
+      this.keyLight.shadow.camera.left = -shadowHalf;
+      this.keyLight.shadow.camera.right = shadowHalf;
+      this.keyLight.shadow.camera.top = shadowHalf;
+      this.keyLight.shadow.camera.bottom = -shadowHalf;
+      this.keyLight.shadow.camera.far = shadowFar;
+      this.keyLight.shadow.camera.updateProjectionMatrix();
+    }
 
     // 2. Environment & Custom Modular Maps with bounded LRU cache for instant mid-scene switching
     const nextEnvSignature = getActiveMapSignature(env, customMap);
@@ -520,7 +554,7 @@ export class StageEngine {
 
         if (cfg.kind === 'character') {
           const colors = cfg.bodyColors ?? fallbackBundle.bodyColors;
-          const ornaments = cfg.ornaments ?? fallbackBundle.ornaments;
+          const ornaments = resolveActorOrnaments(cfg);
           const hair = resolveActorHair(cfg);
           const clothing = resolveActorClothing(cfg);
           const faceConfig = resolveActorFaceConfig(cfg);
@@ -578,7 +612,7 @@ export class StageEngine {
         existing.config = cfg;
         if (existing.rig) {
           existing.rig.setBodyColors(cfg.bodyColors ?? fallbackBundle.bodyColors);
-          existing.rig.setOrnaments(cfg.ornaments ?? fallbackBundle.ornaments);
+          existing.rig.setOrnaments(resolveActorOrnaments(cfg));
           existing.rig.setHair(resolveActorHair(cfg));
           existing.rig.setClothing(resolveActorClothing(cfg));
           existing.rig.setFaceConfig(resolveActorFaceConfig(cfg));
@@ -1141,9 +1175,11 @@ export class StageEngine {
         if (activeItems) {
           managed.rig.setHeldItems(activeItems);
         }
-        managed.rig.applySecondaryMotion(actorState.secondaryMotion);
+        managed.rig.applySecondaryMotion(actorState.secondaryMotion, time);
       } else if (managed.config.propKind === 'speeder') {
         managed.group.position.y += Math.sin(time * 2.8) * 0.06;
+      } else if (managed.config.propKind === 'heldItem') {
+        animateHeldItemGroup(managed.group, time);
       } else if (managed.config.propKind === 'campfire') {
         managed.group.traverse((obj) => {
           if (obj.userData?.isCampfireFlame) {

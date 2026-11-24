@@ -2,6 +2,7 @@ export type BuiltInMapId =
   | 'crossroads'
   | 'town'
   | 'robloxianTown'
+  | 'robloxCity'
   | 'cozyBedroom'
   | 'skyObby'
   | 'lunarOutpost'
@@ -37,33 +38,64 @@ export const R6_BODY_PART_LABELS: Record<R6BodyPartId, string> = {
   rightLeg: 'Right Leg',
 };
 
-export type OrnamentSlot = 'head' | 'hat' | 'face' | 'arm' | 'back' | 'legs';
+export type CoreOrnamentSlot = 'head' | 'hat' | 'face' | 'arm' | 'back' | 'legs';
+export type ExtendedOrnamentSlot = 'neck' | 'shoulder' | 'waist';
+export type OrnamentSlot = CoreOrnamentSlot | ExtendedOrnamentSlot;
 
 export const ORNAMENT_SLOTS: OrnamentSlot[] = [
   'head',
   'hat',
   'face',
-  'arm',
+  'neck',
+  'shoulder',
   'back',
+  'waist',
+  'arm',
+  'legs',
+];
+
+export const WEARABLE_ACCESSORY_SLOTS: Exclude<OrnamentSlot, 'face'>[] = [
+  'hat',
+  'head',
+  'neck',
+  'shoulder',
+  'back',
+  'waist',
+  'arm',
   'legs',
 ];
 
 export const ORNAMENT_SLOT_LABELS: Record<OrnamentSlot, string> = {
-  head: 'Head',
+  head: 'Eyewear',
   hat: 'Hat',
   face: 'Face',
-  arm: 'Arm',
+  neck: 'Neck',
+  shoulder: 'Shoulder',
   back: 'Back',
+  waist: 'Waist',
+  arm: 'Arm',
   legs: 'Legs',
 };
+
+export interface AccessoryFit {
+  offsetY: number; // -0.35 .. +0.35 studs
+  offsetZ: number; // -0.30 .. +0.30 studs
+  tiltX: number; // -30 .. +30 deg
+  tiltZ: number; // -30 .. +30 deg
+  scale: number; // 0.75 .. 1.35
+}
 
 export interface OrnamentSelection {
   id: string;
   color: string;
   accentColor?: string;
+  fit?: Partial<AccessoryFit>;
 }
 
-export type R6Ornaments = Record<OrnamentSlot, OrnamentSelection>;
+export type R6Ornaments = Record<CoreOrnamentSlot, OrnamentSelection> &
+  Partial<Record<ExtendedOrnamentSlot, OrnamentSelection>>;
+
+export type NormalizedR6Ornaments = Record<OrnamentSlot, OrnamentSelection>;
 
 export type R6BodyColors = Record<R6BodyPartId, string>;
 
@@ -83,9 +115,32 @@ export type HairStyleId =
   | 'twinTails'
   | 'sidePart'
   | 'undercut'
-  | 'braids';
+  | 'braids'
+  | 'wolfCut'
+  | 'messyFluffy'
+  | 'topBun'
+  | 'texturedFade';
 
 export type HairHighlightPattern = 'none' | 'tips' | 'streaks' | 'ombre';
+
+export type HairBangsStyleId =
+  | 'auto'
+  | 'curtain'
+  | 'swept'
+  | 'blunt'
+  | 'wispy'
+  | 'middleArch'
+  | 'none';
+
+export type HairAccessoryId =
+  | 'none'
+  | 'hibiscus'
+  | 'ribbonBow'
+  | 'starClips'
+  | 'headband'
+  | 'catEars';
+
+export type HairFinishId = 'silky' | 'matte' | 'glossy';
 
 export type HatTuckProfile = 'none' | 'brim' | 'crown' | 'fullCover';
 
@@ -95,6 +150,11 @@ export interface HairConfig {
   highlightColor: string;
   highlightPattern: HairHighlightPattern;
   volume: number; // 0.8 .. 1.25
+  bangsStyle?: HairBangsStyleId;
+  accessoryId?: HairAccessoryId;
+  accessoryColor?: string;
+  finish?: HairFinishId;
+  /** Legacy compatibility alias for accessoryId === 'hibiscus' */
   flowerAccessory?: boolean;
 }
 
@@ -109,7 +169,24 @@ export type ShirtStyleId =
   | 'suitCoat'
   | 'wizardRobe'
   | 'varsity'
-  | 'cyberSuit';
+  | 'cyberSuit'
+  | 'sweater'
+  | 'turtleneck'
+  | 'buttonUp'
+  | 'polo'
+  | 'cropTop';
+
+export type OuterwearStyleId =
+  | 'none'
+  | 'pufferVest'
+  | 'pufferJacket'
+  | 'cardigan'
+  | 'denimJacket'
+  | 'trenchCoat'
+  | 'bomberJacket'
+  | 'blazer'
+  | 'hoodedParka'
+  | 'overalls';
 
 export type SleeveMode = 'auto' | 'short' | 'long' | 'sleeveless';
 
@@ -121,19 +198,66 @@ export type PantsStyleId =
   | 'shorts'
   | 'knightGreaves'
   | 'trackPants'
-  | 'cyberLeggings';
+  | 'cyberLeggings'
+  | 'pleatedSkirt'
+  | 'midiSkirt'
+  | 'baggyCargo'
+  | 'joggers'
+  | 'flaredJeans';
 
-export type FootwearId = 'none' | 'sneakers' | 'boots' | 'armoredBoots' | 'loafers';
+export type FootwearId =
+  | 'none'
+  | 'sneakers'
+  | 'highTops'
+  | 'boots'
+  | 'chelseaBoots'
+  | 'platformShoes'
+  | 'loafers'
+  | 'armoredBoots'
+  | 'sandals';
+
+export type FabricMaterialId =
+  | 'auto'
+  | 'cotton'
+  | 'denim'
+  | 'knit'
+  | 'leather'
+  | 'quilted'
+  | 'satin'
+  | 'armor';
+
+export type ClothingPatternId =
+  | 'solid'
+  | 'stripes'
+  | 'plaid'
+  | 'colorblock'
+  | 'checker'
+  | 'camo'
+  | 'argyle';
+
+export type BeltStyleId = 'auto' | 'none' | 'leather' | 'chain' | 'sash';
 
 export interface ClothingConfig {
   shirtId: ShirtStyleId;
   shirtColor: string;
   shirtAccent: string;
   sleeveMode: SleeveMode;
+  topFabric?: FabricMaterialId;
+  topPattern?: ClothingPatternId;
+  outerwearId?: OuterwearStyleId;
+  outerwearColor?: string;
+  outerwearAccent?: string;
+  outerwearFabric?: FabricMaterialId;
+  outerwearOpen?: boolean;
   pantsId: PantsStyleId;
   pantsColor: string;
   pantsAccent: string;
+  bottomFabric?: FabricMaterialId;
+  bottomPattern?: ClothingPatternId;
+  beltStyle?: BeltStyleId;
   footwearId: FootwearId;
+  shoeColor?: string;
+  shoeAccent?: string;
 }
 
 export type PropKind =
@@ -173,7 +297,7 @@ export type PropKind =
 
 export type PropCategory = 'bedroom' | 'town' | 'furniture' | 'battle' | 'classic';
 
-export type ItemCategory = 'gear' | 'scifiFantasy' | 'props';
+export type ItemCategory = 'gear' | 'scifiFantasy' | 'everyday' | 'props';
 
 export type ItemId =
   | 'linkedSword'
@@ -193,7 +317,19 @@ export type ItemId =
   | 'bouquet'
   | 'snowShovel'
   | 'stapler'
-  | 'steelUmbrella';
+  | 'steelUmbrella'
+  | 'smartphone'
+  | 'icedCoffee'
+  | 'gameController'
+  | 'electricGuitar'
+  | 'microphone'
+  | 'flashlight'
+  | 'skateboard'
+  | 'sprayCan'
+  | 'spellbook'
+  | 'dragonKatana'
+  | 'crystalWand'
+  | 'walkieTalkie';
 
 export type HandSlot = 'right' | 'left';
 export type HandTargetMode = 'right' | 'left' | 'dual';
@@ -785,7 +921,14 @@ export const MAP_CATEGORY_LABELS: Record<MapCategory, string> = {
   custom: 'Custom',
 };
 
-export type MapPathStyle = 'none' | 'cross' | 'plaza' | 'runway' | 'street' | 'hardwood';
+export type MapPathStyle =
+  | 'none'
+  | 'cross'
+  | 'plaza'
+  | 'runway'
+  | 'street'
+  | 'cityGrid'
+  | 'hardwood';
 
 export type MapPerimeterStyle =
   | 'open'
@@ -793,7 +936,8 @@ export type MapPerimeterStyle =
   | 'rocks'
   | 'neonRim'
   | 'picketFence'
-  | 'bedroomCorner';
+  | 'bedroomCorner'
+  | 'citySkyline';
 
 export type MapModuleKind =
   | 'tower'
@@ -815,6 +959,12 @@ export type MapModuleKind =
   | 'suburbanHouse'
   | 'picketFence'
   | 'streetLamp'
+  | 'glassSkyscraper'
+  | 'brickTower'
+  | 'trafficSignal'
+  | 'subwayEntrance'
+  | 'billboardGantry'
+  | 'cityBusStop'
   | 'verbatimSign'
   | 'cafeCounter'
   | 'boardroomSuite'

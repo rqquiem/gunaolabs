@@ -6,6 +6,7 @@ import {
   DOJO_DUEL_PROJECT,
   LUNAR_RESCUE_PROJECT,
   R6_SHOWCASE_PROJECT,
+  ROBLOX_CITY_SHOWCASE_PROJECT,
   ROBLOXIAN_TOWN_PROJECT,
   TOWN_PLAZA_SKIT_PROJECT,
 } from './presets';
@@ -33,6 +34,15 @@ export const BUILT_IN_SCENES: SceneLibraryEntry[] = [
     description:
       'Full 90s 7-scene comedy episode ("Welcome to Verbatim") with literal idioms, bespoke sets, 3D animals, Web Audio SFX, voiceover, and smash-cut punchline.',
     project: THE_IDIOM_TOWN_PROJECT,
+  },
+  {
+    id: 'scene_roblox_city_showcase',
+    name: ROBLOX_CITY_SHOWCASE_PROJECT.name,
+    category: 'showcase',
+    builtIn: true,
+    description:
+      'Vibrant daylight metropolis tour with glass & terracotta skyscrapers, 4-lane avenues, yielding traffic, Central Plaza fountain busker, and sweeping spline cameras.',
+    project: ROBLOX_CITY_SHOWCASE_PROJECT,
   },
   {
     id: 'scene_crossroads_showdown',

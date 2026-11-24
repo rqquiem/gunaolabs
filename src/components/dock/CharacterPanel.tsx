@@ -33,13 +33,16 @@ import {
   PROP_CATEGORY_LABELS,
 } from '../../engine/itemCatalog';
 import {
+  AccessoryComboPreset,
   cloneBundle,
   OutfitPreset,
   resolveActorClothing,
   resolveActorHair,
+  resolveActorOrnaments,
   ROBLOX_AVATAR_BUNDLES,
 } from '../../engine/robloxCatalog';
 import {
+  AccessoryFit,
   AnimationProject,
   CharacterHeldItems,
   ClothingConfig,
@@ -101,6 +104,12 @@ interface CharacterPanelProps {
     color: string,
     accentColor?: string,
   ) => void;
+  onUpdateOrnamentFit: (
+    actorId: string,
+    slot: OrnamentSlot,
+    fitPatch: Partial<AccessoryFit> | null,
+  ) => void;
+  onApplyAccessoryCombo: (actorId: string, combo: AccessoryComboPreset) => void;
   onUpdateHair: (actorId: string, patch: Partial<HairConfig>) => void;
   onUpdateClothing: (actorId: string, patch: Partial<ClothingConfig>) => void;
   onUpdatePropColors: (actorId: string, primary: string, accent: string) => void;
@@ -218,6 +227,8 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   onApplyOutfitPreset,
   onUpdateBodyPartColor,
   onUpdateOrnament,
+  onUpdateOrnamentFit,
+  onApplyAccessoryCombo,
   onUpdateHair,
   onUpdateClothing,
   onUpdatePropColors,
@@ -264,7 +275,7 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
 
   const fallbackBundle = cloneBundle('noob');
   const activeBodyColors = selectedActor?.bodyColors ?? fallbackBundle.bodyColors;
-  const activeOrnaments = selectedActor?.ornaments ?? fallbackBundle.ornaments;
+  const activeOrnaments = resolveActorOrnaments(selectedActor);
   const activeHair = resolveActorHair(selectedActor);
   const activeClothing = resolveActorClothing(selectedActor);
   const activeFaceConfig: FaceRigConfig = selectedActor
@@ -1044,6 +1055,8 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
                 onApplyOutfitPreset={onApplyOutfitPreset}
                 onUpdateBodyPartColor={onUpdateBodyPartColor}
                 onUpdateOrnament={onUpdateOrnament}
+                onUpdateOrnamentFit={onUpdateOrnamentFit}
+                onApplyAccessoryCombo={onApplyAccessoryCombo}
                 onUpdateHair={onUpdateHair}
                 onUpdateClothing={onUpdateClothing}
               />

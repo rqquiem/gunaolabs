@@ -8,14 +8,78 @@ const S = 0.55;
 function setShadows(group: THREE.Object3D, cast = true, receive = true) {
   group.traverse((obj) => {
     if ((obj as THREE.Mesh).isMesh) {
-      obj.castShadow = cast;
-      obj.receiveShadow = receive;
+      const mesh = obj as THREE.Mesh;
+      const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      const isGlass = Boolean(mat && (mat as THREE.MeshPhysicalMaterial).transparent);
+      mesh.castShadow = cast && !isGlass;
+      mesh.receiveShadow = receive;
     }
   });
 }
 
+function makeItemGlassMat(tintHex: string, opacity = 0.36): THREE.MeshPhysicalMaterial {
+  return new THREE.MeshPhysicalMaterial({
+    color: tintHex,
+    roughness: 0.08,
+    metalness: 0.05,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.06,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
+function createSmartphoneScreenTexture(accentHex: string): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const grad = ctx.createLinearGradient(0, 0, 128, 256);
+  grad.addColorStop(0, '#0f172a');
+  grad.addColorStop(0.55, accentHex);
+  grad.addColorStop(1, '#1e1b4b');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 128, 256);
+
+  // Subtle top notch & status bar
+  ctx.fillStyle = '#090d16';
+  ctx.fillRect(42, 8, 44, 10);
+
+  // Clock widget
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('12:45', 64, 68);
+
+  // Notification cards
+  ctx.fillStyle = 'rgba(15,23,42,0.52)';
+  ctx.fillRect(14, 92, 100, 34);
+  ctx.fillRect(14, 134, 100, 34);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillRect(24, 102, 58, 6);
+  ctx.fillRect(24, 114, 78, 4);
+  ctx.fillRect(24, 144, 48, 6);
+  ctx.fillRect(24, 156, 72, 4);
+
+  // App dock icons
+  const dockColors = ['#38bdf8', '#22c55e', '#f59e0b', '#ec4899'];
+  dockColors.forEach((col, i) => {
+    ctx.fillStyle = col;
+    ctx.fillRect(16 + i * 26, 212, 18, 18);
+  });
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 // =========================================================================
-// 12 Holdable 3D Item Models (Grip-Origin Centered at (0, 0, 0))
+// 30 Holdable 3D Item Models (Grip-Origin Centered at (0, 0, 0))
 // =========================================================================
 
 export function buildItemModelGroup(
@@ -267,6 +331,8 @@ export function buildItemModelGroup(
         }),
       );
 
+      const coilRings = new THREE.Group();
+      coilRings.userData.itemFx = 'spinY';
       for (const ry of [-0.36, -0.12, 0.12, 0.36]) {
         const ring = new THREE.Mesh(
           new THREE.TorusGeometry(0.62 * S, 0.075 * S, 10, 22),
@@ -274,7 +340,7 @@ export function buildItemModelGroup(
         );
         ring.rotation.x = Math.PI / 2 + 0.14;
         ring.position.y = ry * S;
-        root.add(ring);
+        coilRings.add(ring);
       }
 
       const capTop = new THREE.Mesh(
@@ -287,7 +353,7 @@ export function buildItemModelGroup(
       const capBot = capTop.clone();
       capBot.position.y = -0.44 * S;
 
-      root.add(sleeve, capTop, capBot);
+      root.add(sleeve, coilRings, capTop, capBot);
       break;
     }
 
@@ -441,6 +507,8 @@ export function buildItemModelGroup(
         orbMat,
       );
       orb.position.y = 2.38 * S;
+      orb.userData.itemFx = 'orbHover';
+      orb.userData.baseY = 2.38 * S;
 
       const halo = new THREE.Mesh(
         new THREE.TorusGeometry(0.38 * S, 0.04 * S, 8, 20),
@@ -448,6 +516,7 @@ export function buildItemModelGroup(
       );
       halo.position.y = 2.38 * S;
       halo.rotation.set(0.65, 0.35, 0);
+      halo.userData.itemFx = 'spinOrbit';
 
       root.add(shaft, gripBand, crown, orb, halo);
       break;
@@ -479,10 +548,18 @@ export function buildItemModelGroup(
       cap.position.y = -0.14 * S;
 
       const core = new THREE.Mesh(
-        new THREE.BoxGeometry(0.3 * S, 0.42 * S, 0.3 * S),
+        new THREE.OctahedronGeometry(0.18 * S, 1),
         flameMat,
       );
-      core.position.y = -0.42 * S;
+      core.position.y = -0.44 * S;
+      core.userData.itemFx = 'flameFlicker';
+
+      const glassPane = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34 * S, 0.44 * S, 0.34 * S),
+        makeItemGlassMat('#fef3c7', 0.28),
+      );
+      glassPane.position.y = -0.42 * S;
+      glassPane.renderOrder = 3;
 
       const base = new THREE.Mesh(
         new THREE.BoxGeometry(0.44 * S, 0.1 * S, 0.44 * S),
@@ -499,7 +576,7 @@ export function buildItemModelGroup(
         }
       }
 
-      root.add(bail, cap, core, base);
+      root.add(bail, cap, core, glassPane, base);
       break;
     }
 
@@ -549,6 +626,7 @@ export function buildItemModelGroup(
       );
       aura.rotation.x = Math.PI / 2;
       aura.position.z = 1.74 * S;
+      aura.userData.itemFx = 'pulseAura';
 
       root.add(hilt, emitter, core, aura);
       break;
@@ -600,6 +678,7 @@ export function buildItemModelGroup(
       );
       holoBeam.rotation.x = Math.PI;
       holoBeam.position.set(0, 0.58 * S, 0.28 * S);
+      holoBeam.userData.itemFx = 'holoPulse';
 
       const antenna = new THREE.Mesh(
         new THREE.CylinderGeometry(0.03 * S, 0.04 * S, 0.36 * S, 8),
@@ -851,10 +930,683 @@ export function buildItemModelGroup(
       }
       break;
     }
+
+    // =========================================================================
+    // 12 New Everyday, Modern & Fantasy Handheld Items
+    // =========================================================================
+
+    case 'smartphone': {
+      const chassisMat = createPlasticBrickMaterial(primaryColor, {
+        roughness: 0.22,
+        metalness: 0.72,
+      });
+      const darkMat = createPlasticBrickMaterial('#090d16', { roughness: 0.2, metalness: 0.4 });
+      const screenTex = createSmartphoneScreenTexture(accentColor);
+      const screenMat = new THREE.MeshStandardMaterial({
+        color: '#ffffff',
+        map: screenTex ?? undefined,
+        emissive: screenTex ? '#ffffff' : accentColor,
+        emissiveMap: screenTex ?? undefined,
+        emissiveIntensity: 0.55,
+        roughness: 0.1,
+        metalness: 0.12,
+      });
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.42 * S, 0.78 * S, 0.065 * S), chassisMat);
+      body.position.y = 0.08 * S;
+
+      const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.36 * S, 0.7 * S), screenMat);
+      screen.position.set(0, 0.08 * S, 0.036 * S);
+      screen.userData.itemFx = 'screenPulse';
+
+      // Camera island on back (-Z)
+      const camBump = new THREE.Mesh(new THREE.BoxGeometry(0.16 * S, 0.18 * S, 0.025 * S), darkMat);
+      camBump.position.set(0.09 * S, 0.3 * S, -0.04 * S);
+      const lensMat = new THREE.MeshPhysicalMaterial({
+        color: '#0f172a',
+        roughness: 0.05,
+        metalness: 0.85,
+        clearcoat: 1,
+      });
+      const lensGeo = new THREE.CylinderGeometry(0.032 * S, 0.032 * S, 0.02 * S, 10);
+      lensGeo.rotateX(Math.PI / 2);
+      for (const [lx, ly] of [
+        [0.05, 0.34],
+        [0.05, 0.26],
+        [0.12, 0.3],
+      ]) {
+        const lens = new THREE.Mesh(lensGeo, lensMat);
+        lens.position.set(lx * S, ly * S, -0.055 * S);
+        root.add(lens);
+      }
+
+      root.add(body, screen, camBump);
+      break;
+    }
+
+    case 'icedCoffee': {
+      const drinkMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.32, metalness: 0.04 });
+      const strawMat = createPlasticBrickMaterial(accentColor, { roughness: 0.38 });
+      const cupGlassMat = makeItemGlassMat('#f8fafc', 0.3);
+      const pearlMat = createPlasticBrickMaterial('#1c120d', { roughness: 0.25 });
+      const sleeveMat = createPlasticBrickMaterial('#c99a6b', { roughness: 0.82 });
+
+      // Inner drink liquid
+      const liquid = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.25 * S, 0.18 * S, 0.62 * S, 16),
+        drinkMat,
+      );
+      liquid.position.y = 0.02 * S;
+
+      // Translucent iced cup shell
+      const cup = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.275 * S, 0.2 * S, 0.74 * S, 18),
+        cupGlassMat,
+      );
+      cup.position.y = 0.06 * S;
+      cup.renderOrder = 3;
+
+      // Kraft sleeve around grip
+      const sleeve = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.252 * S, 0.228 * S, 0.26 * S, 18),
+        sleeveMat,
+      );
+      sleeve.position.y = 0.02 * S;
+
+      // Domed clear lid
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.27 * S, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5),
+        cupGlassMat,
+      );
+      dome.position.y = 0.43 * S;
+      dome.renderOrder = 3;
+
+      const lidRim = new THREE.Mesh(
+        new THREE.TorusGeometry(0.275 * S, 0.024 * S, 8, 18),
+        cupGlassMat,
+      );
+      lidRim.rotation.x = Math.PI / 2;
+      lidRim.position.y = 0.43 * S;
+
+      // Wide boba straw
+      const straw = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.044 * S, 0.044 * S, 1.02 * S, 10),
+        strawMat,
+      );
+      straw.position.set(0.04 * S, 0.34 * S, 0);
+      straw.rotation.z = -0.1;
+
+      // Boba pearls at bottom
+      const pearlGeo = new THREE.SphereGeometry(0.045 * S, 8, 6);
+      for (let i = 0; i < 8; i++) {
+        const ang = (i / 8) * Math.PI * 2;
+        const pearl = new THREE.Mesh(pearlGeo, pearlMat);
+        pearl.position.set(Math.cos(ang) * 0.13 * S, -0.22 * S + (i % 2) * 0.04 * S, Math.sin(ang) * 0.13 * S);
+        root.add(pearl);
+      }
+
+      root.add(liquid, sleeve, straw, cup, dome, lidRim);
+      break;
+    }
+
+    case 'gameController': {
+      const shellMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.32, metalness: 0.14 });
+      const darkMat = createPlasticBrickMaterial('#111827', { roughness: 0.55 });
+      const lightbarMat = new THREE.MeshStandardMaterial({
+        color: accentColor,
+        emissive: accentColor,
+        emissiveIntensity: 1.0,
+        roughness: 0.15,
+      });
+
+      const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.84 * S, 0.34 * S, 0.2 * S), shellMat);
+      const touchPad = new THREE.Mesh(new THREE.BoxGeometry(0.32 * S, 0.16 * S, 0.04 * S), darkMat);
+      touchPad.position.set(0, 0.06 * S, 0.1 * S);
+
+      const lightBar = new THREE.Mesh(new THREE.BoxGeometry(0.34 * S, 0.045 * S, 0.04 * S), lightbarMat);
+      lightBar.position.set(0, 0.16 * S, 0.09 * S);
+      lightBar.userData.itemFx = 'ledBlink';
+
+      for (const side of [-1, 1]) {
+        const grip = new THREE.Mesh(
+          new THREE.CapsuleGeometry(0.13 * S, 0.34 * S, 6, 10),
+          shellMat,
+        );
+        grip.position.set(side * 0.39 * S, -0.14 * S, -0.02 * S);
+        grip.rotation.z = side * 0.28;
+        root.add(grip);
+
+        const stickBase = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.075 * S, 0.08 * S, 0.09 * S, 10),
+          darkMat,
+        );
+        stickBase.rotation.x = Math.PI / 2;
+        stickBase.position.set(side * 0.17 * S, -0.06 * S, 0.12 * S);
+        root.add(stickBase);
+      }
+
+      // Colored face buttons
+      const btnColors = ['#38bdf8', '#f43f5e', '#22c55e', '#f59e0b'];
+      const btnOffs: [number, number][] = [
+        [0.28, 0.1],
+        [0.36, 0.04],
+        [0.28, -0.02],
+        [0.2, 0.04],
+      ];
+      btnOffs.forEach(([bx, by], i) => {
+        const btn = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.032 * S, 0.032 * S, 0.04 * S, 8),
+          createPlasticBrickMaterial(btnColors[i], { roughness: 0.3 }),
+        );
+        btn.rotation.x = Math.PI / 2;
+        btn.position.set(bx * S, by * S, 0.11 * S);
+        root.add(btn);
+      });
+
+      // D-pad
+      const dpH = new THREE.Mesh(new THREE.BoxGeometry(0.16 * S, 0.05 * S, 0.04 * S), darkMat);
+      dpH.position.set(-0.28 * S, 0.04 * S, 0.11 * S);
+      const dpV = new THREE.Mesh(new THREE.BoxGeometry(0.05 * S, 0.16 * S, 0.04 * S), darkMat);
+      dpV.position.set(-0.28 * S, 0.04 * S, 0.11 * S);
+
+      root.add(bridge, touchPad, lightBar, dpH, dpV);
+      break;
+    }
+
+    case 'electricGuitar': {
+      const bodyMat = createPlasticBrickMaterial(primaryColor, {
+        roughness: 0.18,
+        metalness: 0.25,
+      });
+      const guardMat = createPlasticBrickMaterial(accentColor, { roughness: 0.25 });
+      const neckMat = createPlasticBrickMaterial('#d6a874', { roughness: 0.52 });
+      const fretMat = createPlasticBrickMaterial('#1e1b18', { roughness: 0.65 });
+      const chromeMat = createPlasticBrickMaterial('#e2e8f0', { roughness: 0.14, metalness: 0.92 });
+
+      // Contoured solid-body shape
+      const bodyShape = new THREE.Shape();
+      bodyShape.moveTo(-0.42 * S, -0.68 * S);
+      bodyShape.quadraticCurveTo(0, -0.82 * S, 0.42 * S, -0.68 * S);
+      bodyShape.quadraticCurveTo(0.56 * S, -0.32 * S, 0.32 * S, -0.05 * S);
+      bodyShape.quadraticCurveTo(0.46 * S, 0.28 * S, 0.26 * S, 0.44 * S);
+      bodyShape.lineTo(0.12 * S, 0.28 * S);
+      bodyShape.lineTo(-0.12 * S, 0.28 * S);
+      bodyShape.lineTo(-0.34 * S, 0.56 * S);
+      bodyShape.quadraticCurveTo(-0.54 * S, 0.35 * S, -0.34 * S, -0.04 * S);
+      bodyShape.quadraticCurveTo(-0.56 * S, -0.32 * S, -0.42 * S, -0.68 * S);
+      const bodyGeo = new THREE.ExtrudeGeometry(bodyShape, {
+        depth: 0.16 * S,
+        bevelEnabled: true,
+        bevelSegments: 2,
+        bevelSize: 0.03 * S,
+        bevelThickness: 0.03 * S,
+      });
+      bodyGeo.center();
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.set(0, -0.45 * S, 0);
+
+      const pickguard = new THREE.Mesh(new THREE.BoxGeometry(0.48 * S, 0.66 * S, 0.03 * S), guardMat);
+      pickguard.position.set(0.05 * S, -0.42 * S, 0.1 * S);
+
+      // Humbucker pickups + bridge
+      for (const py of [-0.26, -0.52]) {
+        const pickup = new THREE.Mesh(new THREE.BoxGeometry(0.28 * S, 0.11 * S, 0.06 * S), chromeMat);
+        pickup.position.set(0, py * S, 0.12 * S);
+        root.add(pickup);
+      }
+      const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.32 * S, 0.1 * S, 0.06 * S), chromeMat);
+      bridge.position.set(0, -0.7 * S, 0.12 * S);
+
+      // Neck & fretboard
+      const neck = new THREE.Mesh(new THREE.BoxGeometry(0.18 * S, 1.85 * S, 0.1 * S), neckMat);
+      neck.position.set(0, 0.85 * S, -0.01 * S);
+      const fretboard = new THREE.Mesh(new THREE.BoxGeometry(0.17 * S, 1.82 * S, 0.035 * S), fretMat);
+      fretboard.position.set(0, 0.86 * S, 0.055 * S);
+
+      // Headstock & tuning pegs
+      const headstock = new THREE.Mesh(new THREE.BoxGeometry(0.28 * S, 0.44 * S, 0.09 * S), bodyMat);
+      headstock.position.set(0.04 * S, 1.96 * S, 0);
+      headstock.rotation.z = -0.12;
+      for (let i = 0; i < 4; i++) {
+        const peg = new THREE.Mesh(new THREE.CylinderGeometry(0.025 * S, 0.025 * S, 0.1 * S, 6), chromeMat);
+        peg.rotation.z = Math.PI / 2;
+        peg.position.set(-0.14 * S, (1.82 + i * 0.09) * S, 0);
+        root.add(peg);
+      }
+
+      root.add(body, pickguard, bridge, neck, fretboard, headstock);
+      break;
+    }
+
+    case 'microphone': {
+      const bodyMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.34, metalness: 0.42 });
+      const meshMat = createPlasticBrickMaterial(accentColor, { roughness: 0.22, metalness: 0.88 });
+      const ringMat = createPlasticBrickMaterial('#38bdf8', { roughness: 0.2, metalness: 0.65 });
+
+      const grip = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.11 * S, 0.085 * S, 0.78 * S, 14),
+        bodyMat,
+      );
+      grip.position.y = 0.06 * S;
+
+      const collar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.145 * S, 0.115 * S, 0.1 * S, 14),
+        meshMat,
+      );
+      collar.position.y = 0.48 * S;
+
+      const grille = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.21 * S, 2),
+        meshMat,
+      );
+      grille.position.y = 0.68 * S;
+
+      const grilleBand = new THREE.Mesh(
+        new THREE.TorusGeometry(0.212 * S, 0.022 * S, 8, 20),
+        ringMat,
+      );
+      grilleBand.rotation.x = Math.PI / 2;
+      grilleBand.position.y = 0.68 * S;
+
+      const switchBox = new THREE.Mesh(new THREE.BoxGeometry(0.05 * S, 0.14 * S, 0.05 * S), meshMat);
+      switchBox.position.set(0, 0.18 * S, 0.11 * S);
+
+      root.add(grip, collar, grille, grilleBand, switchBox);
+      break;
+    }
+
+    case 'flashlight': {
+      const barrelMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.28, metalness: 0.74 });
+      const rubberMat = createPlasticBrickMaterial('#0f172a', { roughness: 0.82 });
+      const lensMat = new THREE.MeshStandardMaterial({
+        color: '#ffffff',
+        emissive: accentColor,
+        emissiveIntensity: 1.35,
+        roughness: 0.08,
+      });
+      const beamMat = new THREE.MeshBasicMaterial({
+        color: accentColor,
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+
+      const tube = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12 * S, 0.12 * S, 0.96 * S, 14),
+        barrelMat,
+      );
+      tube.rotation.x = Math.PI / 2;
+      tube.position.z = 0.08 * S;
+
+      const knurl = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.126 * S, 0.126 * S, 0.42 * S, 14),
+        rubberMat,
+      );
+      knurl.rotation.x = Math.PI / 2;
+
+      const bezel = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.21 * S, 0.13 * S, 0.28 * S, 16),
+        barrelMat,
+      );
+      bezel.rotation.x = Math.PI / 2;
+      bezel.position.z = 0.68 * S;
+
+      const lens = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.175 * S, 0.175 * S, 0.04 * S, 16),
+        lensMat,
+      );
+      lens.rotation.x = Math.PI / 2;
+      lens.position.z = 0.81 * S;
+
+      const beam = new THREE.Mesh(
+        new THREE.ConeGeometry(0.54 * S, 1.45 * S, 14, 1, true),
+        beamMat,
+      );
+      beam.rotation.x = -Math.PI / 2;
+      beam.position.z = 1.54 * S;
+      beam.userData.itemFx = 'holoPulse';
+
+      const btn = new THREE.Mesh(new THREE.BoxGeometry(0.07 * S, 0.06 * S, 0.12 * S), rubberMat);
+      btn.position.set(0, 0.13 * S, 0.34 * S);
+
+      root.add(tube, knurl, bezel, lens, beam, btn);
+      break;
+    }
+
+    case 'skateboard': {
+      const deckMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.42 });
+      const gripMat = createPlasticBrickMaterial('#18181b', { roughness: 0.92 });
+      const truckMat = createPlasticBrickMaterial('#cbd5e1', { roughness: 0.2, metalness: 0.88 });
+      const wheelMat = createPlasticBrickMaterial(accentColor, { roughness: 0.35 });
+
+      const deck = new THREE.Mesh(new THREE.BoxGeometry(0.58 * S, 0.06 * S, 1.85 * S), deckMat);
+      const gripTape = new THREE.Mesh(new THREE.BoxGeometry(0.54 * S, 0.015 * S, 1.78 * S), gripMat);
+      gripTape.position.y = 0.036 * S;
+
+      // Kicktails
+      for (const sz of [-1, 1]) {
+        const kick = new THREE.Mesh(new THREE.BoxGeometry(0.54 * S, 0.06 * S, 0.34 * S), deckMat);
+        kick.position.set(0, 0.055 * S, sz * 1.05 * S);
+        kick.rotation.x = -sz * 0.3;
+        root.add(kick);
+      }
+
+      // Metal trucks & urethane wheels
+      for (const tz of [-0.62, 0.62]) {
+        const riser = new THREE.Mesh(new THREE.BoxGeometry(0.22 * S, 0.09 * S, 0.18 * S), truckMat);
+        riser.position.set(0, -0.07 * S, tz * S);
+        const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.03 * S, 0.03 * S, 0.56 * S, 8), truckMat);
+        axle.rotation.z = Math.PI / 2;
+        axle.position.set(0, -0.14 * S, tz * S);
+        root.add(riser, axle);
+
+        for (const wx of [-0.26, 0.26]) {
+          const wheel = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.095 * S, 0.095 * S, 0.09 * S, 12),
+            wheelMat,
+          );
+          wheel.rotation.z = Math.PI / 2;
+          wheel.position.set(wx * S, -0.14 * S, tz * S);
+          root.add(wheel);
+        }
+      }
+
+      root.add(deck, gripTape);
+      break;
+    }
+
+    case 'sprayCan': {
+      const canMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.24, metalness: 0.45 });
+      const labelMat = createPlasticBrickMaterial(accentColor, { roughness: 0.32 });
+      const silverMat = createPlasticBrickMaterial('#e2e8f0', { roughness: 0.16, metalness: 0.88 });
+      const capMat = createPlasticBrickMaterial('#f8fafc', { roughness: 0.45 });
+
+      const cylinder = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.22 * S, 0.22 * S, 0.72 * S, 18),
+        canMat,
+      );
+      cylinder.position.y = 0.06 * S;
+
+      const labelBand = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.226 * S, 0.226 * S, 0.34 * S, 18),
+        labelMat,
+      );
+      labelBand.position.y = 0.08 * S;
+
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22 * S, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5),
+        silverMat,
+      );
+      dome.position.y = 0.42 * S;
+
+      const nozzle = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.068 * S, 0.072 * S, 0.1 * S, 12),
+        capMat,
+      );
+      nozzle.position.y = 0.65 * S;
+
+      const jetDot = new THREE.Mesh(
+        new THREE.BoxGeometry(0.03 * S, 0.03 * S, 0.03 * S),
+        labelMat,
+      );
+      jetDot.position.set(0, 0.66 * S, 0.065 * S);
+
+      root.add(cylinder, labelBand, dome, nozzle, jetDot);
+      break;
+    }
+
+    case 'walkieTalkie': {
+      const bodyMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.52, metalness: 0.18 });
+      const darkMat = createPlasticBrickMaterial('#111827', { roughness: 0.65 });
+      const ledMat = new THREE.MeshStandardMaterial({
+        color: accentColor,
+        emissive: accentColor,
+        emissiveIntensity: 1.15,
+        roughness: 0.15,
+      });
+
+      const chassis = new THREE.Mesh(new THREE.BoxGeometry(0.36 * S, 0.72 * S, 0.22 * S), bodyMat);
+      chassis.position.y = 0.1 * S;
+
+      const screen = new THREE.Mesh(new THREE.BoxGeometry(0.26 * S, 0.16 * S, 0.03 * S), ledMat);
+      screen.position.set(0, 0.28 * S, 0.11 * S);
+
+      // Speaker grille slits
+      for (let i = 0; i < 4; i++) {
+        const slit = new THREE.Mesh(new THREE.BoxGeometry(0.24 * S, 0.025 * S, 0.025 * S), darkMat);
+        slit.position.set(0, (0.06 - i * 0.06) * S, 0.115 * S);
+        root.add(slit);
+      }
+
+      // Whip antenna + knob + blinking LED
+      const antenna = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.022 * S, 0.034 * S, 0.74 * S, 8),
+        darkMat,
+      );
+      antenna.position.set(0.1 * S, 0.8 * S, 0);
+
+      const knob = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.055 * S, 0.055 * S, 0.09 * S, 10),
+        darkMat,
+      );
+      knob.position.set(-0.08 * S, 0.5 * S, 0);
+
+      const statusLed = new THREE.Mesh(new THREE.SphereGeometry(0.032 * S, 8, 6), ledMat);
+      statusLed.position.set(-0.11 * S, 0.4 * S, 0.115 * S);
+      statusLed.userData.itemFx = 'ledBlink';
+
+      root.add(chassis, screen, antenna, knob, statusLed);
+      break;
+    }
+
+    case 'spellbook': {
+      const coverMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.58 });
+      const goldMat = createPlasticBrickMaterial(accentColor, { roughness: 0.2, metalness: 0.84 });
+      const pageMat = createPlasticBrickMaterial('#fef3c7', { roughness: 0.86 });
+      const runeMat = new THREE.MeshStandardMaterial({
+        color: accentColor,
+        emissive: accentColor,
+        emissiveIntensity: 1.1,
+        roughness: 0.12,
+      });
+
+      const backCover = new THREE.Mesh(new THREE.BoxGeometry(0.68 * S, 0.1 * S, 0.86 * S), coverMat);
+      const pages = new THREE.Mesh(new THREE.BoxGeometry(0.62 * S, 0.12 * S, 0.8 * S), pageMat);
+      pages.position.set(0.02 * S, 0.09 * S, 0);
+
+      // Slightly raised top cover with brass corner brackets
+      const topCover = new THREE.Mesh(new THREE.BoxGeometry(0.68 * S, 0.05 * S, 0.86 * S), coverMat);
+      topCover.position.set(0, 0.16 * S, 0);
+
+      const spine = new THREE.Mesh(new THREE.BoxGeometry(0.09 * S, 0.22 * S, 0.88 * S), goldMat);
+      spine.position.set(-0.33 * S, 0.08 * S, 0);
+
+      for (const sx of [-0.28, 0.28]) {
+        for (const sz of [-0.36, 0.36]) {
+          const corner = new THREE.Mesh(new THREE.BoxGeometry(0.14 * S, 0.07 * S, 0.14 * S), goldMat);
+          corner.position.set(sx * S, 0.17 * S, sz * S);
+          root.add(corner);
+        }
+      }
+
+      // Levitating arcane rune emblem above grimoire
+      const runeGroup = new THREE.Group();
+      runeGroup.position.set(0, 0.42 * S, 0);
+      runeGroup.userData.itemFx = 'orbHover';
+      runeGroup.userData.baseY = 0.42 * S;
+      const runeRing = new THREE.Mesh(new THREE.TorusGeometry(0.18 * S, 0.024 * S, 8, 18), runeMat);
+      runeRing.rotation.x = Math.PI / 2;
+      const runeGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.09 * S, 0), runeMat);
+      runeGroup.add(runeRing, runeGem);
+
+      root.add(backCover, pages, topCover, spine, runeGroup);
+      break;
+    }
+
+    case 'dragonKatana': {
+      const bladeMat = createPlasticBrickMaterial(primaryColor, {
+        roughness: 0.12,
+        metalness: 0.92,
+      });
+      const goldMat = createPlasticBrickMaterial(accentColor, {
+        roughness: 0.2,
+        metalness: 0.88,
+      });
+      const wrapMat = createPlasticBrickMaterial('#111827', { roughness: 0.78 });
+      const glowMat = new THREE.MeshStandardMaterial({
+        color: accentColor,
+        emissive: accentColor,
+        emissiveIntensity: 0.8,
+        roughness: 0.15,
+      });
+
+      const tsuka = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.085 * S, 0.095 * S, 0.92 * S, 10),
+        wrapMat,
+      );
+      tsuka.rotation.x = Math.PI / 2;
+      tsuka.position.z = -0.06 * S;
+
+      // Diamond tsuka-ito accents
+      for (let i = -3; i <= 2; i++) {
+        const diamond = new THREE.Mesh(new THREE.OctahedronGeometry(0.048 * S, 0), goldMat);
+        diamond.scale.set(1.2, 0.4, 0.8);
+        diamond.position.set(0, 0.08 * S, i * 0.12 * S);
+        root.add(diamond);
+      }
+
+      const tsuba = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.24 * S, 0.24 * S, 0.06 * S, 16),
+        goldMat,
+      );
+      tsuba.rotation.x = Math.PI / 2;
+      tsuba.position.z = 0.42 * S;
+
+      const habaki = new THREE.Mesh(new THREE.BoxGeometry(0.11 * S, 0.2 * S, 0.16 * S), goldMat);
+      habaki.position.z = 0.52 * S;
+
+      // Segmented gently curved katana blade
+      const bladeA = new THREE.Mesh(new THREE.BoxGeometry(0.06 * S, 0.17 * S, 1.35 * S), bladeMat);
+      bladeA.position.set(0, 0.02 * S, 1.24 * S);
+      const bladeB = new THREE.Mesh(new THREE.BoxGeometry(0.055 * S, 0.15 * S, 1.2 * S), bladeMat);
+      bladeB.position.set(0, 0.09 * S, 2.48 * S);
+      bladeB.rotation.x = -0.09;
+
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.1 * S, 0.34 * S, 4), bladeMat);
+      tip.rotation.x = Math.PI / 2 - 0.12;
+      tip.rotation.z = Math.PI / 4;
+      tip.scale.set(0.45, 1, 1.2);
+      tip.position.set(0, 0.17 * S, 3.22 * S);
+
+      // Glowing dragon hamon line
+      const hamon = new THREE.Mesh(new THREE.BoxGeometry(0.068 * S, 0.03 * S, 2.35 * S), glowMat);
+      hamon.position.set(0, -0.02 * S, 1.82 * S);
+      hamon.userData.itemFx = 'pulseAura';
+
+      root.add(tsuka, tsuba, habaki, bladeA, bladeB, tip, hamon);
+      break;
+    }
+
+    case 'crystalWand': {
+      const rodMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.42, metalness: 0.18 });
+      const goldMat = createPlasticBrickMaterial('#f5cd30', { roughness: 0.2, metalness: 0.88 });
+      const starMat = new THREE.MeshStandardMaterial({
+        color: accentColor,
+        emissive: accentColor,
+        emissiveIntensity: 1.2,
+        roughness: 0.1,
+        metalness: 0.2,
+      });
+
+      const wandRod = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.052 * S, 0.075 * S, 1.48 * S, 12),
+        rodMat,
+      );
+      wandRod.position.y = 0.46 * S;
+
+      const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.095 * S, 10, 8), goldMat);
+      pommel.position.y = -0.3 * S;
+
+      const cradle = new THREE.Mesh(
+        new THREE.TorusGeometry(0.14 * S, 0.028 * S, 8, 16, Math.PI * 1.25),
+        goldMat,
+      );
+      cradle.position.y = 1.26 * S;
+      cradle.rotation.z = -Math.PI * 0.62;
+
+      const crystalStar = new THREE.Mesh(new THREE.OctahedronGeometry(0.22 * S, 0), starMat);
+      crystalStar.position.y = 1.48 * S;
+      crystalStar.userData.itemFx = 'orbHover';
+      crystalStar.userData.baseY = 1.48 * S;
+
+      const orbitRing = new THREE.Mesh(new THREE.TorusGeometry(0.3 * S, 0.022 * S, 8, 18), starMat);
+      orbitRing.position.y = 1.48 * S;
+      orbitRing.rotation.set(0.7, 0.2, 0);
+      orbitRing.userData.itemFx = 'spinOrbit';
+
+      root.add(wandRod, pommel, cradle, crystalStar, orbitRing);
+      break;
+    }
   }
 
   setShadows(root, true, true);
   return root;
+}
+
+/**
+ * Deterministic timeline-synced micro-FX for glowing, floating, or spinning held items.
+ */
+export function animateHeldItemGroup(group: THREE.Object3D, time: number) {
+  group.traverse((obj) => {
+    const fx = obj.userData?.itemFx as string | undefined;
+    if (!fx) return;
+    switch (fx) {
+      case 'spinY':
+        obj.rotation.y = time * 4.5;
+        break;
+      case 'spinOrbit':
+        obj.rotation.y = time * 2.4;
+        obj.rotation.x = 0.65 + Math.sin(time * 2.1) * 0.18;
+        break;
+      case 'orbHover': {
+        const baseY = (obj.userData.baseY as number) ?? obj.position.y;
+        obj.position.y = baseY + Math.sin(time * 3.2) * 0.032;
+        obj.rotation.y = time * 1.6;
+        break;
+      }
+      case 'flameFlicker': {
+        const sy = 0.88 + Math.sin(time * 12.5) * 0.14 + Math.cos(time * 19.3) * 0.06;
+        const sxz = 0.94 + Math.cos(time * 10.2) * 0.08;
+        obj.scale.set(sxz, sy, sxz);
+        break;
+      }
+      case 'pulseAura': {
+        const pulse = 0.94 + Math.sin(time * 8.0) * 0.08;
+        obj.scale.set(pulse, 1, pulse);
+        break;
+      }
+      case 'holoPulse': {
+        const p = 0.92 + Math.sin(time * 5.2) * 0.09;
+        obj.scale.set(p, 1, p);
+        break;
+      }
+      case 'screenPulse': {
+        const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+        if (mat && typeof mat.emissiveIntensity === 'number') {
+          mat.emissiveIntensity = 0.48 + Math.sin(time * 2.8) * 0.12;
+        }
+        break;
+      }
+      case 'ledBlink': {
+        const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+        if (mat && typeof mat.emissiveIntensity === 'number') {
+          mat.emissiveIntensity = Math.sin(time * 6.0) > 0.15 ? 1.25 : 0.25;
+        }
+        break;
+      }
+    }
+  });
 }
 
 /**
@@ -872,11 +1624,19 @@ export function buildGroundedItemPropGroup(
   const model = buildItemModelGroup(itemId, primaryColor, accentColor, studTextures);
 
   // Orient horizontal weapons cleanly for floor / pedestal display
-  if (itemId === 'linkedSword' || itemId === 'energyBlade') {
+  if (
+    itemId === 'linkedSword' ||
+    itemId === 'energyBlade' ||
+    itemId === 'dragonKatana'
+  ) {
     model.rotation.set(-Math.PI / 2, 0, 0);
-  } else if (itemId === 'laserBlaster' || itemId === 'gravityHammer') {
+  } else if (
+    itemId === 'laserBlaster' ||
+    itemId === 'gravityHammer' ||
+    itemId === 'flashlight'
+  ) {
     model.rotation.set(0, 0, Math.PI / 2);
-  } else if (itemId === 'pizzaSlice') {
+  } else if (itemId === 'pizzaSlice' || itemId === 'skateboard') {
     model.rotation.set(0, 0, 0);
   }
 

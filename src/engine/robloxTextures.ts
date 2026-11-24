@@ -29,7 +29,8 @@ export function getRobloxLightingSpec(
   env: EnvironmentId,
 ): RobloxLightingSpec {
   const isBedroom = env === 'cozyBedroom';
-  const indoorFogScale = isBedroom ? 0.35 : 1;
+  const isBigCity = env === 'robloxCity';
+  const fogScale = isBedroom ? 0.35 : isBigCity ? 0.42 : 1;
   switch (mood) {
     case 'sunset':
       return {
@@ -41,7 +42,7 @@ export function getRobloxLightingSpec(
         cloudShadow: '#e28f6e',
         sunColor: '#fff0b3',
         fogColor: isBedroom ? 0x1e2235 : 0xe9a372,
-        fogDensity: 0.009 * indoorFogScale,
+        fogDensity: 0.009 * fogScale,
         keyColor: 0xffb76b,
         rimColor: 0x7dd3fc,
         hemiSky: 0xfdba74,
@@ -59,7 +60,7 @@ export function getRobloxLightingSpec(
         cloudShadow: '#233154',
         sunColor: '#e2e8f0',
         fogColor: 0x162244,
-        fogDensity: 0.012 * indoorFogScale,
+        fogDensity: 0.012 * fogScale,
         keyColor: 0x93c5fd,
         rimColor: 0x38bdf8,
         hemiSky: 0x3b82f6,
@@ -77,7 +78,7 @@ export function getRobloxLightingSpec(
         cloudShadow: '#a6b7c9',
         sunColor: '#f8fafc',
         fogColor: isBedroom ? 0x2a3142 : 0xc2d0de,
-        fogDensity: 0.011 * indoorFogScale,
+        fogDensity: 0.011 * fogScale,
         keyColor: 0xf1f5f9,
         rimColor: 0x93c5fd,
         hemiSky: 0xe2e8f0,
@@ -89,19 +90,19 @@ export function getRobloxLightingSpec(
     default:
       return {
         mood: 'noon',
-        skyTop: '#2b7de9',
-        skyHorizon: '#9cd6ff',
+        skyTop: isBigCity ? '#1d6fe2' : '#2b7de9',
+        skyHorizon: isBigCity ? '#a8ddff' : '#9cd6ff',
         skyBottom: '#bce4ff',
         cloudColor: '#ffffff',
         cloudShadow: '#cfe7fa',
         sunColor: '#fffbeb',
-        fogColor: isBedroom ? 0x242c3d : 0xa8dcff,
-        fogDensity: 0.007 * indoorFogScale,
+        fogColor: isBedroom ? 0x242c3d : isBigCity ? 0xb8e2ff : 0xa8dcff,
+        fogDensity: 0.007 * fogScale,
         keyColor: 0xfff3d6,
         rimColor: 0x7dd3fc,
         hemiSky: 0xbae6fd,
-        hemiGround: 0x4d6b3c,
-        exposure: 1.06,
+        hemiGround: isBigCity ? 0x64748b : 0x4d6b3c,
+        exposure: isBigCity ? 1.08 : 1.06,
         isNight: false,
       };
   }

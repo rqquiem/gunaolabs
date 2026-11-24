@@ -48,6 +48,7 @@ import {
   createEmptyHandState,
   DUAL_WIELD_COMBOS,
   formatHeldItemsSummary,
+  ITEM_CATEGORIES,
 } from './itemCatalog';
 import {
   evaluateActorFaceAt,
@@ -65,20 +66,28 @@ import {
   BEDROOM_SKIT_PROJECT,
   BRICKIA_CHRONICLES_LONG_PROJECT,
   CROSSROADS_SHOWDOWN_PROJECT,
+  ROBLOX_CITY_SHOWCASE_PROJECT,
   ROBLOXIAN_TOWN_PROJECT,
 } from './presets';
 import { THE_IDIOM_TOWN_PROJECT } from './idiomEpisode';
 import {
+  ACCESSORY_COMBOS,
+  BELT_STYLE_OPTIONS,
   cloneBundle,
+  CLOTHING_PATTERN_OPTIONS,
+  FABRIC_MATERIAL_OPTIONS,
   FOOTWEAR_CATALOG,
   getHatTuckProfile,
   HAIR_HIGHLIGHT_PATTERNS,
   HAIR_STYLE_CATALOG,
+  normalizeAccessoryFit,
   ORNAMENT_CATALOG,
+  OUTERWEAR_CATALOG,
   OUTFIT_PRESETS,
   PANT_CATALOG,
   resolveActorClothing,
   resolveActorHair,
+  resolveActorOrnaments,
   ROBLOX_AVATAR_BUNDLES,
   SHIRT_CATALOG,
 } from './robloxCatalog';
@@ -135,8 +144,11 @@ test('R6 body parts and 6 ornament slots are complete in catalog and bundles', (
     'head',
     'hat',
     'face',
-    'arm',
+    'neck',
+    'shoulder',
     'back',
+    'waist',
+    'arm',
     'legs',
   ]);
   for (const slot of ORNAMENT_SLOTS) {
@@ -502,8 +514,8 @@ test('MP4 recorder dimension alignment, Constrained Baseline H.264 priority, and
 });
 
 test('Map Library catalog, hot-swap preservation, and custom map builder helpers', () => {
-  assert.equal(BUILT_IN_MAPS.length, 7);
-  assert.equal(MAP_MODULE_CATALOG.length, 26);
+  assert.equal(BUILT_IN_MAPS.length, 8);
+  assert.equal(MAP_MODULE_CATALOG.length, 32);
 
   const lunar = BUILT_IN_MAPS.find((m) => m.builtInSourceId === 'lunarOutpost')!;
   const swappedKeepMood = applyMapToProject(CROSSROADS_SHOWDOWN_PROJECT, lunar, false);
@@ -556,7 +568,7 @@ test('Map & Scene Library JSON roundtrip and embedded customMap preservation in 
   assert.equal(parsedProj.customMap?.name, 'Neon Arena Test');
   assert.equal(parsedProj.customMap?.modules.length, customMap.modules.length);
 
-  assert.equal(BUILT_IN_SCENES.length, 10);
+  assert.equal(BUILT_IN_SCENES.length, 11);
   const snapshot = createSceneEntryFromProject(
     projWithCustomMap,
     'Custom Arena Snapshot',
@@ -571,9 +583,9 @@ test('Map & Scene Library JSON roundtrip and embedded customMap preservation in 
 });
 
 test('Item & Prop catalog completeness, dual-wield grip presets, and summary formatting', () => {
-  assert.equal(BUILT_IN_ITEMS.length, 18);
+  assert.equal(BUILT_IN_ITEMS.length, 30);
   assert.equal(BUILT_IN_PROPS.length, 32);
-  assert.equal(DUAL_WIELD_COMBOS.length, 6);
+  assert.equal(DUAL_WIELD_COMBOS.length, 9);
 
   const shieldR = createDefaultHandStateForItem('heaterShield', 'right');
   const shieldL = createDefaultHandStateForItem('heaterShield', 'left');
@@ -910,9 +922,13 @@ test('Wardrobe catalogs, hat-tuck profiles, dual-color ornaments, and outfit pre
   assert.ok(HAIR_STYLE_CATALOG.length >= 12);
   assert.ok(HAIR_STYLE_CATALOG.some((h) => h.id === 'longWavyPart'));
   assert.equal(HAIR_HIGHLIGHT_PATTERNS.length, 4);
-  assert.ok(SHIRT_CATALOG.length >= 11);
-  assert.ok(PANT_CATALOG.length >= 8);
-  assert.equal(FOOTWEAR_CATALOG.length, 5);
+  assert.ok(SHIRT_CATALOG.length >= 16);
+  assert.ok(OUTERWEAR_CATALOG.length >= 10);
+  assert.ok(PANT_CATALOG.length >= 13);
+  assert.ok(FOOTWEAR_CATALOG.length >= 9);
+  assert.equal(FABRIC_MATERIAL_OPTIONS.length, 8);
+  assert.equal(CLOTHING_PATTERN_OPTIONS.length, 7);
+  assert.equal(BELT_STYLE_OPTIONS.length, 5);
   assert.equal(OUTFIT_PRESETS.length, ROBLOX_AVATAR_BUNDLES.length);
 
   assert.equal(getHatTuckProfile('none'), 'none');
@@ -967,14 +983,26 @@ test('Hair framework, layered clothing, legacy spiky-hat migration, and hair sec
       flowerAccessory: true,
     },
     clothing: {
-      shirtId: 'hoodie' as const,
+      shirtId: 'turtleneck' as const,
       shirtColor: '#312e81',
       shirtAccent: '#38bdf8',
-      sleeveMode: 'short' as const,
-      pantsId: 'cargo' as const,
+      sleeveMode: 'long' as const,
+      topFabric: 'knit' as const,
+      topPattern: 'argyle' as const,
+      outerwearId: 'trenchCoat' as const,
+      outerwearColor: '#c28b59',
+      outerwearAccent: '#57371d',
+      outerwearFabric: 'cotton' as const,
+      outerwearOpen: true,
+      pantsId: 'pleatedSkirt' as const,
       pantsColor: '#334155',
       pantsAccent: '#f59e0b',
-      footwearId: 'boots' as const,
+      bottomFabric: 'satin' as const,
+      bottomPattern: 'plaid' as const,
+      beltStyle: 'chain' as const,
+      footwearId: 'platformShoes' as const,
+      shoeColor: '#0f172a',
+      shoeAccent: '#e2e8f0',
     },
     ornaments: {
       ...CROSSROADS_SHOWDOWN_PROJECT.actors[0].ornaments!,
@@ -994,11 +1022,22 @@ test('Hair framework, layered clothing, legacy spiky-hat migration, and hair sec
   assert.equal(roundtrip.hair?.flowerAccessory, true);
   assert.equal(roundtrip.hair?.highlightPattern, 'ombre');
   assert.equal(roundtrip.hair?.volume, 1.25);
-  assert.equal(roundtrip.clothing?.shirtId, 'hoodie');
-  assert.equal(roundtrip.clothing?.sleeveMode, 'short');
-  assert.equal(roundtrip.clothing?.footwearId, 'boots');
+  assert.equal(roundtrip.clothing?.shirtId, 'turtleneck');
+  assert.equal(roundtrip.clothing?.topFabric, 'knit');
+  assert.equal(roundtrip.clothing?.topPattern, 'argyle');
+  assert.equal(roundtrip.clothing?.outerwearId, 'trenchCoat');
+  assert.equal(roundtrip.clothing?.outerwearColor, '#c28b59');
+  assert.equal(roundtrip.clothing?.outerwearOpen, true);
+  assert.equal(roundtrip.clothing?.pantsId, 'pleatedSkirt');
+  assert.equal(roundtrip.clothing?.bottomFabric, 'satin');
+  assert.equal(roundtrip.clothing?.bottomPattern, 'plaid');
+  assert.equal(roundtrip.clothing?.beltStyle, 'chain');
+  assert.equal(roundtrip.clothing?.footwearId, 'platformShoes');
+  assert.equal(roundtrip.clothing?.shoeColor, '#0f172a');
+  assert.equal(roundtrip.clothing?.shoeAccent, '#e2e8f0');
   assert.equal(roundtrip.ornaments?.back.accentColor, '#38bdf8');
-  assert.equal(resolveActorClothing(roundtrip).pantsId, 'cargo');
+  assert.equal(resolveActorClothing(roundtrip).outerwearId, 'trenchCoat');
+  assert.equal(resolveActorClothing(roundtrip).pantsId, 'pleatedSkirt');
 
   // Secondary motion includes deterministic hairPitch and hairRoll during motion and zeroes when disabled
   const knight = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
@@ -1099,5 +1138,138 @@ test('The Idiom Town 90s episode features 7 scenes, voiceover/dialogue roles, SF
     91.5,
   );
 });
+
+test('Reworked accessory framework supports 9 slots, per-slot Fit Tuning clamping/roundtrip, quick combos, and 30 handheld items', () => {
+  assert.equal(ORNAMENT_SLOTS.length, 9);
+  assert.ok(ORNAMENT_CATALOG.head.length >= 15);
+  assert.ok(ORNAMENT_CATALOG.hat.length >= 19);
+  assert.ok(ORNAMENT_CATALOG.neck.length >= 9);
+  assert.ok(ORNAMENT_CATALOG.shoulder.length >= 8);
+  assert.ok(ORNAMENT_CATALOG.waist.length >= 8);
+  assert.ok(ORNAMENT_CATALOG.back.length >= 13);
+  assert.ok(ORNAMENT_CATALOG.arm.length >= 8);
+  assert.ok(ORNAMENT_CATALOG.legs.length >= 8);
+  assert.ok(ACCESSORY_COMBOS.length >= 6);
+
+  // Everyday & modern handheld items and expanded dual-wield combos
+  assert.ok(ITEM_CATEGORIES.includes('everyday'));
+  assert.ok(BUILT_IN_ITEMS.length >= 30);
+  assert.ok(BUILT_IN_ITEMS.some((i) => i.id === 'smartphone' && i.category === 'everyday'));
+  assert.ok(BUILT_IN_ITEMS.some((i) => i.id === 'icedCoffee' && i.category === 'everyday'));
+  assert.ok(BUILT_IN_ITEMS.some((i) => i.id === 'dragonKatana' && i.category === 'scifiFantasy'));
+  assert.ok(BUILT_IN_ITEMS.some((i) => i.id === 'crystalWand' && i.category === 'scifiFantasy'));
+  assert.ok(DUAL_WIELD_COMBOS.length >= 9);
+
+  // Backward compatibility: legacy 6-slot actor resolves with empty neck/shoulder/waist defaults
+  const legacyActor = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
+  const resolved = resolveActorOrnaments(legacyActor);
+  assert.equal(resolved.neck.id, 'none');
+  assert.equal(resolved.shoulder.id, 'none');
+  assert.equal(resolved.waist.id, 'none');
+
+  // Fit clamping bounds check
+  const clamped = normalizeAccessoryFit({
+    offsetY: 2.5,
+    offsetZ: -3.0,
+    tiltX: 90,
+    tiltZ: -90,
+    scale: 4.0,
+  });
+  assert.equal(clamped.offsetY, 0.35);
+  assert.equal(clamped.offsetZ, -0.3);
+  assert.equal(clamped.tiltX, 30);
+  assert.equal(clamped.tiltZ, -30);
+  assert.equal(clamped.scale, 1.35);
+
+  // Full JSON roundtrip for new Neck, Shoulder, Waist slots + custom Fit Tuning
+  const gearedActor = {
+    ...legacyActor,
+    ornaments: {
+      ...resolved,
+      head: {
+        id: 'roundGlasses',
+        color: '#f5cd30',
+        accentColor: '#38bdf8',
+        fit: { offsetY: 0.08, offsetZ: 0.04, tiltX: -6, tiltZ: 4, scale: 1.1 },
+      },
+      neck: { id: 'knitScarf', color: '#dc2626', accentColor: '#f8fafc' },
+      shoulder: {
+        id: 'shoulderCat',
+        color: '#fb923c',
+        accentColor: '#f472b6',
+        fit: { offsetY: 0.5, scale: 0.2 }, // clamps to 0.35 and 0.75
+      },
+      waist: { id: 'crossbodySling', color: '#1e293b', accentColor: '#38bdf8' },
+    },
+  };
+
+  const parsed = parseProjectJson(
+    serializeProject({
+      ...CROSSROADS_SHOWDOWN_PROJECT,
+      actors: [gearedActor],
+    }),
+  );
+  const rt = parsed.actors[0].ornaments!;
+  assert.equal(rt.head.id, 'roundGlasses');
+  assert.equal(rt.head.fit?.offsetY, 0.08);
+  assert.equal(rt.head.fit?.tiltX, -6);
+  assert.equal(rt.head.fit?.scale, 1.1);
+  assert.equal(rt.neck?.id, 'knitScarf');
+  assert.equal(rt.shoulder?.id, 'shoulderCat');
+  assert.equal(rt.shoulder?.fit?.offsetY, 0.35);
+  assert.equal(rt.shoulder?.fit?.scale, 0.75);
+  assert.equal(rt.waist?.id, 'crossbodySling');
+});
+
+test('Roblox City big map, Roblox City Showcase scene, and Idiom Town city-skyline/camera/cast overhaul', () => {
+  const cityMap = BUILT_IN_MAPS.find((m) => m.id === 'map_roblox_city');
+  assert.ok(cityMap, 'Expected map_roblox_city in BUILT_IN_MAPS');
+  assert.equal(cityMap.builtInSourceId, 'robloxCity');
+  assert.equal(cityMap.baseplate.size, 88);
+  assert.equal(cityMap.baseplate.pathStyle, 'cityGrid');
+  assert.equal(cityMap.baseplate.perimeter, 'citySkyline');
+  assert.ok(cityMap.modules.length >= 24);
+  assert.ok(cityMap.modules.some((m) => m.kind === 'glassSkyscraper'));
+  assert.ok(cityMap.modules.some((m) => m.kind === 'brickTower'));
+  assert.ok(cityMap.modules.some((m) => m.kind === 'trafficSignal'));
+  assert.ok(cityMap.modules.some((m) => m.kind === 'subwayEntrance'));
+  assert.ok(cityMap.modules.some((m) => m.kind === 'billboardGantry'));
+  assert.ok(cityMap.modules.some((m) => m.kind === 'cityBusStop'));
+
+  // Roundtrip serialization preserves cityGrid, citySkyline, and large 88-stud footprint
+  const cityRoundtrip = parseMapLibraryJson(serializeSingleMap(cityMap))[0];
+  assert.equal(cityRoundtrip.baseplate.size, 88);
+  assert.equal(cityRoundtrip.baseplate.pathStyle, 'cityGrid');
+  assert.equal(cityRoundtrip.baseplate.perimeter, 'citySkyline');
+  assert.equal(cityRoundtrip.modules.length, cityMap.modules.length);
+
+  // Roblox City Showcase scene registered in BUILT_IN_SCENES and evaluates cleanly
+  const showcaseEntry = BUILT_IN_SCENES.find((s) => s.id === 'scene_roblox_city_showcase');
+  assert.ok(showcaseEntry, 'Expected scene_roblox_city_showcase in BUILT_IN_SCENES');
+  assert.equal(ROBLOX_CITY_SHOWCASE_PROJECT.environment, 'robloxCity');
+  assert.ok(ROBLOX_CITY_SHOWCASE_PROJECT.cameraTrack.length >= 6);
+  const rcMid = evaluateProjectAt(ROBLOX_CITY_SHOWCASE_PROJECT, 9.0);
+  assert.ok(rcMid.actors['actor-city-maya']);
+  assert.ok(rcMid.actors['prop-city-taxi']);
+  assert.ok(rcMid.actors['prop-city-bus']);
+  assert.ok(Math.abs(rcMid.actors['prop-city-bus'].position[2] - 10.6) < 0.05);
+
+  const rcParsed = parseProjectJson(serializeProject(ROBLOX_CITY_SHOWCASE_PROJECT));
+  assert.equal(rcParsed.environment, 'robloxCity');
+  assert.equal(rcParsed.actors.length, ROBLOX_CITY_SHOWCASE_PROJECT.actors.length);
+
+  // Upgraded Idiom Town episode: expanded city-skyline outdoor maps, upgraded cameras, & modern cast wardrobe
+  assert.ok(THE_IDIOM_TOWN_PROJECT.cameraTrack.length >= 25);
+  const s1Map = THE_IDIOM_TOWN_PROJECT.mapTrack?.[0]?.customMap;
+  const s7Map = THE_IDIOM_TOWN_PROJECT.mapTrack?.[6]?.customMap;
+  assert.equal(s1Map?.baseplate.perimeter, 'citySkyline');
+  assert.equal(s7Map?.baseplate.perimeter, 'citySkyline');
+  assert.ok((s1Map?.baseplate.size ?? 0) >= 44);
+  assert.ok((s7Map?.baseplate.size ?? 0) >= 44);
+  const characterActors = THE_IDIOM_TOWN_PROJECT.actors.filter((a) => a.kind === 'character');
+  assert.ok(characterActors.some((a) => a.clothing?.outerwearId && a.clothing.outerwearId !== 'none'));
+  assert.ok(characterActors.some((a) => a.ornaments?.neck && a.ornaments.neck.id !== 'none'));
+});
+
 
 

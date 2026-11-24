@@ -36,6 +36,7 @@ const PATH_STYLES: { id: MapPathStyle; label: string }[] = [
   { id: 'cross', label: 'Crossroads' },
   { id: 'plaza', label: 'Plaza' },
   { id: 'street', label: 'Main Street' },
+  { id: 'cityGrid', label: 'City Grid' },
   { id: 'hardwood', label: 'Hardwood' },
   { id: 'runway', label: 'Runway' },
   { id: 'none', label: 'Clean' },
@@ -43,6 +44,7 @@ const PATH_STYLES: { id: MapPathStyle; label: string }[] = [
 
 const PERIMETER_STYLES: { id: MapPerimeterStyle; label: string }[] = [
   { id: 'trees', label: 'Trees' },
+  { id: 'citySkyline', label: 'City Skyline' },
   { id: 'picketFence', label: 'Picket Fence' },
   { id: 'bedroomCorner', label: 'Bedroom L-Wall' },
   { id: 'rocks', label: 'Rocks' },
@@ -134,7 +136,7 @@ export const MapBuilderView: React.FC<MapBuilderViewProps> = ({
       id: `mod_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
       label: `${mod.label} Copy`.slice(0, 40),
       position: [
-        Math.min(28, Number((mod.position[0] + 2.5).toFixed(1))),
+        Math.min(42, Number((mod.position[0] + 2.5).toFixed(1))),
         mod.position[1],
         mod.position[2],
       ],
@@ -218,7 +220,7 @@ export const MapBuilderView: React.FC<MapBuilderViewProps> = ({
             type="range"
             aria-label="Baseplate Size"
             min={24}
-            max={56}
+            max={96}
             step={2}
             value={activeCustomMap.baseplate.size}
             onChange={(e) =>
@@ -492,8 +494,8 @@ export const MapBuilderView: React.FC<MapBuilderViewProps> = ({
                 <span className="w-12 text-slate-400 shrink-0">Pos X</span>
                 <input
                   type="range"
-                  min={-24}
-                  max={24}
+                  min={-42}
+                  max={42}
                   step={0.5}
                   value={selectedModule.position[0]}
                   onChange={(e) =>
@@ -516,8 +518,8 @@ export const MapBuilderView: React.FC<MapBuilderViewProps> = ({
                 <span className="w-12 text-slate-400 shrink-0">Pos Z</span>
                 <input
                   type="range"
-                  min={-24}
-                  max={24}
+                  min={-42}
+                  max={42}
                   step={0.5}
                   value={selectedModule.position[2]}
                   onChange={(e) =>

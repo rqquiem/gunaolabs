@@ -4,6 +4,7 @@ import {
   createDefaultClothingConfig,
   createDefaultHairConfig,
   getHatTuckProfile,
+  normalizeOrnaments,
 } from './robloxCatalog';
 import {
   createPlasticBrickMaterial,
@@ -11,21 +12,27 @@ import {
   StudTexturePair,
 } from './robloxTextures';
 import {
-  buildArmOrnament,
-  buildBackOrnament,
-  buildClothing3DTrims,
+  AccessoryAnimHandle,
+  applyAccessoryFit,
+  buildArmAccessory,
+  buildBackAccessory,
+  buildClothingRig,
   buildHairRig,
-  buildHatOrnament,
-  buildHeadOrnament,
-  buildLegsOrnaments,
+  buildHatAccessory,
+  buildHeadAccessory,
+  buildLegsAccessories,
+  buildNeckAccessory,
+  buildShoulderAccessory,
+  buildWaistAccessory,
   createArmClothingMaterial,
   createLegClothingMaterials,
   createTorsoClothingMaterials,
   disposeGroupChildren,
   disposeMaterialSet,
+  RobloxClothingRig,
   RobloxHairRig,
 } from './robloxWardrobe';
-import { buildItemModelGroup } from './robloxItems';
+import { animateHeldItemGroup, buildItemModelGroup } from './robloxItems';
 import {
   ClothingConfig,
   EvaluatedFaceState,
@@ -62,7 +69,7 @@ export interface RobloxR6CharacterRig {
     face: EvaluatedFaceState,
     gazeOverride?: { x: number; y: number } | null,
   ) => void;
-  applySecondaryMotion: (sec: SecondaryMotionState) => void;
+  applySecondaryMotion: (sec: SecondaryMotionState, time?: number) => void;
   setBodyColors: (colors: R6BodyColors) => void;
   setOrnaments: (ornaments: R6Ornaments) => void;
   setHair: (hair: HairConfig) => void;
@@ -165,6 +172,9 @@ export function buildRobloxR6CharacterRig(
   const hipPivot = new THREE.Group();
   hipPivot.position.set(0, TORSO_BASE_Y, 0);
   root.add(hipPivot);
+
+  const hipClothingGroup = new THREE.Group();
+  hipPivot.add(hipClothingGroup);
 
   // --- TORSO (2 x 2 x 1 studs) ---
   const torsoPivot = new THREE.Group();
@@ -292,10 +302,12 @@ export function buildRobloxR6CharacterRig(
     rightLeg: rightLegPivot,
   };
 
-  // --- SOCKETS (Head, Hat, Hair, Face, Arm, Back, Legs) ---
+  // --- SOCKETS (Head, Hat, Hair, Face, Neck, Shoulder, Arm, Back, Waist, Legs) ---
   const headSocket = new THREE.Group();
   headSocket.position.set(0, 0.56 * R6_STUD, 0);
   headPivot.add(headSocket);
+  const headFitPivot = new THREE.Group();
+  headSocket.add(headFitPivot);
 
   const hairSocket = new THREE.Group();
   hairSocket.position.set(0, 0.56 * R6_STUD, 0);
@@ -304,14 +316,30 @@ export function buildRobloxR6CharacterRig(
   const hatSocket = new THREE.Group();
   hatSocket.position.set(0, 1.06 * R6_STUD, 0);
   headPivot.add(hatSocket);
+  const hatFitPivot = new THREE.Group();
+  hatSocket.add(hatFitPivot);
 
   const faceSocket = new THREE.Group();
   faceSocket.position.set(0, 0.56 * R6_STUD, 0.59 * R6_STUD);
   headPivot.add(faceSocket);
 
+  const neckSocket = new THREE.Group();
+  neckSocket.position.set(0, 0.98 * R6_STUD, 0);
+  torsoPivot.add(neckSocket);
+  const neckFitPivot = new THREE.Group();
+  neckSocket.add(neckFitPivot);
+
+  const shoulderSocket = new THREE.Group();
+  shoulderSocket.position.set(0, 1.02 * R6_STUD, 0);
+  torsoPivot.add(shoulderSocket);
+  const shoulderFitPivot = new THREE.Group();
+  shoulderSocket.add(shoulderFitPivot);
+
   const armSocket = new THREE.Group();
   armSocket.position.set(0, -1.78 * R6_STUD, 0.35 * R6_STUD);
   rightArmPivot.add(armSocket);
+  const armFitPivot = new THREE.Group();
+  armSocket.add(armFitPivot);
 
   const rightHandSocket = new THREE.Group();
   rightHandSocket.position.set(0, -1.76 * R6_STUD, 0.36 * R6_STUD);
@@ -337,9 +365,20 @@ export function buildRobloxR6CharacterRig(
   const backSocket = new THREE.Group();
   backSocket.position.set(0, 0.1 * R6_STUD, -0.52 * R6_STUD);
   torsoPivot.add(backSocket);
+  const backFitPivot = new THREE.Group();
+  backSocket.add(backFitPivot);
+
+  const waistSocket = new THREE.Group();
+  waistSocket.position.set(0, -0.82 * R6_STUD, 0);
+  hipPivot.add(waistSocket);
+  const waistFitPivot = new THREE.Group();
+  waistSocket.add(waistFitPivot);
 
   const legsSocket = new THREE.Group();
   hipPivot.add(legsSocket);
+  const legsFitPivot = new THREE.Group();
+  legsSocket.add(legsFitPivot);
+
   const legLeftGuardSocket = new THREE.Group();
   legLeftGuardSocket.position.set(0, -1.0 * R6_STUD, 0);
   leftLegPivot.add(legLeftGuardSocket);
@@ -351,18 +390,24 @@ export function buildRobloxR6CharacterRig(
     head: headSocket,
     hat: hatSocket,
     face: faceSocket,
+    neck: neckSocket,
+    shoulder: shoulderSocket,
     arm: armSocket,
     back: backSocket,
+    waist: waistSocket,
     legs: legsSocket,
   };
 
-  // --- DYNAMIC CLOTHING MATERIAL MANAGEMENT ---
+  // --- DYNAMIC CLOTHING MATERIAL & RIG MANAGEMENT ---
   let dynamicTorsoMats: THREE.Material[] | null = null;
   let dynamicLeftArmMat: THREE.Material | null = null;
   let dynamicRightArmMat: THREE.Material | null = null;
   let dynamicLeftLegMats: THREE.Material[] | null = null;
   let dynamicRightLegMats: THREE.Material[] | null = null;
   let currentClothingSignature = '';
+  let clothingRig: RobloxClothingRig = {
+    applySecondaryMotion: () => {},
+  };
 
   const applyClothingAndSkinMaterials = (forceRebuild = false) => {
     const sig = JSON.stringify({ clothing: currentClothing, colors: currentBodyColors });
@@ -436,13 +481,15 @@ export function buildRobloxR6CharacterRig(
       rightLegMesh.material = dynamicRightLegMats;
     }
 
-    buildClothing3DTrims(
+    clothingRig = buildClothingRig(
       currentClothing,
       torsoTrimGroup,
+      hipClothingGroup,
       leftArmTrimGroup,
       rightArmTrimGroup,
       leftLegTrimGroup,
       rightLegTrimGroup,
+      maxAnisotropy,
     );
   };
 
@@ -461,72 +508,139 @@ export function buildRobloxR6CharacterRig(
     hairRig = buildHairRig(hairSocket, currentHair, currentHatId);
   };
 
-  // --- ORNAMENTS ---
-  let currentOrnamentsJson = '';
+  // --- ORNAMENTS & SCULPTED ACCESSORIES ---
+  const slotModelSignatures: Record<string, string> = {};
+  const slotAnimHandles: Record<string, AccessoryAnimHandle> = {};
+  let currentArmId = initialOrnaments.arm.id;
   let currentHandSignatures: Record<HandSlot, string> = { right: '', left: '' };
   let rightHandHasActiveItem = false;
-  let capeDrapePivot: THREE.Group | null = null;
-  let leftWingPivot: THREE.Group | null = null;
-  let rightWingPivot: THREE.Group | null = null;
+
+  const modelSig = (sel: { id: string; color: string; accentColor?: string }) =>
+    `${sel.id}|${sel.color}|${sel.accentColor ?? ''}`;
 
   const rebuildOrnaments = (ornaments: R6Ornaments) => {
-    const nextJson = JSON.stringify({
-      head: ornaments.head,
-      hat: ornaments.hat,
-      arm: ornaments.arm,
-      back: ornaments.back,
-      legs: ornaments.legs,
-    });
-    if (nextJson === currentOrnamentsJson) return;
-    currentOrnamentsJson = nextJson;
+    const norm = normalizeOrnaments(ornaments);
+    currentHatId = norm.hat.id;
+    currentArmId = norm.arm.id;
 
-    currentHatId = ornaments.hat.id;
+    // 1. Head eyewear / masks
+    const headSig = modelSig(norm.head);
+    if (headSig !== slotModelSignatures.head) {
+      slotModelSignatures.head = headSig;
+      slotAnimHandles.head = buildHeadAccessory(
+        headFitPivot,
+        norm.head.id,
+        norm.head.color,
+        norm.head.accentColor,
+      );
+    }
+    applyAccessoryFit(headFitPivot, norm.head.fit);
 
-    buildHeadOrnament(
-      headSocket,
-      ornaments.head.id,
-      ornaments.head.color,
-      ornaments.head.accentColor,
-    );
-    buildHatOrnament(
-      hatSocket,
-      ornaments.hat.id,
-      ornaments.hat.color,
-      ornaments.hat.accentColor,
-    );
-    hairRig.applyHatTuck(getHatTuckProfile(currentHatId));
+    // 2. Hats & headwear
+    const hatSig = modelSig(norm.hat);
+    if (hatSig !== slotModelSignatures.hat) {
+      slotModelSignatures.hat = hatSig;
+      slotAnimHandles.hat = buildHatAccessory(
+        hatFitPivot,
+        norm.hat.id,
+        norm.hat.color,
+        norm.hat.accentColor,
+      );
+      hairRig.applyHatTuck(getHatTuckProfile(currentHatId));
+    }
+    applyAccessoryFit(hatFitPivot, norm.hat.fit);
 
-    buildArmOrnament(
-      armSocket,
-      ornaments.arm.id,
-      ornaments.arm.color,
-      ornaments.arm.accentColor,
-    );
+    // 3. Neck accessories
+    const neckSig = modelSig(norm.neck);
+    if (neckSig !== slotModelSignatures.neck) {
+      slotModelSignatures.neck = neckSig;
+      slotAnimHandles.neck = buildNeckAccessory(
+        neckFitPivot,
+        norm.neck.id,
+        norm.neck.color,
+        norm.neck.accentColor,
+      );
+    }
+    applyAccessoryFit(neckFitPivot, norm.neck.fit);
+
+    // 4. Shoulder pals & pauldrons
+    const shoulderSig = modelSig(norm.shoulder);
+    if (shoulderSig !== slotModelSignatures.shoulder) {
+      slotModelSignatures.shoulder = shoulderSig;
+      slotAnimHandles.shoulder = buildShoulderAccessory(
+        shoulderFitPivot,
+        norm.shoulder.id,
+        norm.shoulder.color,
+        norm.shoulder.accentColor,
+      );
+    }
+    applyAccessoryFit(shoulderFitPivot, norm.shoulder.fit);
+
+    // 5. Arm accessories
+    const armSig = modelSig(norm.arm);
+    if (armSig !== slotModelSignatures.arm) {
+      slotModelSignatures.arm = armSig;
+      slotAnimHandles.arm = buildArmAccessory(
+        armFitPivot,
+        norm.arm.id,
+        norm.arm.color,
+        norm.arm.accentColor,
+      );
+    }
+    applyAccessoryFit(armFitPivot, norm.arm.fit);
 
     const isLegacyHeldOrnament =
-      ornaments.arm.id === 'sword' ||
-      ornaments.arm.id === 'bloxyCola' ||
-      ornaments.arm.id === 'shield';
+      norm.arm.id === 'sword' ||
+      norm.arm.id === 'bloxyCola' ||
+      norm.arm.id === 'shield';
     armSocket.visible = !(rightHandHasActiveItem && isLegacyHeldOrnament);
 
-    const backHandles = buildBackOrnament(
-      backSocket,
-      ornaments.back.id,
-      ornaments.back.color,
-      ornaments.back.accentColor,
-    );
-    capeDrapePivot = backHandles.capePivot;
-    leftWingPivot = backHandles.leftWing;
-    rightWingPivot = backHandles.rightWing;
+    // 6. Back accessories
+    const backSig = modelSig(norm.back);
+    if (backSig !== slotModelSignatures.back) {
+      slotModelSignatures.back = backSig;
+      slotAnimHandles.back = buildBackAccessory(
+        backFitPivot,
+        norm.back.id,
+        norm.back.color,
+        norm.back.accentColor,
+      );
+    }
+    applyAccessoryFit(backFitPivot, norm.back.fit);
 
-    buildLegsOrnaments(
-      legsSocket,
-      legLeftGuardSocket,
-      legRightGuardSocket,
-      ornaments.legs.id,
-      ornaments.legs.color,
-      ornaments.legs.accentColor,
-    );
+    // 7. Waist & bags
+    const waistSig = modelSig(norm.waist);
+    if (waistSig !== slotModelSignatures.waist) {
+      slotModelSignatures.waist = waistSig;
+      slotAnimHandles.waist = buildWaistAccessory(
+        waistFitPivot,
+        norm.waist.id,
+        norm.waist.color,
+        norm.waist.accentColor,
+      );
+    }
+    applyAccessoryFit(waistFitPivot, norm.waist.fit);
+
+    // 8. Legs & belts
+    const legsSig = modelSig(norm.legs);
+    if (legsSig !== slotModelSignatures.legs) {
+      slotModelSignatures.legs = legsSig;
+      slotAnimHandles.legs = buildLegsAccessories(
+        legsFitPivot,
+        legLeftGuardSocket,
+        legRightGuardSocket,
+        norm.legs.id,
+        norm.legs.color,
+        norm.legs.accentColor,
+      );
+    }
+    applyAccessoryFit(legsFitPivot, norm.legs.fit);
+    const legScale = norm.legs.fit?.scale ?? 1;
+    const legOffY = (norm.legs.fit?.offsetY ?? 0) * R6_STUD;
+    legLeftGuardSocket.position.set(0, -1.0 * R6_STUD + legOffY, 0);
+    legRightGuardSocket.position.set(0, -1.0 * R6_STUD + legOffY, 0);
+    legLeftGuardSocket.scale.setScalar(legScale);
+    legRightGuardSocket.scale.setScalar(legScale);
   };
 
   rebuildOrnaments(initialOrnaments);
@@ -577,16 +691,16 @@ export function buildRobloxR6CharacterRig(
     applyHeldHand('right', heldItems.right);
     applyHeldHand('left', heldItems.left);
     rightHandHasActiveItem = heldItems.right.itemId !== 'none';
-    if (currentOrnamentsJson) {
-      const parsed = JSON.parse(currentOrnamentsJson) as { arm?: { id: string } };
-      const armId = parsed.arm?.id;
-      const legacy =
-        armId === 'sword' || armId === 'bloxyCola' || armId === 'shield';
-      armSocket.visible = !(rightHandHasActiveItem && legacy);
-    }
+    const legacy =
+      currentArmId === 'sword' ||
+      currentArmId === 'bloxyCola' ||
+      currentArmId === 'shield';
+    armSocket.visible = !(rightHandHasActiveItem && legacy);
   };
 
   let baseHeadRot: [number, number, number] = [0, 0, 0];
+  let lastLeftLegPitch = 0;
+  let lastRightLegPitch = 0;
 
   const applyPose = (pose: EvaluatedPose) => {
     const hipOff = pose.hipOffset ?? [0, pose.torsoOffsetY, 0];
@@ -607,6 +721,8 @@ export function buildRobloxR6CharacterRig(
       pivots[part].rotation.set(r[0], r[1], r[2]);
     }
     baseHeadRot = [pose.joints.head[0], pose.joints.head[1], pose.joints.head[2]];
+    lastLeftLegPitch = pose.joints.leftLeg[0];
+    lastRightLegPitch = pose.joints.rightLeg[0];
   };
 
   const applyHeadLookAt = (yawRad: number, pitchRad: number, weight: number) => {
@@ -618,20 +734,25 @@ export function buildRobloxR6CharacterRig(
     );
   };
 
-  const applySecondaryMotion = (sec: SecondaryMotionState) => {
-    if (capeDrapePivot) {
-      capeDrapePivot.rotation.set(0.12 + sec.capePitch, 0, sec.capeRoll);
-    }
-    if (leftWingPivot && rightWingPivot) {
-      leftWingPivot.rotation.y = -0.45 - sec.wingSpread;
-      rightWingPivot.rotation.y = 0.45 + sec.wingSpread;
-    }
+  const applySecondaryMotion = (sec: SecondaryMotionState, time = 0) => {
     hatSocket.rotation.set(sec.hatLagX, 0, sec.hatLagZ);
     hairRig.applyPhysics(sec.hairPitch, sec.hairRoll);
+    clothingRig.applySecondaryMotion(sec, lastLeftLegPitch, lastRightLegPitch);
+
+    for (const handle of Object.values(slotAnimHandles)) {
+      handle.update?.(sec, time);
+    }
 
     armSocket.rotation.x = sec.propSwing;
     rightHandSocket.rotation.x = sec.propSwing;
     leftHandSocket.rotation.x = -sec.propSwing * 0.7;
+
+    if (rightGripPivot.visible) {
+      animateHeldItemGroup(rightGripPivot, time);
+    }
+    if (leftGripPivot.visible) {
+      animateHeldItemGroup(leftGripPivot, time);
+    }
   };
 
   const setBodyColors = (colors: R6BodyColors) => {

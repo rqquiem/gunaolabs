@@ -14,9 +14,19 @@ import {
   sanitizeMapDefinition,
 } from './mapLibrary';
 import {
+  BELT_STYLE_OPTIONS,
+  CLOTHING_PATTERN_OPTIONS,
+  FABRIC_MATERIAL_OPTIONS,
   FOOTWEAR_CATALOG,
+  HAIR_ACCESSORY_CATALOG,
+  HAIR_BANGS_CATALOG,
+  HAIR_FINISH_OPTIONS,
   HAIR_HIGHLIGHT_PATTERNS,
   HAIR_STYLE_CATALOG,
+  normalizeAccessoryFit,
+  normalizeOrnaments,
+  ORNAMENT_CATALOG,
+  OUTERWEAR_CATALOG,
   PANT_CATALOG,
   SHIRT_CATALOG,
   SLEEVE_MODE_OPTIONS,
@@ -45,6 +55,8 @@ import {
   MAX_SCENE_DURATION,
   MIN_SCENE_DURATION,
   MapKeyframe,
+  NormalizedR6Ornaments,
+  ORNAMENT_SLOTS,
   PoseClipId,
   R6_BODY_PARTS,
   R6BodyPartId,
@@ -1889,26 +1901,75 @@ function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
     };
   }
 
+  let sanitizedOrnaments: NormalizedR6Ornaments | undefined;
+  if (ornaments && typeof ornaments === 'object') {
+    const normalized = normalizeOrnaments(ornaments);
+    for (const slot of ORNAMENT_SLOTS) {
+      const validIds = new Set<string>(ORNAMENT_CATALOG[slot].map((item) => item.id));
+      const sel = normalized[slot];
+      const safeId = validIds.has(sel.id) ? sel.id : slot === 'face' ? 'classicSmile' : 'none';
+      const fallbackItem = ORNAMENT_CATALOG[slot].find((item) => item.id === safeId);
+      normalized[slot] = {
+        id: safeId,
+        color:
+          typeof sel.color === 'string' && sel.color
+            ? sel.color
+            : fallbackItem?.defaultColor ?? '#1b2a35',
+        ...(typeof sel.accentColor === 'string' && sel.accentColor
+          ? { accentColor: sel.accentColor }
+          : {}),
+        ...(sel.fit ? { fit: normalizeAccessoryFit(sel.fit) } : {}),
+      };
+    }
+    sanitizedOrnaments = normalized;
+  }
+
   const validHairIds = new Set<string>(HAIR_STYLE_CATALOG.map((h) => h.id));
   const validHiPatterns = new Set<string>(HAIR_HIGHLIGHT_PATTERNS.map((p) => p.id));
+  const validBangsIds = new Set<string>(HAIR_BANGS_CATALOG.map((b) => b.id));
+  const validAccessoryIds = new Set<string>(HAIR_ACCESSORY_CATALOG.map((a) => a.id));
+  const validFinishIds = new Set<string>(HAIR_FINISH_OPTIONS.map((f) => f.id));
   const sanitizedHair =
     hair && typeof hair === 'object'
-      ? {
-          styleId: validHairIds.has(hair.styleId) ? hair.styleId : ('none' as const),
-          primaryColor: typeof hair.primaryColor === 'string' ? hair.primaryColor : '#3b2416',
-          highlightColor: typeof hair.highlightColor === 'string' ? hair.highlightColor : '#f59e0b',
-          highlightPattern: validHiPatterns.has(hair.highlightPattern)
-            ? hair.highlightPattern
-            : ('none' as const),
-          volume: typeof hair.volume === 'number' ? clamp(hair.volume, 0.8, 1.25) : 1,
-          flowerAccessory: Boolean(hair.flowerAccessory),
-        }
+      ? (() => {
+          const resolvedAccessory =
+            typeof hair.accessoryId === 'string' && validAccessoryIds.has(hair.accessoryId)
+              ? hair.accessoryId
+              : hair.flowerAccessory
+                ? ('hibiscus' as const)
+                : ('none' as const);
+          return {
+            styleId: validHairIds.has(hair.styleId) ? hair.styleId : ('none' as const),
+            primaryColor: typeof hair.primaryColor === 'string' ? hair.primaryColor : '#3b2416',
+            highlightColor: typeof hair.highlightColor === 'string' ? hair.highlightColor : '#f59e0b',
+            highlightPattern: validHiPatterns.has(hair.highlightPattern)
+              ? hair.highlightPattern
+              : ('none' as const),
+            volume: typeof hair.volume === 'number' ? clamp(hair.volume, 0.8, 1.25) : 1,
+            bangsStyle:
+              typeof hair.bangsStyle === 'string' && validBangsIds.has(hair.bangsStyle)
+                ? hair.bangsStyle
+                : ('auto' as const),
+            accessoryId: resolvedAccessory,
+            accessoryColor:
+              typeof hair.accessoryColor === 'string' ? hair.accessoryColor : '#f472b6',
+            finish:
+              typeof hair.finish === 'string' && validFinishIds.has(hair.finish)
+                ? hair.finish
+                : ('silky' as const),
+            flowerAccessory: resolvedAccessory === 'hibiscus',
+          };
+        })()
       : undefined;
 
   const validShirtIds = new Set<string>(SHIRT_CATALOG.map((s) => s.id));
+  const validOuterwearIds = new Set<string>(OUTERWEAR_CATALOG.map((o) => o.id));
   const validSleeveModes = new Set<string>(SLEEVE_MODE_OPTIONS.map((s) => s.id));
   const validPantsIds = new Set<string>(PANT_CATALOG.map((p) => p.id));
   const validFootwearIds = new Set<string>(FOOTWEAR_CATALOG.map((f) => f.id));
+  const validFabricIds = new Set<string>(FABRIC_MATERIAL_OPTIONS.map((f) => f.id));
+  const validPatternIds = new Set<string>(CLOTHING_PATTERN_OPTIONS.map((p) => p.id));
+  const validBeltIds = new Set<string>(BELT_STYLE_OPTIONS.map((b) => b.id));
   const c = actor.clothing;
   const sanitizedClothing =
     c && typeof c === 'object'
@@ -1917,16 +1978,49 @@ function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
           shirtColor: typeof c.shirtColor === 'string' ? c.shirtColor : '#0d69ac',
           shirtAccent: typeof c.shirtAccent === 'string' ? c.shirtAccent : '#f5cd30',
           sleeveMode: validSleeveModes.has(c.sleeveMode) ? c.sleeveMode : ('auto' as const),
+          topFabric:
+            typeof c.topFabric === 'string' && validFabricIds.has(c.topFabric)
+              ? c.topFabric
+              : ('auto' as const),
+          topPattern:
+            typeof c.topPattern === 'string' && validPatternIds.has(c.topPattern)
+              ? c.topPattern
+              : ('solid' as const),
+          outerwearId:
+            typeof c.outerwearId === 'string' && validOuterwearIds.has(c.outerwearId)
+              ? c.outerwearId
+              : ('none' as const),
+          outerwearColor: typeof c.outerwearColor === 'string' ? c.outerwearColor : '#1e293b',
+          outerwearAccent: typeof c.outerwearAccent === 'string' ? c.outerwearAccent : '#f8fafc',
+          outerwearFabric:
+            typeof c.outerwearFabric === 'string' && validFabricIds.has(c.outerwearFabric)
+              ? c.outerwearFabric
+              : ('auto' as const),
+          outerwearOpen: typeof c.outerwearOpen === 'boolean' ? c.outerwearOpen : true,
           pantsId: validPantsIds.has(c.pantsId) ? c.pantsId : ('none' as const),
           pantsColor: typeof c.pantsColor === 'string' ? c.pantsColor : '#1d4ed8',
           pantsAccent: typeof c.pantsAccent === 'string' ? c.pantsAccent : '#f2f3f3',
+          bottomFabric:
+            typeof c.bottomFabric === 'string' && validFabricIds.has(c.bottomFabric)
+              ? c.bottomFabric
+              : ('auto' as const),
+          bottomPattern:
+            typeof c.bottomPattern === 'string' && validPatternIds.has(c.bottomPattern)
+              ? c.bottomPattern
+              : ('solid' as const),
+          beltStyle:
+            typeof c.beltStyle === 'string' && validBeltIds.has(c.beltStyle)
+              ? c.beltStyle
+              : ('auto' as const),
           footwearId: validFootwearIds.has(c.footwearId) ? c.footwearId : ('none' as const),
+          shoeColor: typeof c.shoeColor === 'string' ? c.shoeColor : '#1e293b',
+          shoeAccent: typeof c.shoeAccent === 'string' ? c.shoeAccent : '#f8fafc',
         }
       : undefined;
 
   return {
     ...actor,
-    ...(ornaments ? { ornaments } : {}),
+    ...(sanitizedOrnaments ? { ornaments: sanitizedOrnaments } : {}),
     ...(sanitizedHair ? { hair: sanitizedHair } : {}),
     ...(sanitizedClothing ? { clothing: sanitizedClothing } : {}),
     ...(propKind ? { propKind } : {}),

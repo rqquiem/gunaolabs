@@ -180,6 +180,54 @@ export const MAP_MODULE_CATALOG: MapModuleCatalogEntry[] = [
     defaultScale: 1,
   },
   {
+    kind: 'glassSkyscraper',
+    label: 'Glass Skyscraper',
+    shortDesc: 'Reflective curtain-wall tower with helipad & spire',
+    defaultPrimary: '#1d4ed8',
+    defaultAccent: '#7dd3fc',
+    defaultScale: 1,
+  },
+  {
+    kind: 'brickTower',
+    label: 'Brick High-Rise',
+    shortDesc: 'Terracotta brick tower with ground shops & water tank',
+    defaultPrimary: '#9a3412',
+    defaultAccent: '#e2e8f0',
+    defaultScale: 1,
+  },
+  {
+    kind: 'trafficSignal',
+    label: 'Traffic Signal',
+    shortDesc: 'Cantilever street light mast with glowing LEDs',
+    defaultPrimary: '#334155',
+    defaultAccent: '#18181b',
+    defaultScale: 1,
+  },
+  {
+    kind: 'subwayEntrance',
+    label: 'Subway Entrance',
+    shortDesc: 'Glass metro canopy stairs & transit globe lamps',
+    defaultPrimary: '#334155',
+    defaultAccent: '#00a2ff',
+    defaultScale: 1,
+  },
+  {
+    kind: 'billboardGantry',
+    label: 'City Billboard',
+    shortDesc: 'Illuminated twin-post urban skyline billboard',
+    defaultPrimary: '#00a2ff',
+    defaultAccent: '#f59e0b',
+    defaultScale: 1,
+  },
+  {
+    kind: 'cityBusStop',
+    label: 'City Bus Stop',
+    shortDesc: 'Glass transit shelter with bench & illuminated ad panel',
+    defaultPrimary: '#1e293b',
+    defaultAccent: '#00a2ff',
+    defaultScale: 1,
+  },
+  {
     kind: 'verbatimSign',
     label: 'Verbatim Sign',
     shortDesc: 'Wooden "Welcome to Verbatim" town arch & planter',
@@ -789,6 +837,308 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       fov: 52,
     },
   },
+  {
+    id: 'map_roblox_city',
+    name: 'Roblox City Downtown',
+    category: 'town',
+    builtIn: true,
+    builtInSourceId: 'robloxCity',
+    description:
+      'Expansive 88x88 daylight metropolis with 4-lane avenues, zebra crosswalks, traffic signals, towering glass & brick skyscrapers, central park fountain, subway entrance, billboards, and street traffic.',
+    recommendedLighting: {
+      mood: 'noon',
+      sunAzimuth: 46,
+      sunElevation: 58,
+      keyIntensity: 2.45,
+      rimIntensity: 1.15,
+      ambientIntensity: 1.02,
+      exposure: 1.08,
+    },
+    baseplate: {
+      size: 88,
+      groundColor: '#64748b',
+      trimColor: '#f8fafc',
+      pathStyle: 'cityGrid',
+      studDensity: 1.0,
+      perimeter: 'citySkyline',
+    },
+    modules: [
+      // --- NW Quadrant (-X, -Z): Financial Spire District ---
+      {
+        id: 'city_apex_spire',
+        kind: 'glassSkyscraper',
+        label: 'Apex Spire Tower',
+        position: [-15.5, 0, -16.5],
+        rotationYDeg: 0,
+        scale: 1.32,
+        primaryColor: '#1d4ed8',
+        accentColor: '#7dd3fc',
+      },
+      {
+        id: 'city_nw_brick',
+        kind: 'brickTower',
+        label: 'Westgate Lofts',
+        position: [-29.5, 0, -14.5],
+        rotationYDeg: 90,
+        scale: 1.12,
+        primaryColor: '#9a3412',
+        accentColor: '#e2e8f0',
+      },
+      {
+        id: 'city_nw_glass_2',
+        kind: 'glassSkyscraper',
+        label: 'Emerald Bank Tower',
+        position: [-16.5, 0, -31.5],
+        rotationYDeg: 0,
+        scale: 1.08,
+        primaryColor: '#0f766e',
+        accentColor: '#5eead4',
+      },
+      {
+        id: 'city_nw_billboard',
+        kind: 'billboardGantry',
+        label: 'Bloxy Cola Billboard',
+        position: [-11.5, 0, -8.5],
+        rotationYDeg: 35,
+        scale: 0.92,
+        primaryColor: '#00a2ff',
+        accentColor: '#38bdf8',
+      },
+
+      // --- NE Quadrant (+X, -Z): Twin Glass & Retail Towers ---
+      {
+        id: 'city_ne_tower_main',
+        kind: 'glassSkyscraper',
+        label: 'Skyline Plaza Tower',
+        position: [16.5, 0, -16.5],
+        rotationYDeg: -90,
+        scale: 1.24,
+        primaryColor: '#0284c7',
+        accentColor: '#bae6fd',
+      },
+      {
+        id: 'city_ne_brick_hotel',
+        kind: 'brickTower',
+        label: 'Grand Brick Hotel',
+        position: [30.5, 0, -15.0],
+        rotationYDeg: 0,
+        scale: 1.16,
+        primaryColor: '#b45309',
+        accentColor: '#fef3c7',
+      },
+      {
+        id: 'city_ne_glass_north',
+        kind: 'glassSkyscraper',
+        label: 'Cobalt Exchange',
+        position: [18.5, 0, -32.0],
+        rotationYDeg: 180,
+        scale: 1.15,
+        primaryColor: '#1e3a8a',
+        accentColor: '#93c5fd',
+      },
+      {
+        id: 'city_ne_shop',
+        kind: 'shopFront',
+        label: 'Corner Coffee & Bakery',
+        position: [11.0, 0, -9.5],
+        rotationYDeg: -35,
+        scale: 1.05,
+        primaryColor: '#f59e0b',
+        accentColor: '#b91c1c',
+      },
+
+      // --- SW Quadrant (-X, +Z): Midtown Retail, Subway & Brick Towers ---
+      {
+        id: 'city_sw_brick_main',
+        kind: 'brickTower',
+        label: 'Midtown Terracotta Tower',
+        position: [-16.5, 0, 17.5],
+        rotationYDeg: 90,
+        scale: 1.18,
+        primaryColor: '#991b1b',
+        accentColor: '#f1f5f9',
+      },
+      {
+        id: 'city_sw_glass_west',
+        kind: 'glassSkyscraper',
+        label: 'Horizon Tech Tower',
+        position: [-31.0, 0, 17.0],
+        rotationYDeg: 0,
+        scale: 1.1,
+        primaryColor: '#0369a1',
+        accentColor: '#38bdf8',
+      },
+      {
+        id: 'city_sw_subway',
+        kind: 'subwayEntrance',
+        label: 'Central Plaza Metro',
+        position: [-10.5, 0, 11.2],
+        rotationYDeg: 90,
+        scale: 1.0,
+        primaryColor: '#1e293b',
+        accentColor: '#00a2ff',
+      },
+      {
+        id: 'city_sw_bus_stop',
+        kind: 'cityBusStop',
+        label: 'Avenue Bus Shelter',
+        position: [-18.5, 0, 8.0],
+        rotationYDeg: 180,
+        scale: 1.0,
+        primaryColor: '#1e293b',
+        accentColor: '#f59e0b',
+      },
+
+      // --- SE Quadrant (+X, +Z): Central Plaza Park, Fountain & Skyline Backdrop ---
+      {
+        id: 'city_se_fountain',
+        kind: 'waterPool',
+        label: 'Central Park Fountain',
+        position: [16.5, 0.24, 16.5],
+        rotationYDeg: 0,
+        scale: 1.25,
+        primaryColor: '#94a3b8',
+        accentColor: '#38bdf8',
+      },
+      {
+        id: 'city_se_tree_1',
+        kind: 'treeGrove',
+        label: 'Plaza Oak NW',
+        position: [11.5, 0.24, 11.5],
+        rotationYDeg: 15,
+        scale: 1.15,
+        primaryColor: '#3a7d34',
+        accentColor: '#6b4226',
+      },
+      {
+        id: 'city_se_tree_2',
+        kind: 'treeGrove',
+        label: 'Plaza Oak NE',
+        position: [21.5, 0.24, 11.8],
+        rotationYDeg: 45,
+        scale: 1.08,
+        primaryColor: '#2e7d32',
+        accentColor: '#6b4226',
+      },
+      {
+        id: 'city_se_tree_3',
+        kind: 'treeGrove',
+        label: 'Plaza Oak SW',
+        position: [11.8, 0.24, 21.6],
+        rotationYDeg: 80,
+        scale: 1.1,
+        primaryColor: '#3a7d34',
+        accentColor: '#6b4226',
+      },
+      {
+        id: 'city_se_tower_back',
+        kind: 'glassSkyscraper',
+        label: 'Parkview Tower',
+        position: [31.5, 0, 29.0],
+        rotationYDeg: -90,
+        scale: 1.22,
+        primaryColor: '#2563eb',
+        accentColor: '#93c5fd',
+      },
+      {
+        id: 'city_se_billboard',
+        kind: 'billboardGantry',
+        label: 'Skyline Plaza Billboard',
+        position: [25.5, 0, 9.2],
+        rotationYDeg: -22,
+        scale: 0.9,
+        primaryColor: '#f59e0b',
+        accentColor: '#ea580c',
+      },
+
+      // --- Central Intersection Traffic Signals & Street Lamps ---
+      {
+        id: 'city_sig_nw',
+        kind: 'trafficSignal',
+        label: 'Intersection Signal NW',
+        position: [-6.8, 0, -6.8],
+        rotationYDeg: 0,
+        scale: 1.0,
+        primaryColor: '#334155',
+        accentColor: '#18181b',
+      },
+      {
+        id: 'city_sig_se',
+        kind: 'trafficSignal',
+        label: 'Intersection Signal SE',
+        position: [6.8, 0, 6.8],
+        rotationYDeg: 180,
+        scale: 1.0,
+        primaryColor: '#334155',
+        accentColor: '#18181b',
+      },
+      {
+        id: 'city_sig_ne',
+        kind: 'trafficSignal',
+        label: 'Intersection Signal NE',
+        position: [6.8, 0, -6.8],
+        rotationYDeg: -90,
+        scale: 1.0,
+        primaryColor: '#334155',
+        accentColor: '#18181b',
+      },
+      {
+        id: 'city_sig_sw',
+        kind: 'trafficSignal',
+        label: 'Intersection Signal SW',
+        position: [-6.8, 0, 6.8],
+        rotationYDeg: 90,
+        scale: 1.0,
+        primaryColor: '#334155',
+        accentColor: '#18181b',
+      },
+      {
+        id: 'city_lamp_1',
+        kind: 'streetLamp',
+        label: 'Avenue Lamp N1',
+        position: [-7.2, 0, -18.5],
+        rotationYDeg: 0,
+        scale: 1.15,
+        primaryColor: '#1e293b',
+        accentColor: '#fef08a',
+      },
+      {
+        id: 'city_lamp_2',
+        kind: 'streetLamp',
+        label: 'Avenue Lamp N2',
+        position: [7.2, 0, -18.5],
+        rotationYDeg: 0,
+        scale: 1.15,
+        primaryColor: '#1e293b',
+        accentColor: '#fef08a',
+      },
+      {
+        id: 'city_lamp_3',
+        kind: 'streetLamp',
+        label: 'Avenue Lamp E1',
+        position: [18.5, 0, -7.2],
+        rotationYDeg: 0,
+        scale: 1.15,
+        primaryColor: '#1e293b',
+        accentColor: '#fef08a',
+      },
+      {
+        id: 'city_lamp_4',
+        kind: 'streetLamp',
+        label: 'Avenue Lamp S1',
+        position: [7.2, 0, 18.5],
+        rotationYDeg: 0,
+        scale: 1.15,
+        primaryColor: '#1e293b',
+        accentColor: '#fef08a',
+      },
+    ],
+    suggestedCamera: {
+      position: [12.5, 9.5, 22.0],
+      target: [-2.0, 5.5, -6.0],
+      fov: 54,
+    },
+  },
 ];
 
 export function isBuiltInMapId(val: unknown): val is BuiltInMapId {
@@ -796,6 +1146,7 @@ export function isBuiltInMapId(val: unknown): val is BuiltInMapId {
     val === 'crossroads' ||
     val === 'town' ||
     val === 'robloxianTown' ||
+    val === 'robloxCity' ||
     val === 'cozyBedroom' ||
     val === 'skyObby' ||
     val === 'lunarOutpost' ||
@@ -1002,9 +1353,9 @@ function sanitizeVec3(v: unknown, fallback: Vec3Tuple): Vec3Tuple {
     v.every((n) => typeof n === 'number' && Number.isFinite(n))
   ) {
     return [
-      clampNum(v[0], -40, 40, fallback[0]),
-      clampNum(v[1], -10, 30, fallback[1]),
-      clampNum(v[2], -40, 40, fallback[2]),
+      clampNum(v[0], -60, 60, fallback[0]),
+      clampNum(v[1], -10, 40, fallback[1]),
+      clampNum(v[2], -60, 60, fallback[2]),
     ];
   }
   return fallback;
@@ -1021,6 +1372,7 @@ function sanitizeBaseplate(raw: unknown): MapBaseplateConfig {
     b.pathStyle === 'plaza' ||
     b.pathStyle === 'runway' ||
     b.pathStyle === 'street' ||
+    b.pathStyle === 'cityGrid' ||
     b.pathStyle === 'hardwood' ||
     b.pathStyle === 'none'
       ? b.pathStyle
@@ -1031,12 +1383,13 @@ function sanitizeBaseplate(raw: unknown): MapBaseplateConfig {
     b.perimeter === 'rocks' ||
     b.perimeter === 'neonRim' ||
     b.perimeter === 'picketFence' ||
-    b.perimeter === 'bedroomCorner'
+    b.perimeter === 'bedroomCorner' ||
+    b.perimeter === 'citySkyline'
       ? b.perimeter
       : 'trees';
 
   return {
-    size: clampNum(b.size, 12, 64, 36),
+    size: clampNum(b.size, 12, 120, 36),
     groundColor: sanitizeColor(b.groundColor, '#4b974b'),
     trimColor: sanitizeColor(b.trimColor, '#a3a2a5'),
     pathStyle,

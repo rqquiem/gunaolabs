@@ -68,6 +68,18 @@ const MapMiniPreview: React.FC<{ map: MapDefinition }> = ({ map }) => {
           <rect x="18" y="20" width="4" height="8" fill="#f8fafc" opacity="0.85" />
         </>
       )}
+      {pathStyle === 'cityGrid' && (
+        <>
+          <rect x="24" y="24" width="14" height="14" rx="1.5" fill="#4b974b" opacity="0.92" />
+          <rect x="16" y="0" width="8" height="40" fill="#272c36" />
+          <rect x="0" y="16" width="40" height="8" fill="#272c36" />
+          <line x1="20" y1="2" x2="20" y2="14" stroke="#facc15" strokeWidth="0.9" strokeDasharray="2 1.5" />
+          <line x1="20" y1="26" x2="20" y2="38" stroke="#facc15" strokeWidth="0.9" strokeDasharray="2 1.5" />
+          <line x1="2" y1="20" x2="14" y2="20" stroke="#facc15" strokeWidth="0.9" strokeDasharray="2 1.5" />
+          <line x1="26" y1="20" x2="38" y2="20" stroke="#facc15" strokeWidth="0.9" strokeDasharray="2 1.5" />
+          <circle cx="30" cy="30" r="2.2" fill="#38bdf8" />
+        </>
+      )}
       {pathStyle === 'hardwood' && (
         <>
           <rect x="3" y="3" width="34" height="2" fill="#e2e8f0" opacity="0.85" />

@@ -29,6 +29,12 @@ import {
   IdiomPropKind,
 } from './idiomAssets';
 import {
+  buildCityGridRoadNetwork,
+  buildCityMapModuleGroup,
+  buildCitySkylinePerimeter,
+  CityMapModuleKind,
+} from './robloxCityAssets';
+import {
   EnvironmentId,
   ItemId,
   MapDefinition,
@@ -315,6 +321,24 @@ export function buildMapModuleGroup(
       break;
     }
 
+    case 'glassSkyscraper':
+    case 'brickTower':
+    case 'trafficSignal':
+    case 'subwayEntrance':
+    case 'billboardGantry':
+    case 'cityBusStop': {
+      group.add(
+        buildCityMapModuleGroup(
+          kind as CityMapModuleKind,
+          primaryColor,
+          accentColor,
+          studTextures,
+          maxAnisotropy,
+        ),
+      );
+      break;
+    }
+
     case 'verbatimSign':
     case 'cafeCounter':
     case 'boardroomSuite':
@@ -473,6 +497,8 @@ function buildBaseplateAndPaths(
       bar.position.set(0, 0.075, cz);
       root.add(bar);
     }
+  } else if (pathStyle === 'cityGrid') {
+    buildCityGridRoadNetwork(root, size, trimColor, studTextures);
   } else if (pathStyle === 'hardwood') {
     // Alternating hardwood plank strips across the room floor (y = 0.025 above baseplate)
     const plankCount = Math.max(6, Math.round(size / 1.1));
@@ -510,6 +536,8 @@ function buildBaseplateAndPaths(
     root.add(buildBlockyRobloxTree(edge * 0.85, edge * 0.76, 1.05, studTextures));
   } else if (perimeter === 'bedroomCorner') {
     root.add(buildBedroomCornerShellGroup(size, size, studTextures, maxAnisotropy));
+  } else if (perimeter === 'citySkyline') {
+    buildCitySkylinePerimeter(root, size, studTextures, maxAnisotropy);
   } else if (perimeter === 'rocks') {
     const rockMat = createPlasticBrickMaterial('#475569', { roughness: 0.86 });
     const ringPoints: [number, number, number][] = [
@@ -931,6 +959,74 @@ function buildCozyBedroomEnvironment(
   return root;
 }
 
+function buildRobloxCityEnvironment(
+  studTextures: StudTexturePair,
+  maxAnisotropy: number,
+): THREE.Group {
+  const mapDef = getBuiltInMapByEnv('robloxCity');
+  const root = buildCustomMapEnvironment(mapDef, maxAnisotropy, studTextures);
+
+  // Parked downtown cars (Yellow Taxi, Cobalt Sedan, Crimson Coupe) & City Transit Bus along multi-lane avenues
+  const streetVehicles: {
+    kind: 'parkedSedan' | 'sightseeingBus';
+    pos: [number, number, number];
+    rotY: number;
+    primary: string;
+    accent: string;
+  }[] = [
+    {
+      kind: 'parkedSedan',
+      pos: [3.6, 0.05, -14.5],
+      rotY: Math.PI,
+      primary: '#facc15',
+      accent: '#18181b',
+    },
+    {
+      kind: 'parkedSedan',
+      pos: [-3.6, 0.05, 16.5],
+      rotY: 0,
+      primary: '#2563eb',
+      accent: '#e2e8f0',
+    },
+    {
+      kind: 'parkedSedan',
+      pos: [16.5, 0.05, -3.6],
+      rotY: -Math.PI / 2,
+      primary: '#dc2626',
+      accent: '#f8fafc',
+    },
+    {
+      kind: 'sightseeingBus',
+      pos: [-18.5, 0.05, 3.6],
+      rotY: Math.PI / 2,
+      primary: '#0284c7',
+      accent: '#f8fafc',
+    },
+  ];
+
+  for (const veh of streetVehicles) {
+    const vGroup = buildIdiomPropGroup(veh.kind, veh.primary, veh.accent, studTextures);
+    vGroup.position.set(veh.pos[0], veh.pos[1], veh.pos[2]);
+    vGroup.rotation.y = veh.rotY;
+    root.add(vGroup);
+  }
+
+  // Park benches flanking the Central Plaza Fountain
+  const parkBenches: [number, number, number][] = [
+    [16.5, 12.6, 0],
+    [16.5, 20.4, Math.PI],
+    [12.6, 16.5, Math.PI / 2],
+  ];
+  for (const [bx, bz, bry] of parkBenches) {
+    const bench = buildExtendedStagePropGroup('bench', '#92400e', '#1e293b', studTextures);
+    bench.position.set(bx, 0.28, bz);
+    bench.rotation.y = bry;
+    root.add(bench);
+  }
+
+  return root;
+}
+
 export function buildRobloxEnvironmentGroup(
   env: EnvironmentId,
   maxAnisotropy: number,
@@ -951,6 +1047,8 @@ export function buildRobloxEnvironmentGroup(
       return buildTownEnvironment(studTextures, maxAnisotropy);
     case 'robloxianTown':
       return buildRobloxianTownEnvironment(studTextures, maxAnisotropy);
+    case 'robloxCity':
+      return buildRobloxCityEnvironment(studTextures, maxAnisotropy);
     case 'cozyBedroom':
       return buildCozyBedroomEnvironment(studTextures, maxAnisotropy);
     case 'skyObby':

@@ -8,10 +8,14 @@ import { CutscenePanel } from './components/dock/CutscenePanel';
 import { ExportPanel } from './components/dock/ExportPanel';
 import { CROSSROADS_SHOWDOWN_PROJECT } from './engine/presets';
 import {
+  AccessoryComboPreset,
   cloneBundle,
+  normalizeAccessoryFit,
+  normalizeOrnaments,
   OutfitPreset,
   resolveActorClothing,
   resolveActorHair,
+  resolveActorOrnaments,
   ROBLOX_AVATAR_BUNDLES,
 } from './engine/robloxCatalog';
 import { StageEngine } from './engine/StageEngine';
@@ -90,6 +94,7 @@ import {
   serializeSingleSceneEntry,
 } from './engine/sceneLibrary';
 import {
+  AccessoryFit,
   AnimationProject,
   ActorKeyframe,
   CameraFramingPreset,
@@ -845,19 +850,19 @@ export default function App() {
         ...prev,
         actors: prev.actors.map((a) => {
           if (a.id !== actorId) return a;
-          const baseOrnaments = a.ornaments ?? cloneBundle('noob').ornaments;
+          const baseOrnaments = resolveActorOrnaments(a);
           return {
             ...a,
             hair: { ...preset.hair },
             clothing: { ...preset.clothing },
-            ornaments: {
+            ornaments: normalizeOrnaments({
               ...baseOrnaments,
               hat: { ...preset.hat },
               head: { ...preset.head },
               back: { ...preset.back },
               arm: { ...preset.arm },
               legs: { ...preset.legs },
-            },
+            }),
             accentColor: preset.hat.color,
           };
         }),
@@ -931,12 +936,12 @@ export default function App() {
         ...prev,
         actors: prev.actors.map((a) => {
           if (a.id !== actorId) return a;
-          const baseOrnaments = a.ornaments ?? cloneBundle('noob').ornaments;
+          const baseOrnaments = resolveActorOrnaments(a);
+          const prevSlot = baseOrnaments[slot];
           const resolvedAccent =
             accentColor ??
-            (baseOrnaments[slot].id === id
-              ? baseOrnaments[slot].accentColor
-              : undefined);
+            (prevSlot.id === id ? prevSlot.accentColor : undefined);
+          const preservedFit = prevSlot.id === id ? prevSlot.fit : undefined;
           return {
             ...a,
             ornaments: {
@@ -945,8 +950,77 @@ export default function App() {
                 id,
                 color,
                 ...(resolvedAccent ? { accentColor: resolvedAccent } : {}),
+                ...(preservedFit ? { fit: { ...preservedFit } } : {}),
               },
             },
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const handleUpdateOrnamentFit = useCallback(
+    (
+      actorId: string,
+      slot: OrnamentSlot,
+      fitPatch: Partial<AccessoryFit> | null,
+    ) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) => {
+          if (a.id !== actorId) return a;
+          const baseOrnaments = resolveActorOrnaments(a);
+          const prevSlot = baseOrnaments[slot];
+          const nextFit =
+            fitPatch === null
+              ? undefined
+              : normalizeAccessoryFit({
+                  ...(prevSlot.fit ?? {}),
+                  ...fitPatch,
+                });
+          return {
+            ...a,
+            ornaments: {
+              ...baseOrnaments,
+              [slot]: {
+                id: prevSlot.id,
+                color: prevSlot.color,
+                ...(prevSlot.accentColor
+                  ? { accentColor: prevSlot.accentColor }
+                  : {}),
+                ...(nextFit ? { fit: nextFit } : {}),
+              },
+            },
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const handleApplyAccessoryCombo = useCallback(
+    (actorId: string, combo: AccessoryComboPreset) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) => {
+          if (a.id !== actorId) return a;
+          const baseOrnaments = resolveActorOrnaments(a);
+          const nextOrnaments = { ...baseOrnaments };
+          for (const [slotKey, sel] of Object.entries(combo.slots)) {
+            if (sel) {
+              const s = slotKey as OrnamentSlot;
+              nextOrnaments[s] = {
+                id: sel.id,
+                color: sel.color,
+                ...(sel.accentColor ? { accentColor: sel.accentColor } : {}),
+                ...(sel.fit ? { fit: normalizeAccessoryFit(sel.fit) } : {}),
+              };
+            }
+          }
+          return {
+            ...a,
+            ornaments: normalizeOrnaments(nextOrnaments),
           };
         }),
       }));
@@ -2142,6 +2216,8 @@ export default function App() {
             onApplyOutfitPreset={handleApplyOutfitPreset}
             onUpdateBodyPartColor={handleUpdateBodyPartColor}
             onUpdateOrnament={handleUpdateOrnament}
+            onUpdateOrnamentFit={handleUpdateOrnamentFit}
+            onApplyAccessoryCombo={handleApplyAccessoryCombo}
             onUpdateHair={handleUpdateHair}
             onUpdateClothing={handleUpdateClothing}
             onUpdatePropColors={(actorId, primaryColor, accentColor) =>
