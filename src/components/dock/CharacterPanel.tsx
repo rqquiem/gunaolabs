@@ -7,7 +7,21 @@ import {
   RotateCw,
   Maximize2,
   KeyRound,
+  Smile,
+  Focus,
+  RotateCcw,
+  Layers,
+  Sparkles,
+  PersonStanding,
 } from 'lucide-react';
+import { PoseLibraryPanel } from './PoseLibraryPanel';
+import {
+  FACE_BROW_STYLES,
+  FACE_CHEEK_STYLES,
+  FACE_EYE_STYLES,
+  FACE_MOUTH_STYLES,
+  resolveActorFaceConfig,
+} from '../../engine/faceExpressions';
 import {
   CLASSIC_BRICK_COLORS,
   cloneBundle,
@@ -16,27 +30,46 @@ import {
 } from '../../engine/robloxCatalog';
 import {
   AnimationProject,
+  EASING_OPTIONS,
+  EasingType,
   EvaluatedActorState,
+  EXPRESSION_PRESET_IDS,
+  EXPRESSION_PRESET_LABELS,
+  ExpressionParams,
+  ExpressionPresetId,
+  FaceRigConfig,
   GizmoMode,
   ORNAMENT_SLOT_LABELS,
-  ORNAMENT_SLOTS,
   OrnamentSlot,
   POSE_CLIP_LABELS,
+  PoseCategory,
   PoseClipId,
+  PosePreset,
   PropKind,
   R6_BODY_PART_LABELS,
   R6_BODY_PARTS,
   R6BodyPartId,
   SceneActorConfig,
+  UPPER_BODY_CLIP_LABELS,
+  UPPER_BODY_CLIPS,
+  UpperBodyClipId,
   Vec3Tuple,
 } from '../../engine/types';
 
+type CharacterSubTab = 'face' | 'poses' | 'animation' | 'appearance';
+
 interface CharacterPanelProps {
   project: AnimationProject;
+  currentTime: number;
   selectedActorId: string | null;
   evaluatedActor: EvaluatedActorState | null;
   gizmoMode: GizmoMode;
   jointDraft: Partial<Record<R6BodyPartId, Vec3Tuple>>;
+  hipTiltDraft: Vec3Tuple | null;
+  faceDraft: {
+    preset: ExpressionPresetId;
+    overrides: Partial<ExpressionParams>;
+  } | null;
   onSelectActor: (actorId: string) => void;
   onAddCharacter: (bundleId: string) => void;
   onAddProp: (propKind: PropKind) => void;
@@ -51,21 +84,71 @@ interface CharacterPanelProps {
     color: string,
   ) => void;
   onUpdatePropColors: (actorId: string, primary: string, accent: string) => void;
+  onUpdateFaceConfig: (actorId: string, patch: Partial<FaceRigConfig>) => void;
+  onPreviewFacePreset: (preset: ExpressionPresetId) => void;
+  onPreviewFaceParam: (param: keyof ExpressionParams, value: number) => void;
+  onResetFaceDraft: () => void;
+  onCommitFaceKeyframe: () => void;
+  onFocusActorFace: (actorId: string) => void;
   onChangeClip: (actorId: string, clip: PoseClipId) => void;
+  onUpdateActorAnimSettings: (
+    actorId: string,
+    patch: {
+      upperBodyClip?: UpperBodyClipId;
+      upperBodyWeight?: number;
+      clipSpeed?: number;
+      easing?: EasingType;
+    },
+  ) => void;
+  onUpdateActorRigBehavior: (
+    actorId: string,
+    patch: {
+      lookAtTarget?: string;
+      lookAtWeight?: number;
+      secondaryMotion?: boolean;
+    },
+  ) => void;
   onPreviewJoint: (part: R6BodyPartId, rot: Vec3Tuple) => void;
+  onPreviewHipTilt: (tilt: Vec3Tuple) => void;
+  onResetPoseDraft: () => void;
   onCommitPoseKeyframe: () => void;
+  // Pose Library props
+  builtInPoses: PosePreset[];
+  customPoses: PosePreset[];
+  activePosePreviewId: string | null;
+  poseMirrored: boolean;
+  includePoseExpression: boolean;
+  onSelectLibraryPose: (pose: PosePreset) => void;
+  onTogglePoseMirror: () => void;
+  onToggleIncludePoseExpression: () => void;
+  onCommitLibraryPose: () => void;
+  onResetLibraryPose: () => void;
+  onSaveCurrentPose: (
+    name: string,
+    category: PoseCategory,
+    includeFace: boolean,
+  ) => void;
+  onDeleteCustomPose: (poseId: string) => void;
+  onExportPoses: () => void;
+  onImportPosesJson: (raw: string) => { ok: boolean; message: string };
 }
 
 const CLIP_OPTIONS: PoseClipId[] = [
   'idle',
   'walk',
   'run',
-  'wave',
-  'hero',
+  'jump',
+  'crouch',
   'sit',
+  'hero',
+  'wave',
   'swordSwing',
+  'cheer',
+  'victory',
   'custom',
 ];
+
+const BODY_ORNAMENT_SLOTS: OrnamentSlot[] = ['head', 'hat', 'arm', 'back', 'legs'];
 
 const SHORT_PART_LABELS: Record<R6BodyPartId, string> = {
   head: 'Head',
@@ -76,12 +159,33 @@ const SHORT_PART_LABELS: Record<R6BodyPartId, string> = {
   rightLeg: 'R Leg',
 };
 
+const EXPRESSION_SLIDER_SPECS: {
+  key: keyof ExpressionParams;
+  label: string;
+  min: number;
+  max: number;
+}[] = [
+  { key: 'smile', label: 'Smile', min: -1, max: 1 },
+  { key: 'jawOpen', label: 'Jaw Open', min: 0, max: 1 },
+  { key: 'browRaise', label: 'Brow Height', min: -1, max: 1 },
+  { key: 'browFurrow', label: 'Brow Furrow', min: -1, max: 1 },
+  { key: 'eyeWide', label: 'Eye Open', min: -1, max: 1 },
+  { key: 'mouthWidth', label: 'Mouth Width', min: -1, max: 1 },
+  { key: 'mouthSkew', label: 'Mouth Skew', min: -1, max: 1 },
+  { key: 'gazeX', label: 'Gaze X', min: -1, max: 1 },
+  { key: 'gazeY', label: 'Gaze Y', min: -1, max: 1 },
+  { key: 'blush', label: 'Blush', min: 0, max: 1 },
+];
+
 export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   project,
+  currentTime,
   selectedActorId,
   evaluatedActor,
   gizmoMode,
   jointDraft,
+  hipTiltDraft,
+  faceDraft,
   onSelectActor,
   onAddCharacter,
   onAddProp,
@@ -91,11 +195,36 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   onUpdateBodyPartColor,
   onUpdateOrnament,
   onUpdatePropColors,
+  onUpdateFaceConfig,
+  onPreviewFacePreset,
+  onPreviewFaceParam,
+  onResetFaceDraft,
+  onCommitFaceKeyframe,
+  onFocusActorFace,
   onChangeClip,
+  onUpdateActorAnimSettings,
+  onUpdateActorRigBehavior,
   onPreviewJoint,
+  onPreviewHipTilt,
+  onResetPoseDraft,
   onCommitPoseKeyframe,
+  builtInPoses,
+  customPoses,
+  activePosePreviewId,
+  poseMirrored,
+  includePoseExpression,
+  onSelectLibraryPose,
+  onTogglePoseMirror,
+  onToggleIncludePoseExpression,
+  onCommitLibraryPose,
+  onResetLibraryPose,
+  onSaveCurrentPose,
+  onDeleteCustomPose,
+  onExportPoses,
+  onImportPosesJson,
 }) => {
-  const [selectedJoint, setSelectedJoint] = useState<R6BodyPartId>('rightArm');
+  const [subTab, setSubTab] = useState<CharacterSubTab>('face');
+  const [selectedJoint, setSelectedJoint] = useState<R6BodyPartId | 'hipTilt'>('rightArm');
   const [colorPart, setColorPart] = useState<R6BodyPartId>('torso');
   const [spawnMenuOpen, setSpawnMenuOpen] = useState(false);
 
@@ -106,14 +235,38 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   const fallbackBundle = cloneBundle('noob');
   const activeBodyColors = selectedActor?.bodyColors ?? fallbackBundle.bodyColors;
   const activeOrnaments = selectedActor?.ornaments ?? fallbackBundle.ornaments;
+  const activeFaceConfig: FaceRigConfig = selectedActor
+    ? resolveActorFaceConfig(selectedActor)
+    : fallbackBundle.faceConfig;
+
+  const activeKeyframe = selectedActor
+    ? selectedActor.keyframes.reduce((best, kf) => {
+        if (kf.time <= currentTime + 0.04) return kf;
+        return best;
+      }, selectedActor.keyframes[0])
+    : undefined;
 
   const currentJointRot: Vec3Tuple =
-    jointDraft[selectedJoint] ??
-    evaluatedActor?.pose.joints[selectedJoint] ?? [0, 0, 0];
+    selectedJoint === 'hipTilt'
+      ? hipTiltDraft ?? evaluatedActor?.pose.hipTilt ?? [0, 0, 0]
+      : jointDraft[selectedJoint] ??
+        evaluatedActor?.pose.joints[selectedJoint] ?? [0, 0, 0];
+
+  const activeFaceParams: ExpressionParams | null = evaluatedActor
+    ? {
+        ...evaluatedActor.face.params,
+        ...(faceDraft?.overrides ?? {}),
+      }
+    : null;
+
+  const activeFacePreset: ExpressionPresetId =
+    faceDraft?.preset ?? evaluatedActor?.face.preset ?? 'neutral';
+
+  const otherActors = project.actors.filter((a) => a.id !== selectedActorId);
 
   return (
     <div className="space-y-2.5">
-      {/* Actor Roster, Gizmo Switcher & Spawner */}
+      {/* Actor Roster, Sub-Mode Tabs, Gizmo Switcher & Spawner */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
           {project.actors.map((actor) => {
@@ -133,6 +286,37 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
               </button>
             );
           })}
+
+          {selectedActor?.kind === 'character' && (
+            <div className="flex items-center p-0.5 ml-1 rounded-md bg-[#14161a] border border-[#393d47] shrink-0">
+              {(
+                [
+                  { id: 'face', label: 'Face & Expressions', icon: Smile },
+                  { id: 'poses', label: 'Pose Library', icon: PersonStanding },
+                  { id: 'animation', label: 'Animation & Rig', icon: Layers },
+                  { id: 'appearance', label: 'Appearance', icon: Sparkles },
+                ] as const
+              ).map((tab) => {
+                const Icon = tab.icon;
+                const active = subTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSubTab(tab.id)}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      active
+                        ? 'bg-[#2b2e35] text-white'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Icon className="w-3 h-3" aria-hidden="true" />
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="relative flex flex-wrap items-center gap-1.5 shrink-0">
@@ -236,228 +420,715 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
       {/* Selected Actor Inspector */}
       {selectedActor && evaluatedActor ? (
         selectedActor.kind === 'character' ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-[#393d47]">
-            {/* Column 1: Avatar Bundle & 6-Part BrickColors */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <label
-                  htmlFor="avatar-bundle-select"
-                  className="text-xs font-medium text-slate-400 shrink-0"
-                >
-                  Avatar Bundle
-                </label>
-                <select
-                  id="avatar-bundle-select"
-                  value={selectedActor.bundleId ?? 'noob'}
-                  onChange={(e) => onApplyBundle(selectedActor.id, e.target.value)}
-                  className="flex-1 min-w-0 px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-100"
-                >
-                  {ROBLOX_AVATAR_BUNDLES.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <span className="block text-[11px] font-medium text-slate-400 mb-1">
-                  R6 Body Part Colors ({R6_BODY_PART_LABELS[colorPart]})
-                </span>
-                <div className="grid grid-cols-6 gap-1 mb-1.5">
-                  {R6_BODY_PARTS.map((part) => (
+          <>
+            {/* SUB-TAB 1: 3D FACE & EXPRESSIONS */}
+            {subTab === 'face' && activeFaceParams && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-[#393d47]">
+                {/* Column 1: Modular 3D Face Builder */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      3D Sculpted Face Builder
+                    </span>
                     <button
-                      key={part}
                       type="button"
-                      onClick={() => setColorPart(part)}
-                      className={`px-1 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate ${
-                        colorPart === part
-                          ? 'bg-[#00a2ff] border-[#00a2ff] text-slate-950 font-semibold'
-                          : 'bg-[#2b2e35] border-[#393d47] text-slate-300 hover:bg-[#363a43]'
-                      }`}
+                      onClick={() => onFocusActorFace(selectedActor.id)}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-[#38bdf8] hover:bg-[#363a43] whitespace-nowrap"
                     >
-                      {SHORT_PART_LABELS[part]}
+                      <Focus className="w-3 h-3" aria-hidden="true" />
+                      <span>Focus Face</span>
                     </button>
-                  ))}
-                </div>
+                  </div>
 
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {CLASSIC_BRICK_COLORS.slice(0, 8).map((swatch) => (
-                    <button
-                      key={swatch.name}
-                      type="button"
-                      title={swatch.name}
-                      aria-label={`Set ${R6_BODY_PART_LABELS[colorPart]} to ${swatch.name}`}
-                      onClick={() =>
-                        onUpdateBodyPartColor(selectedActor.id, colorPart, swatch.hex)
-                      }
-                      style={{ backgroundColor: swatch.hex }}
-                      className={`w-5 h-5 rounded border ${
-                        activeBodyColors[colorPart].toLowerCase() ===
-                        swatch.hex.toLowerCase()
-                          ? 'border-white ring-1 ring-[#00a2ff]'
-                          : 'border-[#393d47]'
-                      }`}
-                    />
-                  ))}
-                  <input
-                    type="color"
-                    aria-label={`${R6_BODY_PART_LABELS[colorPart]} custom color`}
-                    value={activeBodyColors[colorPart]}
-                    onChange={(e) =>
-                      onUpdateBodyPartColor(
-                        selectedActor.id,
-                        colorPart,
-                        e.target.value,
-                      )
-                    }
-                    className="w-6 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer ml-auto"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Column 2: 6-Slot Mix-and-Match Ornaments */}
-            <div className="space-y-1.5">
-              <span className="block text-xs font-medium text-slate-400">
-                Ornaments (6 Sockets)
-              </span>
-              <div className="grid grid-cols-2 gap-x-1.5 gap-y-1.5">
-                {ORNAMENT_SLOTS.map((slot) => {
-                  const sel = activeOrnaments[slot];
-                  const items = ORNAMENT_CATALOG[slot];
-                  return (
-                    <div key={slot} className="flex items-center gap-1 min-w-0">
-                      <label
-                        htmlFor={`ornament-${slot}`}
-                        className="text-[11px] text-slate-400 w-7 shrink-0"
-                      >
-                        {ORNAMENT_SLOT_LABELS[slot]}
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <label htmlFor="face-eye-style" className="text-[11px] text-slate-400 w-10 shrink-0">
+                        Eyes
                       </label>
                       <select
-                        id={`ornament-${slot}`}
-                        value={sel.id}
-                        onChange={(e) => {
-                          const found = items.find((i) => i.id === e.target.value);
-                          onUpdateOrnament(
-                            selectedActor.id,
-                            slot,
-                            e.target.value,
-                            found?.defaultColor ?? sel.color,
-                          );
-                        }}
+                        id="face-eye-style"
+                        value={activeFaceConfig.eyeStyle}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, {
+                            eyeStyle: e.target.value as FaceRigConfig['eyeStyle'],
+                          })
+                        }
                         className="flex-1 min-w-0 px-1 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
                       >
-                        {items.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.label}
+                        {FACE_EYE_STYLES.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.label}
                           </option>
                         ))}
                       </select>
                       <input
                         type="color"
-                        aria-label={`${ORNAMENT_SLOT_LABELS[slot]} ornament color`}
-                        value={sel.color}
+                        aria-label="Eye color"
+                        value={activeFaceConfig.eyeColor}
                         onChange={(e) =>
-                          onUpdateOrnament(
-                            selectedActor.id,
-                            slot,
-                            sel.id,
-                            e.target.value,
-                          )
+                          onUpdateFaceConfig(selectedActor.id, { eyeColor: e.target.value })
                         }
                         className="w-4 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer shrink-0"
                       />
                     </div>
-                  );
-                })}
-              </div>
-            </div>
 
-            {/* Column 3: R6 Animation Clip & Joint Rig */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-slate-400">
-                  R6 Clip & Joint Rig
-                </span>
-                <button
-                  type="button"
-                  onClick={onCommitPoseKeyframe}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition-colors whitespace-nowrap"
-                >
-                  <KeyRound className="w-3 h-3" aria-hidden="true" />
-                  <span>Key Pose</span>
-                </button>
-              </div>
+                    <div className="flex items-center gap-1 min-w-0">
+                      <label htmlFor="face-brow-style" className="text-[11px] text-slate-400 w-10 shrink-0">
+                        Brows
+                      </label>
+                      <select
+                        id="face-brow-style"
+                        value={activeFaceConfig.browStyle}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, {
+                            browStyle: e.target.value as FaceRigConfig['browStyle'],
+                          })
+                        }
+                        className="flex-1 min-w-0 px-1 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+                      >
+                        {FACE_BROW_STYLES.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="color"
+                        aria-label="Brow color"
+                        value={activeFaceConfig.browColor}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, { browColor: e.target.value })
+                        }
+                        className="w-4 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer shrink-0"
+                      />
+                    </div>
 
-              <div className="grid grid-cols-4 gap-1">
-                {CLIP_OPTIONS.map((clipId) => (
-                  <button
-                    key={clipId}
-                    type="button"
-                    onClick={() => onChangeClip(selectedActor.id, clipId)}
-                    className={`px-1.5 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate ${
-                      evaluatedActor.clip === clipId
-                        ? 'bg-[#00a2ff]/20 text-[#38bdf8] border-[#00a2ff]'
-                        : 'bg-[#2b2e35] border-[#393d47] text-slate-300 hover:bg-[#363a43]'
-                    }`}
-                  >
-                    {POSE_CLIP_LABELS[clipId]}
-                  </button>
-                ))}
-              </div>
+                    <div className="flex items-center gap-1 min-w-0">
+                      <label htmlFor="face-mouth-style" className="text-[11px] text-slate-400 w-10 shrink-0">
+                        Mouth
+                      </label>
+                      <select
+                        id="face-mouth-style"
+                        value={activeFaceConfig.mouthStyle}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, {
+                            mouthStyle: e.target.value as FaceRigConfig['mouthStyle'],
+                          })
+                        }
+                        className="flex-1 min-w-0 px-1 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+                      >
+                        {FACE_MOUTH_STYLES.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="color"
+                        aria-label="Mouth color"
+                        value={activeFaceConfig.mouthColor}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, { mouthColor: e.target.value })
+                        }
+                        className="w-4 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer shrink-0"
+                      />
+                    </div>
 
-              <div className="flex items-center justify-between gap-2 pt-0.5">
-                <label
-                  htmlFor="r6-joint-select"
-                  className="text-[11px] text-slate-400 shrink-0"
-                >
-                  Joint
-                </label>
-                <select
-                  id="r6-joint-select"
-                  value={selectedJoint}
-                  onChange={(e) => setSelectedJoint(e.target.value as R6BodyPartId)}
-                  className="flex-1 min-w-0 px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
-                >
-                  {R6_BODY_PARTS.map((part) => (
-                    <option key={part} value={part}>
-                      {R6_BODY_PART_LABELS[part]}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                    <div className="flex items-center gap-1 min-w-0">
+                      <label htmlFor="face-cheek-style" className="text-[11px] text-slate-400 w-10 shrink-0">
+                        Detail
+                      </label>
+                      <select
+                        id="face-cheek-style"
+                        value={activeFaceConfig.cheekStyle}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, {
+                            cheekStyle: e.target.value as FaceRigConfig['cheekStyle'],
+                          })
+                        }
+                        className="flex-1 min-w-0 px-1 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+                      >
+                        {FACE_CHEEK_STYLES.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="color"
+                        aria-label="Cheek accent color"
+                        value={activeFaceConfig.accentColor}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, { accentColor: e.target.value })
+                        }
+                        className="w-4 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer shrink-0"
+                      />
+                    </div>
+                  </div>
 
-              {(['X', 'Y', 'Z'] as const).map((axisLabel, idx) => (
-                <div key={axisLabel} className="flex items-center gap-2">
-                  <span className="text-[11px] text-slate-400 w-4 shrink-0">
-                    {axisLabel}
-                  </span>
-                  <input
-                    type="range"
-                    min={-2.6}
-                    max={2.6}
-                    step={0.05}
-                    aria-label={`${R6_BODY_PART_LABELS[selectedJoint]} ${axisLabel} rotation`}
-                    value={currentJointRot[idx]}
-                    onChange={(e) => {
-                      const next: Vec3Tuple = [
-                        currentJointRot[0],
-                        currentJointRot[1],
-                        currentJointRot[2],
-                      ];
-                      next[idx] = Number(e.target.value);
-                      onPreviewJoint(selectedJoint, next);
-                    }}
-                    className="studio-slider flex-1"
-                  />
-                  <span className="text-[11px] font-mono-tabular text-slate-300 w-9 text-right">
-                    {currentJointRot[idx].toFixed(2)}
-                  </span>
+                  {/* Auto-Blink, Auto Lip-Sync & Eye Gaze Target */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
+                    <label className="inline-flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={activeFaceConfig.autoBlink}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, { autoBlink: e.target.checked })
+                        }
+                        className="accent-[#00a2ff]"
+                      />
+                      <span>Auto-Blink</span>
+                    </label>
+
+                    <label className="inline-flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={activeFaceConfig.autoLipSync}
+                        onChange={(e) =>
+                          onUpdateFaceConfig(selectedActor.id, {
+                            autoLipSync: e.target.checked,
+                          })
+                        }
+                        className="accent-emerald-400"
+                      />
+                      <span>Lip-Sync</span>
+                    </label>
+
+                    {evaluatedActor.face.isSpeaking && (
+                      <span className="text-[11px] text-emerald-400 font-medium">
+                        Speaking
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <label htmlFor="face-gaze-select" className="text-[11px] text-slate-400 shrink-0">
+                      Eye Gaze
+                    </label>
+                    <select
+                      id="face-gaze-select"
+                      value={activeFaceConfig.gazeTarget}
+                      onChange={(e) =>
+                        onUpdateFaceConfig(selectedActor.id, { gazeTarget: e.target.value })
+                      }
+                      className="flex-1 min-w-0 px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
+                    >
+                      <option value="camera">Look at Camera</option>
+                      <option value="forward">Look Forward</option>
+                      <option value="manual">Manual Sliders</option>
+                      {otherActors.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          Track {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
+
+                {/* Column 2: Emotion Presets & Key Face */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      Expression Presets
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {faceDraft && (
+                        <button
+                          type="button"
+                          onClick={onResetFaceDraft}
+                          aria-label="Reset face preview"
+                          className="p-1 rounded bg-[#2b2e35] border border-[#393d47] text-slate-300 hover:text-white"
+                        >
+                          <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={onCommitFaceKeyframe}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-500 text-slate-950 text-xs font-semibold hover:bg-emerald-400 transition-colors whitespace-nowrap"
+                      >
+                        <KeyRound className="w-3 h-3" aria-hidden="true" />
+                        <span>Key Face</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-5 gap-1">
+                    {EXPRESSION_PRESET_IDS.map((presetId) => {
+                      const active = activeFacePreset === presetId;
+                      return (
+                        <button
+                          key={presetId}
+                          type="button"
+                          onClick={() => onPreviewFacePreset(presetId)}
+                          className={`px-1 py-1.5 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate ${
+                            active
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400'
+                              : 'bg-[#2b2e35] border-[#393d47] text-slate-300 hover:bg-[#363a43]'
+                          }`}
+                        >
+                          {EXPRESSION_PRESET_LABELS[presetId]}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 pt-0.5">
+                    Pick a preset or sculpt sliders, then click Key Face to animate expressions on the timeline.
+                  </p>
+                </div>
+
+                {/* Column 3: Parametric Expression Sliders */}
+                <div className="space-y-1">
+                  <span className="block text-xs font-medium text-slate-400">
+                    Expression Mixer
+                  </span>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                    {EXPRESSION_SLIDER_SPECS.map((spec) => {
+                      const val = activeFaceParams[spec.key];
+                      return (
+                        <div key={spec.key} className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-[10px] text-slate-400 w-14 truncate shrink-0">
+                            {spec.label}
+                          </span>
+                          <input
+                            type="range"
+                            min={spec.min}
+                            max={spec.max}
+                            step={0.05}
+                            aria-label={`${spec.label} expression slider`}
+                            value={val}
+                            onChange={(e) =>
+                              onPreviewFaceParam(spec.key, Number(e.target.value))
+                            }
+                            className="studio-slider flex-1 min-w-0"
+                          />
+                          <span className="text-[10px] font-mono-tabular text-slate-300 w-7 text-right shrink-0">
+                            {val.toFixed(1)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-TAB 2: ENHANCED ANIMATION & RIG */}
+            {subTab === 'animation' && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-[#393d47]">
+                {/* Column 1: Base / Lower-Body Clip & Timing */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      Base Motion Clip
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onCommitPoseKeyframe}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition-colors whitespace-nowrap"
+                    >
+                      <KeyRound className="w-3 h-3" aria-hidden="true" />
+                      <span>Key Pose</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-1">
+                    {CLIP_OPTIONS.map((clipId) => (
+                      <button
+                        key={clipId}
+                        type="button"
+                        onClick={() => onChangeClip(selectedActor.id, clipId)}
+                        className={`px-1.5 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate ${
+                          evaluatedActor.clip === clipId
+                            ? 'bg-[#00a2ff]/20 text-[#38bdf8] border-[#00a2ff]'
+                            : 'bg-[#2b2e35] border-[#393d47] text-slate-300 hover:bg-[#363a43]'
+                        }`}
+                      >
+                        {POSE_CLIP_LABELS[clipId]}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-0.5">
+                    <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                      <span className="shrink-0">Curve</span>
+                      <select
+                        aria-label="Keyframe Easing Curve"
+                        value={activeKeyframe?.easing ?? 'easeInOut'}
+                        onChange={(e) =>
+                          onUpdateActorAnimSettings(selectedActor.id, {
+                            easing: e.target.value as EasingType,
+                          })
+                        }
+                        className="flex-1 min-w-0 px-1.5 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+                      >
+                        {EASING_OPTIONS.map((opt) => (
+                          <option key={opt.id} value={opt.id}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                      <span className="shrink-0">Speed</span>
+                      <input
+                        type="range"
+                        min={0.4}
+                        max={2.0}
+                        step={0.1}
+                        aria-label="Clip Speed"
+                        value={activeKeyframe?.clipSpeed ?? 1}
+                        onChange={(e) =>
+                          onUpdateActorAnimSettings(selectedActor.id, {
+                            clipSpeed: Number(e.target.value),
+                          })
+                        }
+                        className="studio-slider flex-1 min-w-0"
+                      />
+                      <span className="font-mono-tabular text-slate-300 w-7 text-right shrink-0">
+                        {(activeKeyframe?.clipSpeed ?? 1).toFixed(1)}x
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Column 2: Layered Upper-Body Clip, Look-At & Secondary Physics */}
+                <div className="space-y-2">
+                  <span className="block text-xs font-medium text-slate-400">
+                    Upper-Body Layer & Rig Behavior
+                  </span>
+
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="upper-layer-select" className="text-[11px] text-slate-400 w-16 shrink-0">
+                      Upper Clip
+                    </label>
+                    <select
+                      id="upper-layer-select"
+                      value={activeKeyframe?.upperBodyClip ?? 'none'}
+                      onChange={(e) =>
+                        onUpdateActorAnimSettings(selectedActor.id, {
+                          upperBodyClip: e.target.value as UpperBodyClipId,
+                          upperBodyWeight:
+                            e.target.value === 'none'
+                              ? 0
+                              : activeKeyframe?.upperBodyWeight || 0.85,
+                        })
+                      }
+                      className="flex-1 min-w-0 px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
+                    >
+                      {UPPER_BODY_CLIPS.map((uId) => (
+                        <option key={uId} value={uId}>
+                          {UPPER_BODY_CLIP_LABELS[uId]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-400 w-16 shrink-0">Layer Mix</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      aria-label="Upper Body Blend Weight"
+                      disabled={(activeKeyframe?.upperBodyClip ?? 'none') === 'none'}
+                      value={activeKeyframe?.upperBodyWeight ?? 0.85}
+                      onChange={(e) =>
+                        onUpdateActorAnimSettings(selectedActor.id, {
+                          upperBodyWeight: Number(e.target.value),
+                        })
+                      }
+                      className="studio-slider flex-1 disabled:opacity-40"
+                    />
+                    <span className="text-[11px] font-mono-tabular text-slate-300 w-8 text-right">
+                      {Math.round((activeKeyframe?.upperBodyWeight ?? 0.85) * 100)}%
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="head-lookat-select" className="text-[11px] text-slate-400 w-16 shrink-0">
+                      Look-At
+                    </label>
+                    <select
+                      id="head-lookat-select"
+                      value={selectedActor.lookAtTarget ?? 'none'}
+                      onChange={(e) =>
+                        onUpdateActorRigBehavior(selectedActor.id, {
+                          lookAtTarget: e.target.value,
+                        })
+                      }
+                      className="flex-1 min-w-0 px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
+                    >
+                      <option value="none">None (Follow Clip)</option>
+                      <option value="camera">Active Camera</option>
+                      {otherActors.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedActor.secondaryMotion !== false}
+                        onChange={(e) =>
+                          onUpdateActorRigBehavior(selectedActor.id, {
+                            secondaryMotion: e.target.checked,
+                          })
+                        }
+                        className="accent-[#00a2ff]"
+                      />
+                      <span>Secondary Cape / Prop Physics</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Column 3: R6 Joint & Hip Tilt Sliders */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor="r6-joint-select" className="text-xs font-medium text-slate-400 shrink-0">
+                      Joint / Hip Rig
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <select
+                        id="r6-joint-select"
+                        value={selectedJoint}
+                        onChange={(e) =>
+                          setSelectedJoint(e.target.value as R6BodyPartId | 'hipTilt')
+                        }
+                        className="px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
+                      >
+                        <option value="hipTilt">Hip Tilt (Root)</option>
+                        {R6_BODY_PARTS.map((part) => (
+                          <option key={part} value={part}>
+                            {R6_BODY_PART_LABELS[part]}
+                          </option>
+                        ))}
+                      </select>
+                      {(Object.keys(jointDraft).length > 0 || hipTiltDraft) && (
+                        <button
+                          type="button"
+                          onClick={onResetPoseDraft}
+                          aria-label="Reset joint draft"
+                          className="p-1 rounded bg-[#2b2e35] border border-[#393d47] text-slate-300 hover:text-white"
+                        >
+                          <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {(['X', 'Y', 'Z'] as const).map((axisLabel, idx) => (
+                    <div key={axisLabel} className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-400 w-4 shrink-0">
+                        {axisLabel}
+                      </span>
+                      <input
+                        type="range"
+                        min={selectedJoint === 'hipTilt' ? -0.8 : -2.6}
+                        max={selectedJoint === 'hipTilt' ? 0.8 : 2.6}
+                        step={0.05}
+                        aria-label={`${selectedJoint} ${axisLabel} rotation`}
+                        value={currentJointRot[idx]}
+                        onChange={(e) => {
+                          const next: Vec3Tuple = [
+                            currentJointRot[0],
+                            currentJointRot[1],
+                            currentJointRot[2],
+                          ];
+                          next[idx] = Number(e.target.value);
+                          if (selectedJoint === 'hipTilt') {
+                            onPreviewHipTilt(next);
+                          } else {
+                            onPreviewJoint(selectedJoint, next);
+                          }
+                        }}
+                        className="studio-slider flex-1"
+                      />
+                      <span className="text-[11px] font-mono-tabular text-slate-300 w-9 text-right">
+                        {currentJointRot[idx].toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* SUB-TAB 3: APPEARANCE (Bundle, BrickColors, Ornaments) */}
+            {subTab === 'appearance' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-[#393d47]">
+                {/* Column 1: Avatar Bundle & 6-Part BrickColors */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label
+                      htmlFor="avatar-bundle-select"
+                      className="text-xs font-medium text-slate-400 shrink-0"
+                    >
+                      Avatar Bundle
+                    </label>
+                    <select
+                      id="avatar-bundle-select"
+                      value={selectedActor.bundleId ?? 'noob'}
+                      onChange={(e) => onApplyBundle(selectedActor.id, e.target.value)}
+                      className="flex-1 min-w-0 px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-100"
+                    >
+                      {ROBLOX_AVATAR_BUNDLES.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <span className="block text-[11px] font-medium text-slate-400 mb-1">
+                      R6 Body Part Colors ({R6_BODY_PART_LABELS[colorPart]})
+                    </span>
+                    <div className="grid grid-cols-6 gap-1 mb-1.5">
+                      {R6_BODY_PARTS.map((part) => (
+                        <button
+                          key={part}
+                          type="button"
+                          onClick={() => setColorPart(part)}
+                          className={`px-1 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate ${
+                            colorPart === part
+                              ? 'bg-[#00a2ff] border-[#00a2ff] text-slate-950 font-semibold'
+                              : 'bg-[#2b2e35] border-[#393d47] text-slate-300 hover:bg-[#363a43]'
+                          }`}
+                        >
+                          {SHORT_PART_LABELS[part]}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {CLASSIC_BRICK_COLORS.slice(0, 10).map((swatch) => (
+                        <button
+                          key={swatch.name}
+                          type="button"
+                          title={swatch.name}
+                          aria-label={`Set ${R6_BODY_PART_LABELS[colorPart]} to ${swatch.name}`}
+                          onClick={() =>
+                            onUpdateBodyPartColor(selectedActor.id, colorPart, swatch.hex)
+                          }
+                          style={{ backgroundColor: swatch.hex }}
+                          className={`w-5 h-5 rounded border ${
+                            activeBodyColors[colorPart].toLowerCase() ===
+                            swatch.hex.toLowerCase()
+                              ? 'border-white ring-1 ring-[#00a2ff]'
+                              : 'border-[#393d47]'
+                          }`}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        aria-label={`${R6_BODY_PART_LABELS[colorPart]} custom color`}
+                        value={activeBodyColors[colorPart]}
+                        onChange={(e) =>
+                          onUpdateBodyPartColor(
+                            selectedActor.id,
+                            colorPart,
+                            e.target.value,
+                          )
+                        }
+                        className="w-6 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer ml-auto"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Column 2: 5 Body Ornament Sockets */}
+                <div className="space-y-1.5">
+                  <span className="block text-xs font-medium text-slate-400">
+                    3D Gear & Ornaments
+                  </span>
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
+                    {BODY_ORNAMENT_SLOTS.map((slot) => {
+                      const sel = activeOrnaments[slot];
+                      const items = ORNAMENT_CATALOG[slot];
+                      return (
+                        <div key={slot} className="flex items-center gap-1 min-w-0">
+                          <label
+                            htmlFor={`ornament-${slot}`}
+                            className="text-[11px] text-slate-400 w-9 shrink-0"
+                          >
+                            {ORNAMENT_SLOT_LABELS[slot]}
+                          </label>
+                          <select
+                            id={`ornament-${slot}`}
+                            value={sel.id}
+                            onChange={(e) => {
+                              const found = items.find((i) => i.id === e.target.value);
+                              onUpdateOrnament(
+                                selectedActor.id,
+                                slot,
+                                e.target.value,
+                                found?.defaultColor ?? sel.color,
+                              );
+                            }}
+                            className="flex-1 min-w-0 px-1.5 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+                          >
+                            {items.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="color"
+                            aria-label={`${ORNAMENT_SLOT_LABELS[slot]} ornament color`}
+                            value={sel.color}
+                            onChange={(e) =>
+                              onUpdateOrnament(
+                                selectedActor.id,
+                                slot,
+                                sel.id,
+                                e.target.value,
+                              )
+                            }
+                            className="w-4 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer shrink-0"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {subTab === 'poses' && (
+              <div className="pt-2 border-t border-[#393d47]">
+                <PoseLibraryPanel
+                  builtInPoses={builtInPoses}
+                  customPoses={customPoses}
+                  activePoseId={activePosePreviewId}
+                  isMirrored={poseMirrored}
+                  includeExpression={includePoseExpression}
+                  hasActiveDraft={
+                    activePosePreviewId !== null ||
+                    Object.keys(jointDraft).length > 0 ||
+                    hipTiltDraft !== null ||
+                    faceDraft !== null
+                  }
+                  onSelectPose={onSelectLibraryPose}
+                  onToggleMirror={onTogglePoseMirror}
+                  onToggleIncludeExpression={onToggleIncludePoseExpression}
+                  onCommitPose={onCommitLibraryPose}
+                  onResetPose={onResetLibraryPose}
+                  onSaveCurrentPose={onSaveCurrentPose}
+                  onDeleteCustomPose={onDeleteCustomPose}
+                  onExportPoses={onExportPoses}
+                  onImportPosesJson={onImportPosesJson}
+                />
+              </div>
+            )}
+          </>
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-4 pt-2 border-t border-[#393d47]">
             <div className="flex items-center gap-4 text-xs text-slate-300">

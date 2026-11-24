@@ -1,4 +1,5 @@
 import {
+  FaceRigConfig,
   OrnamentSlot,
   R6BodyColors,
   R6Ornaments,
@@ -84,6 +85,7 @@ export interface AvatarBundlePreset {
   name: string;
   bodyColors: R6BodyColors;
   ornaments: R6Ornaments;
+  faceConfig: FaceRigConfig;
 }
 
 export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
@@ -106,6 +108,19 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       back: { id: 'none', color: '#a3a2a5' },
       legs: { id: 'none', color: '#635f62' },
     },
+    faceConfig: {
+      eyeStyle: 'expressive',
+      browStyle: 'rounded',
+      mouthStyle: 'openCavity',
+      cheekStyle: 'blush',
+      eyeColor: '#1d4ed8',
+      browColor: '#3f2e18',
+      mouthColor: '#1f2937',
+      accentColor: '#fb7185',
+      autoBlink: true,
+      autoLipSync: true,
+      gazeTarget: 'camera',
+    },
   },
   {
     id: 'knight',
@@ -126,6 +141,19 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       back: { id: 'cape', color: '#c4281c' },
       legs: { id: 'kneepads', color: '#a3a2a5' },
     },
+    faceConfig: {
+      eyeStyle: 'hero',
+      browStyle: 'sharp',
+      mouthStyle: 'sculpted',
+      cheekStyle: 'scar',
+      eyeColor: '#0284c7',
+      browColor: '#1e293b',
+      mouthColor: '#1e293b',
+      accentColor: '#b45309',
+      autoBlink: true,
+      autoLipSync: true,
+      gazeTarget: 'camera',
+    },
   },
   {
     id: 'explorer',
@@ -139,12 +167,25 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       rightLeg: '#27462d',
     },
     ornaments: {
-      head: { id: 'shades', color: '#1b2a35' },
+      head: { id: 'none', color: '#1b2a35' },
       hat: { id: 'cap', color: '#c4281c' },
       face: { id: 'epic', color: '#111827' },
       arm: { id: 'none', color: '#a3a2a5' },
       back: { id: 'jetpack', color: '#c4281c' },
       legs: { id: 'belt', color: '#635f62' },
+    },
+    faceConfig: {
+      eyeStyle: 'starry',
+      browStyle: 'arched',
+      mouthStyle: 'openCavity',
+      cheekStyle: 'bandage',
+      eyeColor: '#0f766e',
+      browColor: '#3b2416',
+      mouthColor: '#1f2937',
+      accentColor: '#f59e0b',
+      autoBlink: true,
+      autoLipSync: true,
+      gazeTarget: 'camera',
     },
   },
   {
@@ -166,6 +207,19 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       back: { id: 'backpack', color: '#27462d' },
       legs: { id: 'pouches', color: '#635f62' },
     },
+    faceConfig: {
+      eyeStyle: 'classic',
+      browStyle: 'bold',
+      mouthStyle: 'smirk',
+      cheekStyle: 'freckles',
+      eyeColor: '#111827',
+      browColor: '#111827',
+      mouthColor: '#111827',
+      accentColor: '#38bdf8',
+      autoBlink: true,
+      autoLipSync: true,
+      gazeTarget: 'camera',
+    },
   },
   {
     id: 'bloxxer',
@@ -186,12 +240,26 @@ export const ROBLOX_AVATAR_BUNDLES: AvatarBundlePreset[] = [
       back: { id: 'katana', color: '#1b2a35' },
       legs: { id: 'thrusters', color: '#da8541' },
     },
+    faceConfig: {
+      eyeStyle: 'cyber',
+      browStyle: 'sharp',
+      mouthStyle: 'cyber',
+      cheekStyle: 'none',
+      eyeColor: '#00a2ff',
+      browColor: '#0f172a',
+      mouthColor: '#00a2ff',
+      accentColor: '#38bdf8',
+      autoBlink: true,
+      autoLipSync: true,
+      gazeTarget: 'camera',
+    },
   },
 ];
 
 export function cloneBundle(bundleId: string): {
   bodyColors: R6BodyColors;
   ornaments: R6Ornaments;
+  faceConfig: FaceRigConfig;
 } {
   const found =
     ROBLOX_AVATAR_BUNDLES.find((b) => b.id === bundleId) ??
@@ -206,5 +274,6 @@ export function cloneBundle(bundleId: string): {
       back: { ...found.ornaments.back },
       legs: { ...found.ornaments.legs },
     },
+    faceConfig: { ...found.faceConfig },
   };
 }

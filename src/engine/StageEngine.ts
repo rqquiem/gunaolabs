@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { resolveActorFaceConfig } from './faceExpressions';
 import { buildRobloxR6CharacterRig, RobloxR6CharacterRig } from './robloxCharacter';
 import { cloneBundle } from './robloxCatalog';
 import {
@@ -15,12 +16,13 @@ import {
   getRobloxLightingSpec,
   StudTexturePair,
 } from './robloxTextures';
-import { degToRad, evaluateProjectAt } from './timeline';
+import { clamp, degToRad, evaluateProjectAt } from './timeline';
 import {
   AnimationProject,
   CameraFramingPreset,
   CameraMode,
   EnvironmentId,
+  EvaluatedFaceState,
   EvaluatedFrame,
   EvaluatedPose,
   GizmoMode,
@@ -61,6 +63,9 @@ interface ManagedStageLight {
 }
 
 const _vec3A = new THREE.Vector3();
+const _vec3B = new THREE.Vector3();
+const _vec3C = new THREE.Vector3();
+const _quatA = new THREE.Quaternion();
 const _raycaster = new THREE.Raycaster();
 const _pointer = new THREE.Vector2();
 
@@ -114,6 +119,7 @@ export class StageEngine {
   private showLightHelpers = true;
   private selectedActorId: string | null = null;
   private poseOverride: { actorId: string; pose: EvaluatedPose } | null = null;
+  private faceOverride: { actorId: string; face: EvaluatedFaceState } | null = null;
   private lastEvaluatedFrame: EvaluatedFrame | null = null;
 
   private frameId = 0;
@@ -219,7 +225,7 @@ export class StageEngine {
     this.orbitControls.enableDamping = !this.isSoftwareGl;
     this.orbitControls.dampingFactor = 0.07;
     this.orbitControls.maxPolarAngle = Math.PI * 0.49;
-    this.orbitControls.minDistance = 1.8;
+    this.orbitControls.minDistance = 1.1;
     this.orbitControls.maxDistance = 32;
     this.orbitControls.addEventListener('change', () => {
       if (!this.isPlaying && this.cameraMode === 'orbit') {
@@ -418,9 +424,11 @@ export class StageEngine {
         if (cfg.kind === 'character') {
           const colors = cfg.bodyColors ?? fallbackBundle.bodyColors;
           const ornaments = cfg.ornaments ?? fallbackBundle.ornaments;
+          const faceConfig = resolveActorFaceConfig(cfg);
           const rig = buildRobloxR6CharacterRig(
             colors,
             ornaments,
+            faceConfig,
             this.studTextures,
             this.shadowTex,
           );
@@ -468,6 +476,7 @@ export class StageEngine {
         if (existing.rig) {
           existing.rig.setBodyColors(cfg.bodyColors ?? fallbackBundle.bodyColors);
           existing.rig.setOrnaments(cfg.ornaments ?? fallbackBundle.ornaments);
+          existing.rig.setFaceConfig(resolveActorFaceConfig(cfg));
         }
       }
     }
@@ -727,6 +736,35 @@ export class StageEngine {
     this.requestRender();
   }
 
+  public setFaceOverride(actorId: string | null, face: EvaluatedFaceState | null) {
+    if (actorId && face) {
+      this.faceOverride = { actorId, face };
+    } else {
+      this.faceOverride = null;
+    }
+    this.evaluateAndApply(this.currentTime);
+    this.requestRender();
+  }
+
+  public focusActorFace(actorId: string) {
+    const managed = this.actors.get(actorId);
+    if (!managed || !managed.rig) return;
+    managed.group.updateMatrixWorld(true);
+    // World position of the character's 3D sculpted face center
+    managed.rig.faceRig.root.getWorldPosition(_vec3A);
+    managed.rig.torsoPivot.getWorldQuaternion(_quatA);
+    // Forward direction (+Z in character local space) with slight 3/4 portrait offset
+    _vec3B.set(0.32, 0.08, 1.55).applyQuaternion(_quatA).add(_vec3A);
+
+    this.cameraMode = 'orbit';
+    this.orbitControls.enabled = true;
+    this.orbitCamera.position.copy(_vec3B);
+    this.orbitControls.target.copy(_vec3A);
+    this.orbitControls.update();
+    this.updateCameraRigVisibility();
+    this.requestRender();
+  }
+
   public setTime(time: number) {
     this.currentTime = Math.max(0, Math.min(this.project.duration, time));
     this.evaluateAndApply(this.currentTime);
@@ -747,6 +785,7 @@ export class StageEngine {
 
     if (playing) {
       this.poseOverride = null;
+      this.faceOverride = null;
       this.transformControls.detach();
       this.lastTickMs = performance.now();
       this.startLoop();
@@ -856,10 +895,36 @@ export class StageEngine {
     };
   }
 
+  private resolveLookTargetWorldPos(
+    targetId: string | undefined,
+    selfId: string,
+    activeCamera: THREE.Camera,
+    out: THREE.Vector3,
+  ): boolean {
+    if (!targetId || targetId === 'none' || targetId === 'forward' || targetId === 'manual') {
+      return false;
+    }
+    if (targetId === 'camera') {
+      out.copy(activeCamera.position);
+      return true;
+    }
+    if (targetId === selfId) return false;
+    const other = this.actors.get(targetId);
+    if (!other) return false;
+    if (other.rig) {
+      other.rig.faceRig.root.getWorldPosition(out);
+    } else {
+      other.group.getWorldPosition(out);
+      out.y += 1.1;
+    }
+    return true;
+  }
+
   private evaluateAndApply(time: number) {
     const frame = evaluateProjectAt(this.project, time);
     this.lastEvaluatedFrame = frame;
 
+    // Pass 1: Apply root transforms, layered poses, and secondary motion for all actors
     for (const [id, actorState] of Object.entries(frame.actors)) {
       const managed = this.actors.get(id);
       if (!managed) continue;
@@ -888,9 +953,95 @@ export class StageEngine {
         } else {
           managed.rig.applyPose(actorState.pose);
         }
+        managed.rig.applySecondaryMotion(actorState.secondaryMotion);
       } else if (managed.config.propKind === 'speeder') {
         managed.group.position.y += Math.sin(time * 2.8) * 0.06;
       }
+      managed.group.updateMatrixWorld(true);
+    }
+
+    // Update director camera first so Look-At & Eye Gaze can track the exact active camera position
+    this.directorCamera.position.set(
+      frame.camera.position[0] + frame.camera.shakeOffset[0],
+      frame.camera.position[1] + frame.camera.shakeOffset[1],
+      frame.camera.position[2] + frame.camera.shakeOffset[2],
+    );
+    _vec3A.set(frame.camera.target[0], frame.camera.target[1], frame.camera.target[2]);
+    this.directorCamera.lookAt(_vec3A);
+    if (frame.camera.rollRad !== 0) {
+      this.directorCamera.rotateZ(frame.camera.rollRad);
+    }
+    const targetFov =
+      this.directorCamera.aspect < 0.85
+        ? Math.min(78, frame.camera.fov * 1.32)
+        : frame.camera.fov;
+    if (Math.abs(this.directorCamera.fov - targetFov) > 0.05) {
+      this.directorCamera.fov = targetFov;
+      this.directorCamera.updateProjectionMatrix();
+    }
+    this.directorCamera.updateMatrixWorld();
+    this.cameraHelper.update();
+
+    // Pass 2: World-space Head Look-At & 3D Sculpted Face Expression + Eye Gaze
+    const activeCam =
+      this.cameraMode === 'director' ? this.directorCamera : this.orbitCamera;
+
+    for (const [id, actorState] of Object.entries(frame.actors)) {
+      const managed = this.actors.get(id);
+      if (!managed || !managed.rig) continue;
+
+      const cfg = managed.config;
+      const faceCfg = resolveActorFaceConfig(cfg);
+
+      // Head Look-At constraint
+      const lookWeight = cfg.lookAtWeight ?? 0.65;
+      if (
+        cfg.lookAtTarget &&
+        cfg.lookAtTarget !== 'none' &&
+        lookWeight > 0.01 &&
+        this.resolveLookTargetWorldPos(cfg.lookAtTarget, id, activeCam, _vec3B)
+      ) {
+        managed.rig.faceRig.root.getWorldPosition(_vec3C);
+        _vec3B.sub(_vec3C);
+        managed.rig.torsoPivot.getWorldQuaternion(_quatA).invert();
+        _vec3B.applyQuaternion(_quatA);
+        if (_vec3B.z > -0.6) {
+          const horiz = Math.max(0.001, Math.hypot(_vec3B.x, Math.max(0.15, _vec3B.z)));
+          const yaw = clamp(Math.atan2(_vec3B.x, Math.max(0.15, _vec3B.z)), -0.68, 0.68);
+          const pitch = clamp(-Math.atan2(_vec3B.y, horiz), -0.38, 0.38);
+          managed.rig.applyHeadLookAt(yaw, pitch, lookWeight);
+          managed.rig.pivots.head.updateMatrixWorld(true);
+        }
+      }
+
+      // 3D Face Expression + Eye Gaze tracking
+      const activeFace =
+        this.faceOverride && this.faceOverride.actorId === id && !this.isPlaying
+          ? this.faceOverride.face
+          : actorState.face;
+
+      let gazeOverride: { x: number; y: number } | null = null;
+      if (
+        (!this.faceOverride || this.faceOverride.actorId !== id) &&
+        faceCfg.gazeTarget &&
+        faceCfg.gazeTarget !== 'manual' &&
+        faceCfg.gazeTarget !== 'forward' &&
+        this.resolveLookTargetWorldPos(faceCfg.gazeTarget, id, activeCam, _vec3B)
+      ) {
+        managed.rig.faceRig.root.getWorldPosition(_vec3C);
+        _vec3B.sub(_vec3C);
+        managed.rig.pivots.head.getWorldQuaternion(_quatA).invert();
+        _vec3B.applyQuaternion(_quatA);
+        if (_vec3B.z > 0.05) {
+          const gx = clamp(Math.atan2(_vec3B.x, _vec3B.z) * 1.45, -1, 1);
+          const gy = clamp(Math.atan2(_vec3B.y, _vec3B.z) * 1.55, -1, 1);
+          gazeOverride = { x: gx, y: gy };
+        }
+      } else if (faceCfg.gazeTarget === 'forward' && (!this.faceOverride || this.faceOverride.actorId !== id)) {
+        gazeOverride = { x: 0, y: 0 };
+      }
+
+      managed.rig.applyFaceState(activeFace, gazeOverride);
     }
 
     // Apply keyframeable global lighting & sun orbit
@@ -916,28 +1067,6 @@ export class StageEngine {
     this.rimLight.intensity = frame.lighting.rimIntensity;
     this.hemiLight.intensity = frame.lighting.ambientIntensity;
     this.renderer.toneMappingExposure = frame.lighting.exposure;
-
-    // Update director camera (position + procedural shake + lookAt + Dutch roll)
-    this.directorCamera.position.set(
-      frame.camera.position[0] + frame.camera.shakeOffset[0],
-      frame.camera.position[1] + frame.camera.shakeOffset[1],
-      frame.camera.position[2] + frame.camera.shakeOffset[2],
-    );
-    _vec3A.set(frame.camera.target[0], frame.camera.target[1], frame.camera.target[2]);
-    this.directorCamera.lookAt(_vec3A);
-    if (frame.camera.rollRad !== 0) {
-      this.directorCamera.rotateZ(frame.camera.rollRad);
-    }
-    const targetFov =
-      this.directorCamera.aspect < 0.85
-        ? Math.min(78, frame.camera.fov * 1.32)
-        : frame.camera.fov;
-    if (Math.abs(this.directorCamera.fov - targetFov) > 0.05) {
-      this.directorCamera.fov = targetFov;
-      this.directorCamera.updateProjectionMatrix();
-    }
-    this.directorCamera.updateMatrixWorld();
-    this.cameraHelper.update();
 
     this.callbacks.onTimeUpdate(
       frame.time,

@@ -1,3 +1,4 @@
+import { evaluateActorFaceAt } from './faceExpressions';
 import {
   ActorKeyframe,
   AnimationProject,
@@ -8,13 +9,16 @@ import {
   EvaluatedFrame,
   EvaluatedLightingState,
   EvaluatedPose,
+  FaceKeyframe,
   LightingKeyframe,
   PoseClipId,
   R6_BODY_PARTS,
   R6BodyPartId,
   SceneActorConfig,
+  SecondaryMotionState,
   StageLightConfig,
   SubtitleCue,
+  UpperBodyClipId,
   Vec3Tuple,
 } from './types';
 
@@ -24,13 +28,32 @@ export function clamp(val: number, min: number, max: number): number {
 
 export function applyEasing(t: number, easing: EasingType): number {
   const u = clamp(t, 0, 1);
+  if (u === 0) return 0;
+  if (u === 1) return 1;
   switch (easing) {
     case 'step':
-      return u >= 1 ? 1 : 0;
+      return 0;
     case 'linear':
       return u;
     case 'easeOutCubic':
       return 1 - Math.pow(1 - u, 3);
+    case 'easeInBack': {
+      const c1 = 1.70158;
+      const c3 = c1 + 1;
+      return c3 * u * u * u - c1 * u * u;
+    }
+    case 'easeOutBack': {
+      const c1 = 1.70158;
+      const c3 = c1 + 1;
+      return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2);
+    }
+    case 'spring': {
+      // Damped harmonic spring with crisp natural bounce, normalized at u=1
+      const decay = Math.exp(-5.8 * u);
+      const raw = 1 - decay * Math.cos(u * Math.PI * 2.5);
+      const endVal = 1 - Math.exp(-5.8) * Math.cos(Math.PI * 2.5);
+      return raw / endVal;
+    }
     case 'easeInOut':
     default:
       return u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
@@ -38,8 +61,8 @@ export function applyEasing(t: number, easing: EasingType): number {
 }
 
 export function lerp(a: number, b: number, t: number): number {
-  if (t <= 0) return a;
-  if (t >= 1) return b;
+  if (t === 0) return a;
+  if (t === 1) return b;
   return a + (b - a) * t;
 }
 
@@ -138,20 +161,29 @@ export function evaluateProceduralClipPose(
   time: number,
   speed = 1,
   customJoints?: Partial<Record<R6BodyPartId, Vec3Tuple>>,
+  hipTiltOverride?: Vec3Tuple,
 ): EvaluatedPose {
   const joints = createZeroR6Joints();
   const phase = time * Math.max(0.1, speed);
   let torsoOffsetY = 0;
+  let hipOffsetX = 0;
+  let hipOffsetZ = 0;
+  let hipTilt: Vec3Tuple = [0, 0, 0];
+  let squashY = 1;
 
   switch (clip) {
     case 'idle': {
       const breath = Math.sin(phase * 2.2);
-      const look = Math.sin(phase * 0.9);
-      torsoOffsetY = breath * 0.015;
-      joints.torso = [0.02 + breath * 0.015, look * 0.04, 0];
+      const look = Math.sin(phase * 0.85);
+      const weightShift = Math.sin(phase * 1.1);
+      torsoOffsetY = breath * 0.018;
+      hipOffsetX = weightShift * 0.025;
+      hipTilt = [0.01, weightShift * 0.03, weightShift * 0.025];
+      squashY = 1 + breath * 0.008;
+      joints.torso = [0.02 + breath * 0.015, look * 0.04, -weightShift * 0.015];
       joints.head = [-0.02 + breath * 0.02, look * 0.1, 0];
-      joints.leftArm = [0.04 + breath * 0.03, 0, 0.08];
-      joints.rightArm = [-0.04 - breath * 0.03, 0, -0.08];
+      joints.leftArm = [0.04 + breath * 0.03, 0, 0.08 + breath * 0.015];
+      joints.rightArm = [-0.04 - breath * 0.03, 0, -0.08 - breath * 0.015];
       joints.leftLeg = [0, 0, 0.02];
       joints.rightLeg = [0, 0, -0.02];
       break;
@@ -159,55 +191,120 @@ export function evaluateProceduralClipPose(
     case 'walk': {
       const w = phase * 5.6;
       const swing = Math.sin(w);
-      torsoOffsetY = Math.abs(Math.sin(w)) * 0.05;
-      joints.torso = [0.05, swing * 0.05, Math.cos(w) * 0.03];
-      joints.head = [-0.04, -swing * 0.03, 0];
-      joints.leftLeg = [swing * 0.72, 0, 0.02];
-      joints.rightLeg = [-swing * 0.72, 0, -0.02];
-      joints.leftArm = [-swing * 0.65, 0, 0.06];
-      joints.rightArm = [swing * 0.65, 0, -0.06];
+      const lift = Math.abs(Math.sin(w));
+      torsoOffsetY = lift * 0.065 - 0.015;
+      hipOffsetX = Math.cos(w) * 0.04;
+      hipTilt = [0.04, swing * 0.08, Math.cos(w) * 0.045];
+      squashY = 1 + (lift - 0.5) * 0.03;
+      joints.torso = [0.05, -swing * 0.09, Math.cos(w) * 0.025];
+      joints.head = [-0.05, swing * 0.04, -Math.cos(w) * 0.02];
+      joints.leftLeg = [swing * 0.78, 0, 0.02];
+      joints.rightLeg = [-swing * 0.78, 0, -0.02];
+      joints.leftArm = [-swing * 0.68, 0, 0.07];
+      joints.rightArm = [swing * 0.68, 0, -0.07];
       break;
     }
     case 'run': {
-      const w = phase * 9.0;
+      const w = phase * 9.2;
       const swing = Math.sin(w);
-      torsoOffsetY = Math.abs(Math.sin(w)) * 0.1;
-      joints.torso = [0.18, swing * 0.08, Math.cos(w) * 0.05];
-      joints.head = [-0.14, -swing * 0.04, 0];
-      joints.leftLeg = [swing * 1.05, 0, 0.03];
-      joints.rightLeg = [-swing * 1.05, 0, -0.03];
-      joints.leftArm = [-swing * 0.98, 0, 0.1];
-      joints.rightArm = [swing * 0.98, 0, -0.1];
+      const lift = Math.abs(Math.sin(w));
+      torsoOffsetY = lift * 0.12 - 0.03;
+      hipOffsetX = Math.cos(w) * 0.05;
+      hipTilt = [0.16, swing * 0.12, Math.cos(w) * 0.065];
+      squashY = 1 + (lift - 0.5) * 0.055;
+      joints.torso = [0.16, -swing * 0.14, Math.cos(w) * 0.04];
+      joints.head = [-0.22, swing * 0.06, -Math.cos(w) * 0.03];
+      joints.leftLeg = [swing * 1.12, 0, 0.03];
+      joints.rightLeg = [-swing * 1.12, 0, -0.03];
+      joints.leftArm = [-swing * 1.04, 0, 0.12];
+      joints.rightArm = [swing * 1.04, 0, -0.12];
+      break;
+    }
+    case 'jump': {
+      // Anticipation crouch -> airborne apex -> squash landing cycle
+      const cycle = (phase * 1.35) % 1;
+      if (cycle < 0.2) {
+        const u = cycle / 0.2;
+        const crouch = Math.sin(u * Math.PI);
+        torsoOffsetY = -crouch * 0.28;
+        squashY = 1 - crouch * 0.12;
+        hipTilt = [crouch * 0.22, 0, 0];
+        joints.torso = [crouch * 0.16, 0, 0];
+        joints.head = [-crouch * 0.24, 0, 0];
+        joints.leftArm = [crouch * 0.75, 0, 0.15];
+        joints.rightArm = [crouch * 0.75, 0, -0.15];
+        joints.leftLeg = [-crouch * 0.48, 0, 0.08];
+        joints.rightLeg = [-crouch * 0.48, 0, -0.08];
+      } else if (cycle < 0.8) {
+        const u = (cycle - 0.2) / 0.6;
+        const arc = Math.sin(u * Math.PI);
+        torsoOffsetY = arc * 0.92;
+        squashY = 1 + (1 - Math.abs(u - 0.5) * 2) * 0.08;
+        hipTilt = [-0.08 + u * 0.16, 0, 0];
+        joints.torso = [-0.06 * arc, 0, 0];
+        joints.head = [0.08 * arc, 0, 0];
+        joints.leftArm = [-2.2 * arc - 0.2, 0, 0.35];
+        joints.rightArm = [-2.2 * arc - 0.2, 0, -0.35];
+        joints.leftLeg = [-0.55 * arc, 0, 0.1];
+        joints.rightLeg = [0.45 * arc, 0, -0.1];
+      } else {
+        const u = (cycle - 0.8) / 0.2;
+        const land = Math.sin(u * Math.PI);
+        torsoOffsetY = -land * 0.22;
+        squashY = 1 - land * 0.1;
+        hipTilt = [land * 0.18, 0, 0];
+        joints.leftArm = [0.4 * land, 0, 0.25];
+        joints.rightArm = [0.4 * land, 0, -0.25];
+        joints.leftLeg = [-0.35 * land, 0, 0.08];
+        joints.rightLeg = [-0.35 * land, 0, -0.08];
+      }
+      break;
+    }
+    case 'crouch': {
+      const breath = Math.sin(phase * 2.4);
+      torsoOffsetY = -0.34 + breath * 0.014;
+      hipOffsetZ = -0.08;
+      hipTilt = [0.24, 0, 0];
+      squashY = 0.94 + breath * 0.01;
+      joints.torso = [0.18, Math.sin(phase * 1.1) * 0.05, 0];
+      joints.head = [-0.36, Math.sin(phase * 0.9) * 0.14, 0];
+      joints.leftArm = [-0.42, 0, 0.22];
+      joints.rightArm = [-0.42, 0, -0.22];
+      joints.leftLeg = [-0.72, 0.12, 0.12];
+      joints.rightLeg = [-0.72, -0.12, -0.12];
       break;
     }
     case 'wave': {
-      const osc = Math.sin(phase * 6.5);
+      const osc = Math.sin(phase * 6.8);
       const breath = Math.sin(phase * 2.0);
-      torsoOffsetY = breath * 0.012;
-      joints.torso = [0, 0.08, -0.03];
-      joints.head = [-0.06, -0.08, 0.05];
-      joints.leftArm = [0.06, 0, 0.12];
-      joints.rightArm = [-0.25, 0.12, -2.55 + osc * 0.28];
+      torsoOffsetY = breath * 0.015;
+      hipTilt = [0, 0.06, -0.04 + osc * 0.02];
+      joints.torso = [0, 0.1, -0.04];
+      joints.head = [-0.06, -0.08, 0.07 + osc * 0.03];
+      joints.leftArm = [0.06, 0, 0.14];
+      joints.rightArm = [-0.25, 0.12, -2.58 + osc * 0.32];
       joints.leftLeg = [-0.02, 0, 0.04];
       joints.rightLeg = [0.02, 0, -0.04];
       break;
     }
     case 'hero': {
-      const pulse = Math.sin(phase * 1.8) * 0.02;
-      torsoOffsetY = -0.02;
-      joints.torso = [-0.06 + pulse, -0.18, 0];
-      joints.head = [0.04, 0.14, 0];
-      joints.leftArm = [0.22, 0.1, 0.35];
-      joints.rightArm = [-0.68, -0.12, -0.45];
-      joints.leftLeg = [-0.22, 0.08, 0.12];
-      joints.rightLeg = [0.24, -0.08, -0.12];
+      const pulse = Math.sin(phase * 1.8) * 0.025;
+      torsoOffsetY = -0.02 + pulse * 0.5;
+      hipTilt = [-0.05, -0.12, 0.04];
+      joints.torso = [-0.06 + pulse, -0.18, -0.02];
+      joints.head = [0.04, 0.22, 0];
+      joints.leftArm = [0.22, 0.1, 0.38];
+      joints.rightArm = [-0.72, -0.14, -0.45];
+      joints.leftLeg = [-0.24, 0.08, 0.14];
+      joints.rightLeg = [0.26, -0.08, -0.14];
       break;
     }
     case 'sit': {
       const breath = Math.sin(phase * 2.0);
       torsoOffsetY = -0.52 + breath * 0.01;
-      joints.torso = [-0.08, 0, 0];
-      joints.head = [0.06, Math.sin(phase * 0.8) * 0.08, 0];
+      hipTilt = [-0.08, 0, 0];
+      joints.torso = [-0.04, 0, 0];
+      joints.head = [0.08, Math.sin(phase * 0.8) * 0.08, 0];
       joints.leftLeg = [-1.45, 0.08, 0.06];
       joints.rightLeg = [-1.45, -0.08, -0.06];
       joints.leftArm = [-0.45, 0, 0.14];
@@ -215,20 +312,94 @@ export function evaluateProceduralClipPose(
       break;
     }
     case 'swordSwing': {
-      const cycle = (phase * 1.8) % (Math.PI * 2);
+      const cycle = (phase * 2.2) % (Math.PI * 2);
       const slash = Math.sin(cycle);
-      torsoOffsetY = Math.abs(Math.cos(cycle)) * 0.04;
-      joints.torso = [0.12, slash * 0.42, 0];
-      joints.head = [-0.08, -slash * 0.28, 0];
-      joints.rightArm = [-1.35 + slash * 1.15, 0.15, -0.35 - slash * 0.25];
-      joints.leftArm = [0.35 - slash * 0.2, 0, 0.35];
-      joints.leftLeg = [-0.25, 0, 0.08];
-      joints.rightLeg = [0.28, 0, -0.08];
+      const follow = Math.cos(cycle);
+      torsoOffsetY = Math.abs(follow) * 0.05 - 0.04;
+      hipTilt = [0.1, slash * 0.22, -slash * 0.06];
+      squashY = 1 - Math.max(0, slash) * 0.04;
+      joints.torso = [0.1, slash * 0.48, 0];
+      joints.head = [-0.14, -slash * 0.42, 0];
+      joints.rightArm = [-1.45 + slash * 1.28, 0.22, -0.35 - slash * 0.3];
+      joints.leftArm = [0.42 - slash * 0.26, 0, 0.38];
+      joints.leftLeg = [-0.32, 0, 0.1];
+      joints.rightLeg = [0.34, 0, -0.1];
+      break;
+    }
+    case 'cheer': {
+      const bounce = Math.abs(Math.sin(phase * 6.0));
+      const pump = Math.sin(phase * 6.0);
+      torsoOffsetY = bounce * 0.14;
+      squashY = 1 + (bounce - 0.4) * 0.06;
+      hipTilt = [-0.05, pump * 0.06, pump * 0.05];
+      joints.torso = [-0.06, 0, pump * 0.04];
+      joints.head = [-0.1, 0, -pump * 0.06];
+      joints.leftArm = [-2.55 + pump * 0.28, 0, 0.32 + bounce * 0.12];
+      joints.rightArm = [-2.55 - pump * 0.28, 0, -0.32 - bounce * 0.12];
+      joints.leftLeg = [-bounce * 0.18, 0, 0.08];
+      joints.rightLeg = [bounce * 0.12, 0, -0.08];
+      break;
+    }
+    case 'talkGesture': {
+      const g1 = Math.sin(phase * 4.2);
+      const g2 = Math.cos(phase * 3.1);
+      torsoOffsetY = Math.sin(phase * 2.1) * 0.018;
+      hipTilt = [0.02, g2 * 0.05, g1 * 0.025];
+      joints.torso = [0.03, g2 * 0.07, 0];
+      joints.head = [-0.04 + g1 * 0.05, g2 * 0.1, g1 * 0.04];
+      joints.leftArm = [-0.72 + g1 * 0.34, -0.25, 0.26 + g2 * 0.12];
+      joints.rightArm = [-0.88 - g2 * 0.38, 0.22, -0.28 - g1 * 0.12];
+      joints.leftLeg = [0, 0, 0.03];
+      joints.rightLeg = [0, 0, -0.03];
+      break;
+    }
+    case 'point': {
+      const breath = Math.sin(phase * 2.2);
+      torsoOffsetY = breath * 0.015;
+      hipTilt = [0.03, -0.14, 0];
+      joints.torso = [0.05, -0.16, 0];
+      joints.head = [-0.04, 0.24, 0];
+      joints.rightArm = [-1.52 + breath * 0.06, -0.08, -0.14];
+      joints.leftArm = [0.24, 0, 0.22];
+      joints.leftLeg = [-0.18, 0, 0.06];
+      joints.rightLeg = [0.18, 0, -0.06];
+      break;
+    }
+    case 'block': {
+      const pulse = Math.sin(phase * 2.6);
+      torsoOffsetY = -0.1 + pulse * 0.012;
+      hipTilt = [0.1, 0.24, -0.05];
+      joints.torso = [0.08, 0.2, 0];
+      joints.head = [-0.12, -0.34, 0.04];
+      joints.rightArm = [-1.25, 0.65, -0.45];
+      joints.leftArm = [-0.95, -0.38, 0.35];
+      joints.leftLeg = [-0.34, 0.12, 0.14];
+      joints.rightLeg = [0.34, -0.12, -0.14];
+      break;
+    }
+    case 'victory': {
+      const sway = Math.sin(phase * 2.4);
+      torsoOffsetY = Math.abs(sway) * 0.04;
+      hipTilt = [-0.08, sway * 0.08, sway * 0.04];
+      joints.torso = [-0.08, sway * 0.08, 0];
+      joints.head = [-0.12, -sway * 0.06, sway * 0.05];
+      joints.leftArm = [-2.68, 0.15, 0.48];
+      joints.rightArm = [-2.68, -0.15, -0.48];
+      joints.leftLeg = [-0.12, 0.08, 0.14];
+      joints.rightLeg = [0.14, -0.08, -0.14];
       break;
     }
     case 'custom':
     default:
       break;
+  }
+
+  if (hipTiltOverride) {
+    hipTilt = [
+      hipTilt[0] + hipTiltOverride[0],
+      hipTilt[1] + hipTiltOverride[1],
+      hipTilt[2] + hipTiltOverride[2],
+    ];
   }
 
   if (customJoints) {
@@ -248,17 +419,60 @@ export function evaluateProceduralClipPose(
     }
   }
 
-  return { joints, torsoOffsetY };
+  return {
+    joints,
+    torsoOffsetY,
+    hipOffset: [hipOffsetX, torsoOffsetY, hipOffsetZ],
+    hipTilt,
+    squashY,
+  };
+}
+
+/**
+ * Layers an independent upper-body action (wave, swordSwing, talkGesture, point, cheer, block)
+ * onto a lower-body/base locomotion pose with configurable weight (0..1).
+ */
+export function applyUpperBodyLayer(
+  basePose: EvaluatedPose,
+  upperClip: UpperBodyClipId | undefined,
+  time: number,
+  speed: number,
+  weight = 0.85,
+): EvaluatedPose {
+  if (!upperClip || upperClip === 'none' || weight <= 0.001) {
+    return basePose;
+  }
+  const w = clamp(weight, 0, 1);
+  const upper = evaluateProceduralClipPose(upperClip, time, speed);
+  const joints: Record<R6BodyPartId, Vec3Tuple> = {
+    head: lerpEulerVec3(basePose.joints.head, upper.joints.head, w * 0.7),
+    torso: lerpEulerVec3(basePose.joints.torso, upper.joints.torso, w * 0.55),
+    leftArm: lerpEulerVec3(basePose.joints.leftArm, upper.joints.leftArm, w),
+    rightArm: lerpEulerVec3(basePose.joints.rightArm, upper.joints.rightArm, w),
+    leftLeg: [...basePose.joints.leftLeg],
+    rightLeg: [...basePose.joints.rightLeg],
+  };
+  return {
+    joints,
+    torsoOffsetY: basePose.torsoOffsetY,
+    hipOffset: [...basePose.hipOffset],
+    hipTilt: [...basePose.hipTilt],
+    squashY: basePose.squashY,
+  };
 }
 
 function blendPoses(a: EvaluatedPose, b: EvaluatedPose, t: number): EvaluatedPose {
+  const ct = clamp(t, 0, 1);
   const joints = createZeroR6Joints();
   for (const part of R6_BODY_PARTS) {
-    joints[part] = lerpEulerVec3(a.joints[part], b.joints[part], t);
+    joints[part] = lerpEulerVec3(a.joints[part], b.joints[part], ct);
   }
   return {
     joints,
-    torsoOffsetY: lerp(a.torsoOffsetY, b.torsoOffsetY, t),
+    torsoOffsetY: lerp(a.torsoOffsetY, b.torsoOffsetY, ct),
+    hipOffset: lerpVec3(a.hipOffset, b.hipOffset, ct),
+    hipTilt: lerpEulerVec3(a.hipTilt, b.hipTilt, ct),
+    squashY: lerp(a.squashY, b.squashY, ct),
   };
 }
 
@@ -266,11 +480,113 @@ function sortByTime<T extends { time: number }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.time - b.time);
 }
 
+function sampleActorTransformOnly(
+  sorted: ActorKeyframe[],
+  time: number,
+): { position: Vec3Tuple; rotation: Vec3Tuple; scale: Vec3Tuple } {
+  if (sorted.length === 0) {
+    return { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] };
+  }
+  if (time <= sorted[0].time) {
+    return {
+      position: [...sorted[0].position],
+      rotation: [...sorted[0].rotation],
+      scale: [...sorted[0].scale],
+    };
+  }
+  const last = sorted[sorted.length - 1];
+  if (time >= last.time) {
+    return {
+      position: [...last.position],
+      rotation: [...last.rotation],
+      scale: [...last.scale],
+    };
+  }
+  let prev = sorted[0];
+  let next = sorted[1];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (time >= sorted[i].time && time <= sorted[i + 1].time) {
+      prev = sorted[i];
+      next = sorted[i + 1];
+      break;
+    }
+  }
+  const span = Math.max(0.0001, next.time - prev.time);
+  const easedT = applyEasing((time - prev.time) / span, prev.easing);
+  return {
+    position: lerpVec3(prev.position, next.position, easedT),
+    rotation: lerpEulerVec3(prev.rotation, next.rotation, easedT),
+    scale: lerpVec3(prev.scale, next.scale, easedT),
+  };
+}
+
+function evaluateSecondaryMotion(
+  actor: SceneActorConfig,
+  sorted: ActorKeyframe[],
+  time: number,
+  clip: PoseClipId,
+  upperClip: UpperBodyClipId,
+): SecondaryMotionState {
+  if (actor.secondaryMotion === false) {
+    return {
+      capePitch: 0,
+      capeRoll: 0,
+      wingSpread: 0,
+      hatLagX: 0,
+      hatLagZ: 0,
+      propSwing: 0,
+    };
+  }
+
+  const dt = 0.08;
+  const nowT = sampleActorTransformOnly(sorted, time);
+  const prevT = sampleActorTransformOnly(sorted, Math.max(0, time - dt));
+
+  const vx = (nowT.position[0] - prevT.position[0]) / dt;
+  const vy = (nowT.position[1] - prevT.position[1]) / dt;
+  const vz = (nowT.position[2] - prevT.position[2]) / dt;
+  const speed = Math.hypot(vx, vz);
+
+  let yawDiff = nowT.rotation[1] - prevT.rotation[1];
+  if (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+  if (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+  const angularVelY = yawDiff / dt;
+
+  // Ambient breeze + movement trail
+  const breeze = Math.sin(time * 2.4 + actor.id.length * 0.7) * 0.045;
+  const runBoost = clip === 'run' ? 0.24 : clip === 'walk' ? 0.1 : clip === 'jump' ? 0.22 : 0;
+  const capePitch = clamp(speed * 0.14 + runBoost + Math.max(0, -vy) * 0.12 + breeze, -0.05, 0.72);
+  const capeRoll = clamp(-angularVelY * 0.08 + Math.cos(time * 1.9) * 0.03, -0.35, 0.35);
+
+  const wingFlap =
+    clip === 'jump' || clip === 'cheer'
+      ? Math.sin(time * 8.5) * 0.25 + 0.18
+      : Math.sin(time * 2.2) * 0.06 + speed * 0.05;
+
+  const hatLagX = clamp(-speed * 0.04 - Math.max(0, vy) * 0.05, -0.18, 0.18);
+  const hatLagZ = clamp(angularVelY * 0.035, -0.16, 0.16);
+
+  const isSwinging = clip === 'swordSwing' || upperClip === 'swordSwing';
+  const propSwing = isSwinging ? Math.cos(time * 2.2) * 0.14 : Math.sin(time * 3.1) * 0.025;
+
+  return {
+    capePitch,
+    capeRoll,
+    wingSpread: clamp(wingFlap, -0.25, 0.55),
+    hatLagX,
+    hatLagZ,
+    propSwing,
+  };
+}
+
 export function evaluateActorAt(
   actor: SceneActorConfig,
   time: number,
+  subtitles: SubtitleCue[] = [],
 ): EvaluatedActorState {
   const sorted = sortByTime(actor.keyframes);
+  const face = evaluateActorFaceAt(actor, time, subtitles, applyEasing);
+
   if (sorted.length === 0) {
     return {
       actorId: actor.id,
@@ -278,41 +594,62 @@ export function evaluateActorAt(
       rotation: [0, 0, 0],
       scale: [1, 1, 1],
       clip: 'idle',
+      upperBodyClip: 'none',
+      upperBodyWeight: 0,
       pose: evaluateProceduralClipPose('idle', time, 1),
+      face,
+      secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, 'idle', 'none'),
     };
   }
 
+  const evalKeyframePose = (kf: ActorKeyframe): EvaluatedPose => {
+    const base = evaluateProceduralClipPose(
+      kf.clip,
+      time,
+      kf.clipSpeed,
+      kf.customJoints,
+      kf.hipTilt,
+    );
+    return applyUpperBodyLayer(
+      base,
+      kf.upperBodyClip,
+      time,
+      kf.clipSpeed,
+      kf.upperBodyWeight ?? 0.85,
+    );
+  };
+
   if (time <= sorted[0].time) {
     const first = sorted[0];
+    const upper = first.upperBodyClip ?? 'none';
     return {
       actorId: actor.id,
       position: [...first.position],
       rotation: [...first.rotation],
       scale: [...first.scale],
       clip: first.clip,
-      pose: evaluateProceduralClipPose(
-        first.clip,
-        time,
-        first.clipSpeed,
-        first.customJoints,
-      ),
+      upperBodyClip: upper,
+      upperBodyWeight: first.upperBodyWeight ?? (upper !== 'none' ? 0.85 : 0),
+      pose: evalKeyframePose(first),
+      face,
+      secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, first.clip, upper),
     };
   }
 
   const last = sorted[sorted.length - 1];
   if (time >= last.time) {
+    const upper = last.upperBodyClip ?? 'none';
     return {
       actorId: actor.id,
       position: [...last.position],
       rotation: [...last.rotation],
       scale: [...last.scale],
       clip: last.clip,
-      pose: evaluateProceduralClipPose(
-        last.clip,
-        time,
-        last.clipSpeed,
-        last.customJoints,
-      ),
+      upperBodyClip: upper,
+      upperBodyWeight: last.upperBodyWeight ?? (upper !== 'none' ? 0.85 : 0),
+      pose: evalKeyframePose(last),
+      face,
+      secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, last.clip, upper),
     };
   }
 
@@ -330,32 +667,48 @@ export function evaluateActorAt(
   const rawT = (time - prev.time) / span;
   const easedT = applyEasing(rawT, prev.easing);
 
-  const poseA = evaluateProceduralClipPose(
-    prev.clip,
-    time,
-    prev.clipSpeed,
-    prev.customJoints,
-  );
-  const poseB = evaluateProceduralClipPose(
-    next.clip,
-    time,
-    next.clipSpeed,
-    next.customJoints,
-  );
+  const poseA = evalKeyframePose(prev);
+  const poseB = evalKeyframePose(next);
 
-  const poseBlend = prev.easing === 'step' ? easedT : clamp((rawT - 0.15) / 0.7, 0, 1);
-  const pose =
-    prev.clip === next.clip && !prev.customJoints && !next.customJoints
-      ? poseA
-      : blendPoses(poseA, poseB, applyEasing(poseBlend, prev.easing));
+  const blendWindow = clamp(prev.blendDuration ?? 0.65, 0.05, 1);
+  const blendStart = (1 - blendWindow) * 0.5;
+  const poseBlendRaw =
+    prev.easing === 'step'
+      ? easedT
+      : clamp((rawT - blendStart) / Math.max(0.05, blendWindow), 0, 1);
+
+  const sameAnim =
+    prev.clip === next.clip &&
+    (prev.upperBodyClip ?? 'none') === (next.upperBodyClip ?? 'none') &&
+    !prev.customJoints &&
+    !next.customJoints &&
+    !prev.hipTilt &&
+    !next.hipTilt;
+
+  const pose = sameAnim
+    ? poseA
+    : blendPoses(poseA, poseB, applyEasing(poseBlendRaw, prev.easing === 'step' ? 'step' : 'easeInOut'));
+
+  const activeClip = rawT < 0.5 ? prev.clip : next.clip;
+  const activeUpper =
+    (rawT < 0.5 ? prev.upperBodyClip : next.upperBodyClip) ?? 'none';
+  const activeUpperW = lerp(
+    prev.upperBodyWeight ?? (prev.upperBodyClip && prev.upperBodyClip !== 'none' ? 0.85 : 0),
+    next.upperBodyWeight ?? (next.upperBodyClip && next.upperBodyClip !== 'none' ? 0.85 : 0),
+    clamp(easedT, 0, 1),
+  );
 
   return {
     actorId: actor.id,
     position: lerpVec3(prev.position, next.position, easedT),
     rotation: lerpEulerVec3(prev.rotation, next.rotation, easedT),
     scale: lerpVec3(prev.scale, next.scale, easedT),
-    clip: rawT < 0.5 ? prev.clip : next.clip,
+    clip: activeClip,
+    upperBodyClip: activeUpper,
+    upperBodyWeight: clamp(activeUpperW, 0, 1),
     pose,
+    face,
+    secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, activeClip, activeUpper),
   };
 }
 
@@ -449,7 +802,6 @@ export function evaluateCameraAt(
   let target: Vec3Tuple;
 
   if (useSpline) {
-    // Respect step cuts as spline segment boundaries so hard cuts do not warp adjacent shots
     const p0Kf =
       idx > 0 && sorted[idx - 1].easing !== 'step' ? sorted[idx - 1] : prev;
     const p3Kf =
@@ -461,11 +813,11 @@ export function evaluateCameraAt(
       prev.position,
       next.position,
       p3Kf.position,
-      easedT,
+      clamp(easedT, 0, 1),
     );
     const t0 = resolveCameraShotTarget(p0Kf, actorsMap);
     const t3 = resolveCameraShotTarget(p3Kf, actorsMap);
-    target = catmullRomVec3(t0, prevTarget, nextTarget, t3, easedT);
+    target = catmullRomVec3(t0, prevTarget, nextTarget, t3, clamp(easedT, 0, 1));
   } else {
     position = lerpVec3(prev.position, next.position, easedT);
     target = lerpVec3(prevTarget, nextTarget, easedT);
@@ -474,19 +826,19 @@ export function evaluateCameraAt(
   const shakeAmp = lerp(
     prev.shakeIntensity ?? 0,
     next.shakeIntensity ?? 0,
-    easedT,
+    clamp(easedT, 0, 1),
   );
   const shakeFreq = lerp(
     prev.shakeFrequency ?? 8,
     next.shakeFrequency ?? 8,
-    easedT,
+    clamp(easedT, 0, 1),
   );
   const shake = computeCameraShakeOffset(time, shakeAmp, shakeFreq);
 
   return {
     position,
     target,
-    fov: lerp(prev.fov, next.fov, easedT),
+    fov: clamp(lerp(prev.fov, next.fov, easedT), 18, 95),
     rollRad:
       lerp(degToRad(prev.rollDeg ?? 0), degToRad(next.rollDeg ?? 0), easedT) +
       shake.rollJitterRad,
@@ -551,7 +903,7 @@ export function evaluateLightingAt(
   }
 
   const span = Math.max(0.0001, next.time - prev.time);
-  const easedT = applyEasing((time - prev.time) / span, prev.easing);
+  const easedT = clamp(applyEasing((time - prev.time) / span, prev.easing), 0, 1);
 
   return {
     sunAzimuth: lerp(prev.sunAzimuth, next.sunAzimuth, easedT),
@@ -608,7 +960,7 @@ export function evaluateProjectAt(
   const clampedTime = clamp(time, 0, project.duration);
   const actors: Record<string, EvaluatedActorState> = {};
   for (const actor of project.actors) {
-    actors[actor.id] = evaluateActorAt(actor, clampedTime);
+    actors[actor.id] = evaluateActorAt(actor, clampedTime, project.subtitles);
   }
   return {
     time: clampedTime,
@@ -617,6 +969,15 @@ export function evaluateProjectAt(
     lighting: evaluateLightingAt(project, clampedTime),
     subtitle: evaluateSubtitleAt(project.subtitles, clampedTime),
   };
+}
+
+// =========================================================================
+// Keyframe CRUD & Drag-Move Helpers
+// =========================================================================
+
+function snapTimeToStep(time: number, duration: number): number {
+  const clamped = clamp(time, 0, duration);
+  return Math.round(clamped * 20) / 20; // 0.05s snap
 }
 
 export function upsertActorKeyframe(
@@ -635,11 +996,34 @@ export function upsertActorKeyframe(
       const nextKfs = [...actor.keyframes];
       const normalized = { ...keyframe, time: snapTime };
       if (existingIdx >= 0) {
-        nextKfs[existingIdx] = normalized;
+        nextKfs[existingIdx] = {
+          ...nextKfs[existingIdx],
+          ...normalized,
+          id: nextKfs[existingIdx].id,
+        };
       } else {
         nextKfs.push(normalized);
       }
       nextKfs.sort((a, b) => a.time - b.time);
+      return { ...actor, keyframes: nextKfs };
+    }),
+  };
+}
+
+export function moveActorKeyframeTime(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const nextKfs = actor.keyframes
+        .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+        .sort((a, b) => a.time - b.time);
       return { ...actor, keyframes: nextKfs };
     }),
   };
@@ -663,6 +1047,75 @@ export function deleteActorKeyframe(
   };
 }
 
+export function upsertFaceKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframe: FaceKeyframe,
+): AnimationProject {
+  const snapTime = Math.round(keyframe.time * 100) / 100;
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.faceKeyframes ?? [];
+      const existingIdx = current.findIndex(
+        (kf) => kf.id === keyframe.id || Math.abs(kf.time - snapTime) < 0.04,
+      );
+      const nextKfs = [...current];
+      const normalized = { ...keyframe, time: snapTime };
+      if (existingIdx >= 0) {
+        nextKfs[existingIdx] = {
+          ...nextKfs[existingIdx],
+          ...normalized,
+          id: nextKfs[existingIdx].id,
+        };
+      } else {
+        nextKfs.push(normalized);
+      }
+      nextKfs.sort((a, b) => a.time - b.time);
+      return { ...actor, faceKeyframes: nextKfs };
+    }),
+  };
+}
+
+export function moveFaceKeyframeTime(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.faceKeyframes ?? [];
+      const nextKfs = current
+        .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+        .sort((a, b) => a.time - b.time);
+      return { ...actor, faceKeyframes: nextKfs };
+    }),
+  };
+}
+
+export function deleteFaceKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+): AnimationProject {
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.faceKeyframes ?? [];
+      return {
+        ...actor,
+        faceKeyframes: current.filter((kf) => kf.id !== keyframeId),
+      };
+    }),
+  };
+}
+
 export function upsertCameraKeyframe(
   project: AnimationProject,
   keyframe: CameraKeyframe,
@@ -674,11 +1127,27 @@ export function upsertCameraKeyframe(
   const nextTrack = [...project.cameraTrack];
   const normalized = { ...keyframe, time: snapTime };
   if (existingIdx >= 0) {
-    nextTrack[existingIdx] = normalized;
+    nextTrack[existingIdx] = {
+      ...nextTrack[existingIdx],
+      ...normalized,
+      id: nextTrack[existingIdx].id,
+    };
   } else {
     nextTrack.push(normalized);
   }
   nextTrack.sort((a, b) => a.time - b.time);
+  return { ...project, cameraTrack: nextTrack };
+}
+
+export function moveCameraKeyframeTime(
+  project: AnimationProject,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  const nextTrack = project.cameraTrack
+    .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+    .sort((a, b) => a.time - b.time);
   return { ...project, cameraTrack: nextTrack };
 }
 
@@ -705,11 +1174,27 @@ export function upsertLightingKeyframe(
   const nextTrack = [...currentTrack];
   const normalized = { ...keyframe, time: snapTime };
   if (existingIdx >= 0) {
-    nextTrack[existingIdx] = normalized;
+    nextTrack[existingIdx] = {
+      ...nextTrack[existingIdx],
+      ...normalized,
+      id: nextTrack[existingIdx].id,
+    };
   } else {
     nextTrack.push(normalized);
   }
   nextTrack.sort((a, b) => a.time - b.time);
+  return { ...project, lightingTrack: nextTrack };
+}
+
+export function moveLightingKeyframeTime(
+  project: AnimationProject,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  const nextTrack = (project.lightingTrack ?? [])
+    .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+    .sort((a, b) => a.time - b.time);
   return { ...project, lightingTrack: nextTrack };
 }
 

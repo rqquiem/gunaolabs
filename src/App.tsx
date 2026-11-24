@@ -9,41 +9,83 @@ import { ExportPanel } from './components/dock/ExportPanel';
 import { CROSSROADS_SHOWDOWN_PROJECT } from './engine/presets';
 import { cloneBundle, ROBLOX_AVATAR_BUNDLES } from './engine/robloxCatalog';
 import { StageEngine } from './engine/StageEngine';
+import { resolveActorFaceConfig, resolveExpressionParams } from './engine/faceExpressions';
+import {
+  BUILT_IN_POSES,
+  loadCustomPoses,
+  mirrorHipTilt,
+  mirrorPoseJoints,
+  mirrorPosePreset,
+  parsePoseLibraryJson,
+  saveCustomPoses,
+  serializePoseLibrary,
+} from './engine/poseLibrary';
 import {
   deleteActorKeyframe,
   deleteCameraKeyframe,
+  deleteFaceKeyframe,
   deleteLightingKeyframe,
   deleteStageLight,
   deleteSubtitleCue,
   evaluateActorAt,
   evaluateLightingAt,
   evaluateProceduralClipPose,
+  moveActorKeyframeTime,
+  moveCameraKeyframeTime,
+  moveFaceKeyframeTime,
+  moveLightingKeyframeTime,
   parseProjectJson,
   serializeProject,
   upsertActorKeyframe,
   upsertCameraKeyframe,
+  upsertFaceKeyframe,
   upsertLightingKeyframe,
   upsertStageLight,
   upsertSubtitleCue,
 } from './engine/timeline';
 import {
   AnimationProject,
+  ActorKeyframe,
   CameraFramingPreset,
   CameraKeyframe,
   CameraMode,
   DockTab,
+  EasingType,
+  ExpressionParams,
+  ExpressionPresetId,
+  FaceRigConfig,
   GizmoMode,
   OrnamentSlot,
+  PoseCategory,
   PoseClipId,
+  PosePreset,
   PropKind,
   R6BodyPartId,
   SceneActorConfig,
   StageLightConfig,
   SubtitleCue,
+  UpperBodyClipId,
   Vec3Tuple,
   WebmExportOptions,
   WebmRecordingState,
 } from './engine/types';
+
+function getActiveActorKeyframe(
+  actor: SceneActorConfig,
+  time: number,
+): ActorKeyframe | null {
+  if (actor.keyframes.length === 0) return null;
+  const sorted = [...actor.keyframes].sort((a, b) => a.time - b.time);
+  let active = sorted[0];
+  for (const kf of sorted) {
+    if (kf.time <= time + 0.04) {
+      active = kf;
+    } else {
+      break;
+    }
+  }
+  return active;
+}
 
 export default function App() {
   const [project, setProject] = useState<AnimationProject>(
@@ -62,6 +104,15 @@ export default function App() {
     () => CROSSROADS_SHOWDOWN_PROJECT.actors[0]?.id ?? null,
   );
   const [jointDraft, setJointDraft] = useState<Partial<Record<R6BodyPartId, Vec3Tuple>>>({});
+  const [hipTiltDraft, setHipTiltDraft] = useState<Vec3Tuple | null>(null);
+  const [faceDraft, setFaceDraft] = useState<{
+    preset: ExpressionPresetId;
+    overrides: Partial<ExpressionParams>;
+  } | null>(null);
+  const [customPoses, setCustomPoses] = useState<PosePreset[]>(() => loadCustomPoses());
+  const [activePosePreviewId, setActivePosePreviewId] = useState<string | null>(null);
+  const [poseMirrored, setPoseMirrored] = useState(false);
+  const [includePoseExpression, setIncludePoseExpression] = useState(true);
   const [activeSubtitle, setActiveSubtitle] = useState<{
     speaker: string | null;
     text: string;
@@ -100,13 +151,20 @@ export default function App() {
       onSelectActor: (actorId) => {
         setSelectedActorId(actorId);
         setJointDraft({});
+        setHipTiltDraft(null);
+        setFaceDraft(null);
+        setActivePosePreviewId(null);
+        setPoseMirrored(false);
+        engineRef.current?.setPoseOverride(null, null);
+        engineRef.current?.setFaceOverride(null, null);
       },
       onActorTransformCommit: (actorId, position, rotation, scale) => {
         const proj = projectRef.current;
         const t = currentTimeRef.current;
         const actor = proj.actors.find((a) => a.id === actorId);
         if (!actor) return;
-        const evalActor = evaluateActorAt(actor, t);
+        const evalActor = evaluateActorAt(actor, t, proj.subtitles);
+        const activeKf = getActiveActorKeyframe(actor, t);
         setProject((prev) =>
           upsertActorKeyframe(prev, actorId, {
             id: `kf_${Date.now()}`,
@@ -115,8 +173,10 @@ export default function App() {
             rotation,
             scale,
             clip: evalActor.clip,
-            clipSpeed: 1,
-            easing: 'easeInOut',
+            clipSpeed: activeKf?.clipSpeed ?? 1,
+            upperBodyClip: evalActor.upperBodyClip,
+            upperBodyWeight: evalActor.upperBodyWeight,
+            easing: activeKf?.easing ?? 'easeInOut',
           }),
         );
       },
@@ -159,11 +219,19 @@ export default function App() {
     engineRef.current?.syncProject(project);
   }, [project]);
 
+  useEffect(() => {
+    saveCustomPoses(customPoses);
+  }, [customPoses]);
+
   const handleTogglePlay = useCallback(() => {
     setIsPlaying((prev) => {
       const next = !prev;
       if (next) {
         setJointDraft({});
+        setHipTiltDraft(null);
+        setFaceDraft(null);
+        setActivePosePreviewId(null);
+        setPoseMirrored(false);
       }
       engineRef.current?.setPlaying(next);
       return next;
@@ -172,7 +240,12 @@ export default function App() {
 
   const handleSeek = useCallback((time: number) => {
     setJointDraft({});
+    setHipTiltDraft(null);
+    setFaceDraft(null);
+    setActivePosePreviewId(null);
+    setPoseMirrored(false);
     engineRef.current?.setPoseOverride(null, null);
+    engineRef.current?.setFaceOverride(null, null);
     engineRef.current?.setTime(time);
     setCurrentTime(time);
   }, []);
@@ -180,7 +253,12 @@ export default function App() {
   const handleSelectActor = useCallback((actorId: string) => {
     setSelectedActorId(actorId);
     setJointDraft({});
+    setHipTiltDraft(null);
+    setFaceDraft(null);
+    setActivePosePreviewId(null);
+    setPoseMirrored(false);
     engineRef.current?.setPoseOverride(null, null);
+    engineRef.current?.setFaceOverride(null, null);
     engineRef.current?.selectActor(actorId);
   }, []);
 
@@ -229,14 +307,15 @@ export default function App() {
     if (!selectedActorId) return null;
     const actor = project.actors.find((a) => a.id === selectedActorId);
     if (!actor) return null;
-    return evaluateActorAt(actor, currentTime);
+    return evaluateActorAt(actor, currentTime, project.subtitles);
   }, [project, selectedActorId, currentTime]);
 
   const handleKeyActorAtCurrentTime = useCallback(() => {
     if (!selectedActorId) return;
     const actor = project.actors.find((a) => a.id === selectedActorId);
     if (!actor) return;
-    const evalState = evaluateActorAt(actor, currentTime);
+    const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+    const activeKf = getActiveActorKeyframe(actor, currentTime);
     const hasCustomJoints = Object.keys(jointDraft).length > 0;
 
     setProject((prev) =>
@@ -247,14 +326,42 @@ export default function App() {
         rotation: evalState.rotation,
         scale: evalState.scale,
         clip: hasCustomJoints ? 'custom' : evalState.clip,
-        clipSpeed: 1,
+        clipSpeed: activeKf?.clipSpeed ?? 1,
+        upperBodyClip: evalState.upperBodyClip,
+        upperBodyWeight: evalState.upperBodyWeight,
         customJoints: hasCustomJoints ? { ...jointDraft } : undefined,
-        easing: 'easeInOut',
+        hipTilt: hipTiltDraft ?? undefined,
+        easing: activeKf?.easing ?? 'easeInOut',
       }),
     );
     setJointDraft({});
+    setHipTiltDraft(null);
     engineRef.current?.setPoseOverride(null, null);
-  }, [jointDraft, currentTime, project.actors, selectedActorId]);
+  }, [jointDraft, hipTiltDraft, currentTime, project.actors, project.subtitles, selectedActorId]);
+
+  const handleCommitFaceKeyframe = useCallback(() => {
+    if (!selectedActorId) return;
+    const actor = project.actors.find((a) => a.id === selectedActorId);
+    if (!actor || actor.kind !== 'character') return;
+    const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+    const preset: ExpressionPresetId = faceDraft?.preset ?? evalState.face.preset;
+    const overrides =
+      faceDraft && Object.keys(faceDraft.overrides).length > 0
+        ? { ...faceDraft.overrides }
+        : undefined;
+
+    setProject((prev) =>
+      upsertFaceKeyframe(prev, selectedActorId, {
+        id: `fkf_${Date.now()}`,
+        time: currentTime,
+        preset,
+        overrides,
+        easing: 'easeInOut',
+      }),
+    );
+    setFaceDraft(null);
+    engineRef.current?.setFaceOverride(null, null);
+  }, [selectedActorId, project.actors, project.subtitles, currentTime, faceDraft]);
 
   const handleKeyCameraAtCurrentTime = useCallback(() => {
     const pose = engineRef.current?.getOrbitCameraPose() ?? {
@@ -323,6 +430,10 @@ export default function App() {
         bundleId: bundlePreset.id,
         bodyColors: cloned.bodyColors,
         ornaments: cloned.ornaments,
+        faceConfig: cloned.faceConfig,
+        lookAtTarget: 'camera',
+        lookAtWeight: 0.55,
+        secondaryMotion: true,
         primaryColor: cloned.bodyColors.torso,
         accentColor: cloned.ornaments.hat.color,
         keyframes: [
@@ -334,6 +445,16 @@ export default function App() {
             scale: [1, 1, 1],
             clip: 'idle',
             clipSpeed: 1,
+            upperBodyClip: 'none',
+            upperBodyWeight: 0,
+            easing: 'easeInOut',
+          },
+        ],
+        faceKeyframes: [
+          {
+            id: `fkf_${Date.now()}`,
+            time: 0,
+            preset: 'happy',
             easing: 'easeInOut',
           },
         ],
@@ -401,6 +522,7 @@ export default function App() {
               bundleId,
               bodyColors: cloned.bodyColors,
               ornaments: cloned.ornaments,
+              faceConfig: cloned.faceConfig,
               primaryColor: cloned.bodyColors.torso,
               accentColor: cloned.ornaments.hat.color,
             }
@@ -448,12 +570,75 @@ export default function App() {
     [],
   );
 
+  const handleUpdateFaceConfig = useCallback(
+    (actorId: string, patch: Partial<FaceRigConfig>) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) => {
+          if (a.id !== actorId) return a;
+          const currentCfg = resolveActorFaceConfig(a);
+          return {
+            ...a,
+            faceConfig: { ...currentCfg, ...patch },
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const handlePreviewFacePreset = useCallback(
+    (preset: ExpressionPresetId) => {
+      if (!selectedActorId || !evaluatedSelectedActor) return;
+      const nextDraft = { preset, overrides: {} };
+      setFaceDraft(nextDraft);
+      const params = resolveExpressionParams(preset);
+      engineRef.current?.setFaceOverride(selectedActorId, {
+        ...evaluatedSelectedActor.face,
+        preset,
+        params,
+      });
+    },
+    [selectedActorId, evaluatedSelectedActor],
+  );
+
+  const handlePreviewFaceParam = useCallback(
+    (param: keyof ExpressionParams, value: number) => {
+      if (!selectedActorId || !evaluatedSelectedActor) return;
+      const basePreset = faceDraft?.preset ?? evaluatedSelectedActor.face.preset;
+      const nextOverrides: Partial<ExpressionParams> = {
+        ...(faceDraft?.overrides ?? {}),
+        [param]: value,
+      };
+      setFaceDraft({ preset: basePreset, overrides: nextOverrides });
+      const params = resolveExpressionParams(basePreset, nextOverrides);
+      engineRef.current?.setFaceOverride(selectedActorId, {
+        ...evaluatedSelectedActor.face,
+        preset: basePreset,
+        params,
+      });
+    },
+    [selectedActorId, evaluatedSelectedActor, faceDraft],
+  );
+
+  const handleResetFaceDraft = useCallback(() => {
+    setFaceDraft(null);
+    engineRef.current?.setFaceOverride(null, null);
+  }, []);
+
+  const handleFocusActorFace = useCallback((actorId: string) => {
+    setCameraMode('orbit');
+    engineRef.current?.focusActorFace(actorId);
+  }, []);
+
   const handleChangeClip = useCallback(
     (actorId: string, clip: PoseClipId) => {
       const actor = project.actors.find((a) => a.id === actorId);
       if (!actor) return;
-      const evalState = evaluateActorAt(actor, currentTime);
+      const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+      const activeKf = getActiveActorKeyframe(actor, currentTime);
       setJointDraft({});
+      setHipTiltDraft(null);
       engineRef.current?.setPoseOverride(null, null);
       setProject((prev) =>
         upsertActorKeyframe(prev, actorId, {
@@ -463,12 +648,76 @@ export default function App() {
           rotation: evalState.rotation,
           scale: evalState.scale,
           clip,
-          clipSpeed: 1,
-          easing: 'easeInOut',
+          clipSpeed: activeKf?.clipSpeed ?? 1,
+          upperBodyClip: evalState.upperBodyClip,
+          upperBodyWeight: evalState.upperBodyWeight,
+          easing: activeKf?.easing ?? 'easeInOut',
         }),
       );
     },
-    [currentTime, project.actors],
+    [currentTime, project.actors, project.subtitles],
+  );
+
+  const handleUpdateActorAnimSettings = useCallback(
+    (
+      actorId: string,
+      patch: {
+        upperBodyClip?: UpperBodyClipId;
+        upperBodyWeight?: number;
+        clipSpeed?: number;
+        easing?: EasingType;
+      },
+    ) => {
+      const actor = project.actors.find((a) => a.id === actorId);
+      if (!actor) return;
+      const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+      const activeKf = getActiveActorKeyframe(actor, currentTime);
+      const nextUpperClip = patch.upperBodyClip ?? evalState.upperBodyClip;
+      let nextUpperWeight = patch.upperBodyWeight ?? evalState.upperBodyWeight;
+      if (patch.upperBodyClip !== undefined && patch.upperBodyWeight === undefined) {
+        nextUpperWeight =
+          patch.upperBodyClip === 'none'
+            ? 0
+            : evalState.upperBodyWeight > 0.05
+              ? evalState.upperBodyWeight
+              : 0.85;
+      }
+
+      setProject((prev) =>
+        upsertActorKeyframe(prev, actorId, {
+          id: `kf_${Date.now()}`,
+          time: currentTime,
+          position: evalState.position,
+          rotation: evalState.rotation,
+          scale: evalState.scale,
+          clip: evalState.clip,
+          clipSpeed: patch.clipSpeed ?? activeKf?.clipSpeed ?? 1,
+          upperBodyClip: nextUpperClip,
+          upperBodyWeight: nextUpperWeight,
+          easing: patch.easing ?? activeKf?.easing ?? 'easeInOut',
+        }),
+      );
+    },
+    [currentTime, project.actors, project.subtitles],
+  );
+
+  const handleUpdateActorRigBehavior = useCallback(
+    (
+      actorId: string,
+      patch: {
+        lookAtTarget?: string;
+        lookAtWeight?: number;
+        secondaryMotion?: boolean;
+      },
+    ) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) =>
+          a.id === actorId ? { ...a, ...patch } : a,
+        ),
+      }));
+    },
+    [],
   );
 
   const handlePreviewJoint = useCallback(
@@ -482,9 +731,365 @@ export default function App() {
         1,
         { ...evaluatedSelectedActor.pose.joints, ...nextDraft },
       );
+      if (hipTiltDraft) {
+        mergedPose.hipTilt = [...hipTiltDraft];
+      }
       engineRef.current?.setPoseOverride(selectedActorId, mergedPose);
     },
+    [jointDraft, hipTiltDraft, currentTime, evaluatedSelectedActor, selectedActorId],
+  );
+
+  const handlePreviewHipTilt = useCallback(
+    (tilt: Vec3Tuple) => {
+      if (!selectedActorId || !evaluatedSelectedActor) return;
+      setHipTiltDraft(tilt);
+      const hasCustomJoints = Object.keys(jointDraft).length > 0;
+      const basePose = hasCustomJoints
+        ? evaluateProceduralClipPose('custom', currentTime, 1, {
+            ...evaluatedSelectedActor.pose.joints,
+            ...jointDraft,
+          })
+        : {
+            ...evaluatedSelectedActor.pose,
+            joints: { ...evaluatedSelectedActor.pose.joints },
+          };
+      basePose.hipTilt = [...tilt];
+      engineRef.current?.setPoseOverride(selectedActorId, basePose);
+    },
     [jointDraft, currentTime, evaluatedSelectedActor, selectedActorId],
+  );
+
+  const handleResetPoseDraft = useCallback(() => {
+    setJointDraft({});
+    setHipTiltDraft(null);
+    setActivePosePreviewId(null);
+    setPoseMirrored(false);
+    engineRef.current?.setPoseOverride(null, null);
+  }, []);
+
+  const applyLibraryPosePreview = useCallback(
+    (pose: PosePreset, mirrored: boolean, applyFace: boolean) => {
+      if (!selectedActorId || !evaluatedSelectedActor) return;
+      const effective = mirrored ? mirrorPosePreset(pose) : pose;
+      setActivePosePreviewId(pose.id);
+      setJointDraft({ ...effective.joints });
+      setHipTiltDraft([...effective.hipTilt]);
+
+      const mergedPose = evaluateProceduralClipPose(
+        'custom',
+        currentTime,
+        1,
+        effective.joints,
+        effective.hipTilt,
+      );
+      engineRef.current?.setPoseOverride(selectedActorId, mergedPose);
+
+      if (applyFace && effective.expression) {
+        const overrides = effective.expression.overrides ?? {};
+        setFaceDraft({
+          preset: effective.expression.preset,
+          overrides,
+        });
+        const params = resolveExpressionParams(
+          effective.expression.preset,
+          overrides,
+        );
+        engineRef.current?.setFaceOverride(selectedActorId, {
+          ...evaluatedSelectedActor.face,
+          preset: effective.expression.preset,
+          params,
+        });
+      } else {
+        setFaceDraft(null);
+        engineRef.current?.setFaceOverride(null, null);
+      }
+    },
+    [selectedActorId, evaluatedSelectedActor, currentTime],
+  );
+
+  const handleSelectLibraryPose = useCallback(
+    (pose: PosePreset) => {
+      applyLibraryPosePreview(pose, poseMirrored, includePoseExpression);
+    },
+    [applyLibraryPosePreview, poseMirrored, includePoseExpression],
+  );
+
+  const handleTogglePoseMirror = useCallback(() => {
+    const nextMirrored = !poseMirrored;
+    setPoseMirrored(nextMirrored);
+
+    if (!selectedActorId || !evaluatedSelectedActor) return;
+    if (activePosePreviewId) {
+      const found =
+        customPoses.find((p) => p.id === activePosePreviewId) ??
+        BUILT_IN_POSES.find((p) => p.id === activePosePreviewId);
+      if (found) {
+        applyLibraryPosePreview(found, nextMirrored, includePoseExpression);
+        return;
+      }
+    }
+
+    // Mirror current live character joints even if no preset card is selected
+    const baseJoints = {
+      ...evaluatedSelectedActor.pose.joints,
+      ...jointDraft,
+    };
+    const mirroredJoints = mirrorPoseJoints(baseJoints);
+    const baseTilt = hipTiltDraft ?? evaluatedSelectedActor.pose.hipTilt;
+    const mirroredTilt = mirrorHipTilt(baseTilt);
+    setJointDraft(mirroredJoints);
+    setHipTiltDraft(mirroredTilt);
+    const mergedPose = evaluateProceduralClipPose(
+      'custom',
+      currentTime,
+      1,
+      mirroredJoints,
+      mirroredTilt,
+    );
+    engineRef.current?.setPoseOverride(selectedActorId, mergedPose);
+  }, [
+    poseMirrored,
+    selectedActorId,
+    evaluatedSelectedActor,
+    activePosePreviewId,
+    customPoses,
+    applyLibraryPosePreview,
+    includePoseExpression,
+    jointDraft,
+    hipTiltDraft,
+    currentTime,
+  ]);
+
+  const handleToggleIncludePoseExpression = useCallback(() => {
+    const nextInclude = !includePoseExpression;
+    setIncludePoseExpression(nextInclude);
+    if (activePosePreviewId) {
+      const found =
+        customPoses.find((p) => p.id === activePosePreviewId) ??
+        BUILT_IN_POSES.find((p) => p.id === activePosePreviewId);
+      if (found) {
+        applyLibraryPosePreview(found, poseMirrored, nextInclude);
+      }
+    }
+  }, [
+    includePoseExpression,
+    activePosePreviewId,
+    customPoses,
+    applyLibraryPosePreview,
+    poseMirrored,
+  ]);
+
+  const handleCommitLibraryPose = useCallback(() => {
+    if (!selectedActorId) return;
+    const actor = project.actors.find((a) => a.id === selectedActorId);
+    if (!actor) return;
+    const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+    const activeKf = getActiveActorKeyframe(actor, currentTime);
+    const hasCustomJoints = Object.keys(jointDraft).length > 0;
+
+    setProject((prev) => {
+      let next = upsertActorKeyframe(prev, selectedActorId, {
+        id: `kf_${Date.now()}`,
+        time: currentTime,
+        position: evalState.position,
+        rotation: evalState.rotation,
+        scale: evalState.scale,
+        clip: hasCustomJoints ? 'custom' : evalState.clip,
+        clipSpeed: activeKf?.clipSpeed ?? 1,
+        upperBodyClip: hasCustomJoints ? 'none' : evalState.upperBodyClip,
+        upperBodyWeight: hasCustomJoints ? 0 : evalState.upperBodyWeight,
+        customJoints: hasCustomJoints ? { ...jointDraft } : undefined,
+        hipTilt: hipTiltDraft ?? undefined,
+        easing: activeKf?.easing ?? 'easeInOut',
+      });
+
+      if (includePoseExpression && faceDraft && actor.kind === 'character') {
+        const overrides =
+          Object.keys(faceDraft.overrides).length > 0
+            ? { ...faceDraft.overrides }
+            : undefined;
+        next = upsertFaceKeyframe(next, selectedActorId, {
+          id: `fkf_${Date.now() + 1}`,
+          time: currentTime,
+          preset: faceDraft.preset,
+          overrides,
+          easing: 'easeInOut',
+        });
+      }
+      return next;
+    });
+
+    setJointDraft({});
+    setHipTiltDraft(null);
+    setFaceDraft(null);
+    setActivePosePreviewId(null);
+    setPoseMirrored(false);
+    engineRef.current?.setPoseOverride(null, null);
+    engineRef.current?.setFaceOverride(null, null);
+  }, [
+    selectedActorId,
+    project.actors,
+    project.subtitles,
+    currentTime,
+    jointDraft,
+    hipTiltDraft,
+    includePoseExpression,
+    faceDraft,
+  ]);
+
+  const handleResetLibraryPose = useCallback(() => {
+    setJointDraft({});
+    setHipTiltDraft(null);
+    setFaceDraft(null);
+    setActivePosePreviewId(null);
+    setPoseMirrored(false);
+    engineRef.current?.setPoseOverride(null, null);
+    engineRef.current?.setFaceOverride(null, null);
+  }, []);
+
+  const handleSaveCurrentPose = useCallback(
+    (name: string, category: PoseCategory, includeFace: boolean) => {
+      if (!evaluatedSelectedActor) return;
+      const joints = {
+        ...evaluatedSelectedActor.pose.joints,
+        ...jointDraft,
+      };
+      const hipTilt: Vec3Tuple = hipTiltDraft
+        ? [...hipTiltDraft]
+        : [...evaluatedSelectedActor.pose.hipTilt];
+
+      const expression = includeFace
+        ? {
+            preset: faceDraft?.preset ?? evaluatedSelectedActor.face.preset,
+            overrides:
+              faceDraft && Object.keys(faceDraft.overrides).length > 0
+                ? { ...faceDraft.overrides }
+                : undefined,
+          }
+        : undefined;
+
+      const newPose: PosePreset = {
+        id: `custom_pose_${Date.now()}`,
+        name,
+        category,
+        builtIn: false,
+        joints,
+        hipTilt,
+        expression,
+      };
+
+      setCustomPoses((prev) => [newPose, ...prev]);
+      setActivePosePreviewId(newPose.id);
+      setPoseMirrored(false);
+    },
+    [evaluatedSelectedActor, jointDraft, hipTiltDraft, faceDraft],
+  );
+
+  const handleDeleteCustomPose = useCallback((poseId: string) => {
+    setCustomPoses((prev) => prev.filter((p) => p.id !== poseId));
+    setActivePosePreviewId((curr) => (curr === poseId ? null : curr));
+  }, []);
+
+  const handleExportPoses = useCallback(() => {
+    const toExport = customPoses.length > 0 ? customPoses : BUILT_IN_POSES;
+    const json = serializePoseLibrary(toExport);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download =
+      customPoses.length > 0
+        ? 'stagecraft-custom-poses.json'
+        : 'stagecraft-builtin-poses.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, [customPoses]);
+
+  const handleImportPosesJson = useCallback(
+    (raw: string): { ok: boolean; message: string } => {
+      try {
+        const imported = parsePoseLibraryJson(raw);
+        setCustomPoses((prev) => {
+          const existingIds = new Set(prev.map((p) => p.id));
+          const deduped = imported.map((p, idx) =>
+            existingIds.has(p.id)
+              ? { ...p, id: `${p.id}_${Date.now()}_${idx}` }
+              : p,
+          );
+          return [...deduped, ...prev];
+        });
+        return {
+          ok: true,
+          message: `Imported ${imported.length} pose${imported.length === 1 ? '' : 's'}.`,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          message:
+            err instanceof Error ? err.message : 'Unable to parse pose pack JSON.',
+        };
+      }
+    },
+    [],
+  );
+
+  const handleUpdateKeyframeEasing = useCallback(
+    (
+      ref:
+        | { kind: 'camera'; keyframeId: string }
+        | { kind: 'lighting'; keyframeId: string }
+        | { kind: 'actor'; actorId: string; keyframeId: string }
+        | { kind: 'face'; actorId: string; keyframeId: string },
+      easing: EasingType,
+    ) => {
+      setProject((prev) => {
+        if (ref.kind === 'camera') {
+          return {
+            ...prev,
+            cameraTrack: prev.cameraTrack.map((k) =>
+              k.id === ref.keyframeId ? { ...k, easing } : k,
+            ),
+          };
+        }
+        if (ref.kind === 'lighting') {
+          return {
+            ...prev,
+            lightingTrack: (prev.lightingTrack ?? []).map((k) =>
+              k.id === ref.keyframeId ? { ...k, easing } : k,
+            ),
+          };
+        }
+        if (ref.kind === 'actor') {
+          return {
+            ...prev,
+            actors: prev.actors.map((a) =>
+              a.id === ref.actorId
+                ? {
+                    ...a,
+                    keyframes: a.keyframes.map((k) =>
+                      k.id === ref.keyframeId ? { ...k, easing } : k,
+                    ),
+                  }
+                : a,
+            ),
+          };
+        }
+        return {
+          ...prev,
+          actors: prev.actors.map((a) =>
+            a.id === ref.actorId
+              ? {
+                  ...a,
+                  faceKeyframes: (a.faceKeyframes ?? []).map((k) =>
+                    k.id === ref.keyframeId ? { ...k, easing } : k,
+                  ),
+                }
+              : a,
+          ),
+        };
+      });
+    },
+    [],
   );
 
   const handleLoadPreset = useCallback((preset: AnimationProject) => {
@@ -495,6 +1100,12 @@ export default function App() {
     engineRef.current?.setTime(0);
     setSelectedActorId(preset.actors[0]?.id ?? null);
     setJointDraft({});
+    setHipTiltDraft(null);
+    setFaceDraft(null);
+    setActivePosePreviewId(null);
+    setPoseMirrored(false);
+    engineRef.current?.setPoseOverride(null, null);
+    engineRef.current?.setFaceOverride(null, null);
   }, []);
 
   const handleCapturePng = useCallback(() => {
@@ -709,10 +1320,30 @@ export default function App() {
             onSetCameraMode={handleSetCameraMode}
             onSelectActor={handleSelectActor}
             onKeyActorAtCurrentTime={handleKeyActorAtCurrentTime}
+            onKeyFaceAtCurrentTime={handleCommitFaceKeyframe}
             onKeyCameraAtCurrentTime={handleKeyCameraAtCurrentTime}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
+            onMoveActorKeyframe={(actorId, kfId, newTime) =>
+              setProject((p) => moveActorKeyframeTime(p, actorId, kfId, newTime))
+            }
+            onMoveFaceKeyframe={(actorId, kfId, newTime) =>
+              setProject((p) => moveFaceKeyframeTime(p, actorId, kfId, newTime))
+            }
+            onMoveCameraKeyframe={(kfId, newTime) =>
+              setProject((p) => moveCameraKeyframeTime(p, kfId, newTime))
+            }
+            onMoveLightingKeyframe={(kfId, newTime) =>
+              setProject((p) => moveLightingKeyframeTime(p, kfId, newTime))
+            }
+            onUpdateKeyframeEasing={handleUpdateKeyframeEasing}
             onDeleteActorKeyframe={(actorId, kfId) =>
               setProject((p) => deleteActorKeyframe(p, actorId, kfId))
+            }
+            onDeleteFaceKeyframe={(actorId, kfId) =>
+              setProject((p) => deleteFaceKeyframe(p, actorId, kfId))
+            }
+            onDeleteCameraKeyframe={(kfId) =>
+              setProject((p) => deleteCameraKeyframe(p, kfId))
             }
             onDeleteLightingKeyframe={(kfId) =>
               setProject((p) => deleteLightingKeyframe(p, kfId))
@@ -745,10 +1376,13 @@ export default function App() {
         {activeTab === 'character' && (
           <CharacterPanel
             project={project}
+            currentTime={currentTime}
             selectedActorId={selectedActorId}
             evaluatedActor={evaluatedSelectedActor}
             gizmoMode={gizmoMode}
             jointDraft={jointDraft}
+            hipTiltDraft={hipTiltDraft}
+            faceDraft={faceDraft}
             onSelectActor={handleSelectActor}
             onAddCharacter={handleAddCharacter}
             onAddProp={handleAddProp}
@@ -765,9 +1399,33 @@ export default function App() {
                 ),
               }))
             }
+            onUpdateFaceConfig={handleUpdateFaceConfig}
+            onPreviewFacePreset={handlePreviewFacePreset}
+            onPreviewFaceParam={handlePreviewFaceParam}
+            onResetFaceDraft={handleResetFaceDraft}
+            onCommitFaceKeyframe={handleCommitFaceKeyframe}
+            onFocusActorFace={handleFocusActorFace}
             onChangeClip={handleChangeClip}
+            onUpdateActorAnimSettings={handleUpdateActorAnimSettings}
+            onUpdateActorRigBehavior={handleUpdateActorRigBehavior}
             onPreviewJoint={handlePreviewJoint}
+            onPreviewHipTilt={handlePreviewHipTilt}
+            onResetPoseDraft={handleResetPoseDraft}
             onCommitPoseKeyframe={handleKeyActorAtCurrentTime}
+            builtInPoses={BUILT_IN_POSES}
+            customPoses={customPoses}
+            activePosePreviewId={activePosePreviewId}
+            poseMirrored={poseMirrored}
+            includePoseExpression={includePoseExpression}
+            onSelectLibraryPose={handleSelectLibraryPose}
+            onTogglePoseMirror={handleTogglePoseMirror}
+            onToggleIncludePoseExpression={handleToggleIncludePoseExpression}
+            onCommitLibraryPose={handleCommitLibraryPose}
+            onResetLibraryPose={handleResetLibraryPose}
+            onSaveCurrentPose={handleSaveCurrentPose}
+            onDeleteCustomPose={handleDeleteCustomPose}
+            onExportPoses={handleExportPoses}
+            onImportPosesJson={handleImportPosesJson}
           />
         )}
 

@@ -61,28 +61,184 @@ export type PropKind = 'spawnpad' | 'crate' | 'tree' | 'speeder';
 
 export type ActorKind = 'character' | 'prop';
 
+// =========================================================================
+// 3D Sculpted Face & Expression Framework Types
+// =========================================================================
+
+export type FaceEyeStyle = 'classic' | 'expressive' | 'hero' | 'cyber' | 'starry';
+export type FaceBrowStyle = 'rounded' | 'bold' | 'sharp' | 'arched' | 'none';
+export type FaceMouthStyle = 'sculpted' | 'openCavity' | 'smirk' | 'cyber';
+export type FaceCheekStyle = 'none' | 'blush' | 'freckles' | 'bandage' | 'scar';
+
+export type FaceGazeTarget = 'forward' | 'camera' | 'manual' | string;
+
+export interface FaceRigConfig {
+  eyeStyle: FaceEyeStyle;
+  browStyle: FaceBrowStyle;
+  mouthStyle: FaceMouthStyle;
+  cheekStyle: FaceCheekStyle;
+  eyeColor: string;
+  browColor: string;
+  mouthColor: string;
+  accentColor: string;
+  autoBlink: boolean;
+  autoLipSync: boolean;
+  gazeTarget: FaceGazeTarget;
+}
+
+export type ExpressionPresetId =
+  | 'neutral'
+  | 'happy'
+  | 'excited'
+  | 'angry'
+  | 'sad'
+  | 'surprised'
+  | 'smug'
+  | 'wink'
+  | 'determined'
+  | 'focused';
+
+export const EXPRESSION_PRESET_IDS: ExpressionPresetId[] = [
+  'neutral',
+  'happy',
+  'excited',
+  'angry',
+  'sad',
+  'surprised',
+  'smug',
+  'wink',
+  'determined',
+  'focused',
+];
+
+export const EXPRESSION_PRESET_LABELS: Record<ExpressionPresetId, string> = {
+  neutral: 'Neutral',
+  happy: 'Happy',
+  excited: 'Excited',
+  angry: 'Angry',
+  sad: 'Sad',
+  surprised: 'Surprised',
+  smug: 'Smug',
+  wink: 'Wink',
+  determined: 'Determined',
+  focused: 'Focused',
+};
+
+export interface ExpressionParams {
+  smile: number; // -1 (frown) .. 1 (big grin)
+  browRaise: number; // -1 (lowered) .. 1 (raised high)
+  browFurrow: number; // 0 (flat) .. 1 (angled angry/intense)
+  eyeWide: number; // -1 (squint) .. 1 (wide open)
+  blinkL: number; // 0 (open) .. 1 (closed)
+  blinkR: number; // 0 (open) .. 1 (closed)
+  jawOpen: number; // 0 (closed) .. 1 (wide open)
+  mouthWidth: number; // -1 (narrow/O) .. 1 (wide)
+  mouthSkew: number; // -1 (left smirk) .. 1 (right smirk)
+  gazeX: number; // -1 (right) .. 1 (left)
+  gazeY: number; // -1 (down) .. 1 (up)
+  blush: number; // 0 .. 1
+}
+
+export interface FaceKeyframe {
+  id: string;
+  time: number;
+  preset: ExpressionPresetId;
+  overrides?: Partial<ExpressionParams>;
+  easing: EasingType;
+}
+
+export interface EvaluatedFaceState {
+  preset: ExpressionPresetId;
+  params: ExpressionParams;
+  isSpeaking: boolean;
+}
+
+// =========================================================================
+// Enhanced R6 Animation Framework Types
+// =========================================================================
+
 export type PoseClipId =
   | 'idle'
   | 'walk'
   | 'run'
+  | 'jump'
+  | 'crouch'
   | 'wave'
   | 'hero'
   | 'sit'
   | 'swordSwing'
+  | 'cheer'
+  | 'talkGesture'
+  | 'point'
+  | 'block'
+  | 'victory'
   | 'custom';
 
 export const POSE_CLIP_LABELS: Record<PoseClipId, string> = {
   idle: 'Idle',
   walk: 'Walk',
   run: 'Sprint',
+  jump: 'Jump',
+  crouch: 'Crouch',
   wave: 'Wave',
   hero: 'Hero',
   sit: 'Sit',
   swordSwing: 'Slash',
+  cheer: 'Cheer',
+  talkGesture: 'Talk',
+  point: 'Point',
+  block: 'Guard',
+  victory: 'Victory',
   custom: 'Custom',
 };
 
-export type EasingType = 'linear' | 'easeInOut' | 'easeOutCubic' | 'step';
+export type UpperBodyClipId =
+  | 'none'
+  | 'wave'
+  | 'swordSwing'
+  | 'talkGesture'
+  | 'point'
+  | 'cheer'
+  | 'block';
+
+export const UPPER_BODY_CLIPS: UpperBodyClipId[] = [
+  'none',
+  'wave',
+  'swordSwing',
+  'talkGesture',
+  'point',
+  'cheer',
+  'block',
+];
+
+export const UPPER_BODY_CLIP_LABELS: Record<UpperBodyClipId, string> = {
+  none: 'None (Full Base)',
+  wave: 'Wave Hand',
+  swordSwing: 'Sword Slash',
+  talkGesture: 'Talk Gesture',
+  point: 'Point Ahead',
+  cheer: 'Cheer Arms',
+  block: 'Shield Guard',
+};
+
+export type EasingType =
+  | 'linear'
+  | 'easeInOut'
+  | 'easeOutCubic'
+  | 'easeInBack'
+  | 'easeOutBack'
+  | 'spring'
+  | 'step';
+
+export const EASING_OPTIONS: { id: EasingType; label: string }[] = [
+  { id: 'easeInOut', label: 'Smooth' },
+  { id: 'easeOutCubic', label: 'Ease Out' },
+  { id: 'linear', label: 'Linear' },
+  { id: 'easeInBack', label: 'Anticipate' },
+  { id: 'easeOutBack', label: 'Overshoot' },
+  { id: 'spring', label: 'Spring' },
+  { id: 'step', label: 'Step / Cut' },
+];
 
 export type CameraPathMode = 'spline' | 'linear';
 
@@ -98,6 +254,10 @@ export interface ActorKeyframe {
   scale: Vec3Tuple;
   clip: PoseClipId;
   clipSpeed: number;
+  upperBodyClip?: UpperBodyClipId;
+  upperBodyWeight?: number;
+  blendDuration?: number;
+  hipTilt?: Vec3Tuple;
   customJoints?: Partial<Record<R6BodyPartId, Vec3Tuple>>;
   easing: EasingType;
 }
@@ -109,6 +269,11 @@ export interface SceneActorConfig {
   bundleId?: string;
   bodyColors?: R6BodyColors;
   ornaments?: R6Ornaments;
+  faceConfig?: FaceRigConfig;
+  faceKeyframes?: FaceKeyframe[];
+  lookAtTarget?: 'none' | 'camera' | string;
+  lookAtWeight?: number;
+  secondaryMotion?: boolean;
   propKind?: PropKind;
   primaryColor: string;
   accentColor: string;
@@ -165,6 +330,7 @@ export interface SubtitleCue {
   startTime: number;
   endTime: number;
   speaker: string;
+  actorId?: string | null;
   text: string;
 }
 
@@ -192,6 +358,18 @@ export interface AnimationProject {
 export interface EvaluatedPose {
   joints: Record<R6BodyPartId, Vec3Tuple>;
   torsoOffsetY: number;
+  hipOffset: Vec3Tuple;
+  hipTilt: Vec3Tuple;
+  squashY: number;
+}
+
+export interface SecondaryMotionState {
+  capePitch: number;
+  capeRoll: number;
+  wingSpread: number;
+  hatLagX: number;
+  hatLagZ: number;
+  propSwing: number;
 }
 
 export interface EvaluatedActorState {
@@ -200,7 +378,11 @@ export interface EvaluatedActorState {
   rotation: Vec3Tuple;
   scale: Vec3Tuple;
   clip: PoseClipId;
+  upperBodyClip: UpperBodyClipId;
+  upperBodyWeight: number;
   pose: EvaluatedPose;
+  face: EvaluatedFaceState;
+  secondaryMotion: SecondaryMotionState;
 }
 
 export interface EvaluatedCameraState {
@@ -255,3 +437,45 @@ export interface WebmRecordingState {
   fileSizeBytes: number | null;
   error: string | null;
 }
+
+export type PoseCategory =
+  | 'idle'
+  | 'action'
+  | 'combat'
+  | 'social'
+  | 'cinematic'
+  | 'custom';
+
+export const POSE_CATEGORIES: PoseCategory[] = [
+  'idle',
+  'action',
+  'combat',
+  'social',
+  'cinematic',
+  'custom',
+];
+
+export const POSE_CATEGORY_LABELS: Record<PoseCategory, string> = {
+  idle: 'Idle',
+  action: 'Action',
+  combat: 'Combat',
+  social: 'Social',
+  cinematic: 'Cinematic',
+  custom: 'Custom',
+};
+
+export interface PoseExpressionBundle {
+  preset: ExpressionPresetId;
+  overrides?: Partial<ExpressionParams>;
+}
+
+export interface PosePreset {
+  id: string;
+  name: string;
+  category: PoseCategory;
+  builtIn: boolean;
+  joints: Record<R6BodyPartId, Vec3Tuple>;
+  hipTilt: Vec3Tuple;
+  expression?: PoseExpressionBundle;
+}
+

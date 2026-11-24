@@ -7,6 +7,7 @@ import {
   CameraKeyframe,
   CameraMode,
   CameraPathMode,
+  EASING_OPTIONS,
   EasingType,
   SubtitleCue,
 } from '../../engine/types';
@@ -51,7 +52,13 @@ export const CutscenePanel: React.FC<CutscenePanelProps> = ({
   onAddSubtitle,
   onDeleteSubtitle,
 }) => {
-  const [speaker, setSpeaker] = useState('Crossroads Knight');
+  const characterActors = project.actors.filter((a) => a.kind === 'character');
+  const [speakerActorId, setSpeakerActorId] = useState<string>(
+    () => characterActors[0]?.id ?? '',
+  );
+  const [speaker, setSpeaker] = useState(
+    () => characterActors[0]?.name ?? 'Crossroads Knight',
+  );
   const [text, setText] = useState('');
   const [selectedShotId, setSelectedShotId] = useState<string>(
     () => project.cameraTrack[0]?.id ?? '',
@@ -84,6 +91,7 @@ export const CutscenePanel: React.FC<CutscenePanelProps> = ({
       startTime: Math.round(currentTime * 10) / 10,
       endTime: Math.min(project.duration, Math.round((currentTime + 2.5) * 10) / 10),
       speaker: speaker.trim() || 'Narrator',
+      actorId: speakerActorId || null,
       text: trimmed,
     });
     setText('');
@@ -253,10 +261,11 @@ export const CutscenePanel: React.FC<CutscenePanelProps> = ({
                   }
                   className="px-1.5 py-1 rounded bg-[#2b2e35] border border-[#393d47] text-xs text-slate-200"
                 >
-                  <option value="easeInOut">Smooth</option>
-                  <option value="easeOutCubic">Ease Out</option>
-                  <option value="linear">Linear</option>
-                  <option value="step">Hard Cut</option>
+                  {EASING_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>
@@ -334,14 +343,32 @@ export const CutscenePanel: React.FC<CutscenePanelProps> = ({
           Cutscene Dialogue & Subtitles
         </span>
 
-        <form onSubmit={handleCreateSubtitle} className="flex items-center gap-1.5">
+        <form onSubmit={handleCreateSubtitle} className="flex flex-wrap items-center gap-1.5">
+          <select
+            aria-label="Lip-Sync Speaker Actor"
+            value={speakerActorId}
+            onChange={(e) => {
+              const id = e.target.value;
+              setSpeakerActorId(id);
+              const found = characterActors.find((a) => a.id === id);
+              if (found) setSpeaker(found.name);
+            }}
+            className="w-32 px-2 py-1.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-200"
+          >
+            <option value="">Narrator / None</option>
+            {characterActors.map((actor) => (
+              <option key={actor.id} value={actor.id}>
+                {actor.name}
+              </option>
+            ))}
+          </select>
           <input
             type="text"
             aria-label="Speaker Name"
             value={speaker}
             onChange={(e) => setSpeaker(e.target.value)}
             placeholder="Speaker"
-            className="w-28 px-2.5 py-1.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-100 placeholder:text-slate-500"
+            className="w-24 px-2 py-1.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-100 placeholder:text-slate-500"
           />
           <input
             type="text"
@@ -349,7 +376,7 @@ export const CutscenePanel: React.FC<CutscenePanelProps> = ({
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder={`Add subtitle at ${formatTimecode(currentTime)}...`}
-            className="flex-1 min-w-0 px-2.5 py-1.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-100 placeholder:text-slate-500"
+            className="flex-1 min-w-[140px] px-2.5 py-1.5 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-100 placeholder:text-slate-500"
           />
           <button
             type="submit"

@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyEasing,
+  applyUpperBodyLayer,
   catmullRomScalar,
   deleteActorKeyframe,
+  deleteFaceKeyframe,
   deleteLightingKeyframe,
   deleteStageLight,
   evaluateActorAt,
@@ -14,13 +16,28 @@ import {
   evaluateSubtitleAt,
   formatTimecode,
   lerpAngleRad,
+  moveActorKeyframeTime,
+  moveFaceKeyframeTime,
   parseProjectJson,
   serializeProject,
   upsertActorKeyframe,
   upsertCameraKeyframe,
+  upsertFaceKeyframe,
   upsertLightingKeyframe,
   upsertStageLight,
 } from './timeline';
+import {
+  evaluateActorFaceAt,
+  evaluateAutoBlink,
+  evaluateSubtitleLipSync,
+  resolveActorFaceConfig,
+} from './faceExpressions';
+import {
+  BUILT_IN_POSES,
+  mirrorPosePreset,
+  parsePoseLibraryJson,
+  serializePoseLibrary,
+} from './poseLibrary';
 import { CROSSROADS_SHOWDOWN_PROJECT } from './presets';
 import { cloneBundle, ORNAMENT_CATALOG } from './robloxCatalog';
 import { ORNAMENT_SLOTS, R6_BODY_PARTS } from './types';
@@ -241,3 +258,148 @@ test('project JSON serialization roundtrip and validation', () => {
   assert.throws(() => parseProjectJson('{not valid json'), /Invalid JSON/);
   assert.throws(() => parseProjectJson('{"foo":"bar"}'), /missing required fields/);
 });
+
+test('extended spring and back easing curves respect boundaries and show overshoot/anticipation', () => {
+  for (const curve of ['easeInBack', 'easeOutBack', 'spring'] as const) {
+    assert.equal(applyEasing(0, curve), 0);
+    assert.equal(applyEasing(1, curve), 1);
+  }
+  assert.ok(applyEasing(0.25, 'easeInBack') < 0, 'easeInBack anticipates below 0');
+  assert.ok(applyEasing(0.75, 'easeOutBack') > 1, 'easeOutBack overshoots above 1');
+  assert.ok(applyEasing(0.35, 'spring') > 1, 'spring overshoots above 1');
+});
+
+test('layered upper-body clip blending modifies arms/head while keeping lower-body legs intact', () => {
+  const walkBase = evaluateProceduralClipPose('walk', 0.35, 1);
+  const layered = applyUpperBodyLayer(walkBase, 'wave', 0.35, 1, 1);
+  assert.deepEqual(layered.joints.leftLeg, walkBase.joints.leftLeg);
+  assert.deepEqual(layered.joints.rightLeg, walkBase.joints.rightLeg);
+  assert.notDeepEqual(layered.joints.rightArm, walkBase.joints.rightArm);
+});
+
+test('auto-blink, subtitle lip-sync, and 3D face keyframe evaluation are deterministic', () => {
+  const knight = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
+  const cfg = resolveActorFaceConfig(knight);
+  assert.ok(cfg.eyeStyle && cfg.mouthStyle);
+
+  // Auto-blink determinism & range
+  const b1 = evaluateAutoBlink(3.15, 7);
+  const b2 = evaluateAutoBlink(3.15, 7);
+  assert.equal(b1, b2);
+  assert.ok(b1 >= 0 && b1 <= 1);
+
+  // Subtitle lip-sync activates during knight's spoken line and opens jaw on vowels
+  const lipSpeaking = evaluateSubtitleLipSync(
+    knight,
+    CROSSROADS_SHOWDOWN_PROJECT.subtitles,
+    1.2,
+  );
+  const peakJaw = [0.9, 1.1, 1.3, 1.5, 1.7, 1.9, 2.1].reduce((max, t) => {
+    const v = evaluateSubtitleLipSync(
+      knight,
+      CROSSROADS_SHOWDOWN_PROJECT.subtitles,
+      t,
+    );
+    return Math.max(max, v.jawOpen);
+  }, 0);
+  const lipSilent = evaluateSubtitleLipSync(
+    knight,
+    CROSSROADS_SHOWDOWN_PROJECT.subtitles,
+    0.1,
+  );
+  assert.equal(lipSpeaking.active, true);
+  assert.ok(peakJaw > 0.35, `Expected dynamic vowel peak jawOpen > 0.35, got ${peakJaw}`);
+  assert.equal(lipSilent.active, false);
+  assert.equal(lipSilent.jawOpen, 0);
+
+  // Face state evaluation blends presets & carries speaking flag
+  const faceAt15 = evaluateActorFaceAt(
+    knight,
+    1.5,
+    CROSSROADS_SHOWDOWN_PROJECT.subtitles,
+    applyEasing,
+  );
+  assert.equal(faceAt15.isSpeaking, true);
+  assert.ok(faceAt15.params.jawOpen > 0);
+});
+
+test('face keyframe CRUD and timeline drag-move helpers preserve ordering', () => {
+  const actorId = 'actor-knight';
+  let proj = upsertFaceKeyframe(CROSSROADS_SHOWDOWN_PROJECT, actorId, {
+    id: 'fkf-test',
+    time: 4.5,
+    preset: 'surprised',
+    overrides: { jawOpen: 0.9 },
+    easing: 'easeOutBack',
+  });
+  let actor = proj.actors.find((a) => a.id === actorId)!;
+  assert.ok(actor.faceKeyframes?.some((k) => k.id === 'fkf-test'));
+
+  proj = moveFaceKeyframeTime(proj, actorId, 'fkf-test', 2.25);
+  actor = proj.actors.find((a) => a.id === actorId)!;
+  const movedFace = actor.faceKeyframes?.find((k) => k.id === 'fkf-test');
+  assert.equal(movedFace?.time, 2.25);
+
+  proj = deleteFaceKeyframe(proj, actorId, 'fkf-test');
+  actor = proj.actors.find((a) => a.id === actorId)!;
+  assert.ok(!actor.faceKeyframes?.some((k) => k.id === 'fkf-test'));
+
+  const firstMovable = actor.keyframes[1];
+  proj = moveActorKeyframeTime(proj, actorId, firstMovable.id, 3.35);
+  const movedActorKf = proj.actors
+    .find((a) => a.id === actorId)!
+    .keyframes.find((k) => k.id === firstMovable.id);
+  assert.equal(movedActorKf?.time, 3.35);
+});
+
+test('deterministic secondary motion computes non-zero cape pitch during movement', () => {
+  const knight = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
+  const stateA = evaluateActorAt(knight, 1.4, CROSSROADS_SHOWDOWN_PROJECT.subtitles);
+  const stateB = evaluateActorAt(knight, 1.4, CROSSROADS_SHOWDOWN_PROJECT.subtitles);
+  assert.deepEqual(stateA.secondaryMotion, stateB.secondaryMotion);
+  assert.ok(stateA.secondaryMotion.capePitch > 0.05);
+});
+
+test('pose library built-in catalog is complete and mirrors L/R joints, hip tilt, and wink expression symmetrically', () => {
+  assert.ok(BUILT_IN_POSES.length >= 16);
+  for (const pose of BUILT_IN_POSES) {
+    for (const part of R6_BODY_PARTS) {
+      assert.equal(pose.joints[part].length, 3);
+    }
+    assert.equal(pose.hipTilt.length, 3);
+  }
+
+  const wave = BUILT_IN_POSES.find((p) => p.id === 'pose_friendly_wave')!;
+  const mirrored = mirrorPosePreset(wave);
+  // Right arm raising becomes left arm raising with negated Y/Z
+  assert.equal(mirrored.joints.leftArm[0], wave.joints.rightArm[0]);
+  assert.equal(mirrored.joints.leftArm[1], -wave.joints.rightArm[1]);
+  assert.equal(mirrored.joints.leftArm[2], -wave.joints.rightArm[2]);
+  assert.equal(mirrored.joints.rightArm[0], wave.joints.leftArm[0]);
+  assert.equal(mirrored.hipTilt[2], -wave.hipTilt[2]);
+
+  // Mirroring a wink pose swaps blinkL and blinkR
+  const glance = BUILT_IN_POSES.find((p) => p.id === 'pose_over_shoulder')!;
+  const mirroredGlance = mirrorPosePreset(glance);
+  assert.ok(mirroredGlance.expression?.overrides);
+  assert.notEqual(
+    mirroredGlance.expression?.overrides?.blinkL,
+    mirroredGlance.expression?.overrides?.blinkR,
+  );
+});
+
+test('pose library JSON serialization roundtrip and validation', () => {
+  const sample = BUILT_IN_POSES.slice(0, 3);
+  const json = serializePoseLibrary(sample);
+  const parsed = parsePoseLibraryJson(json);
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0].name, sample[0].name);
+  assert.equal(parsed[0].builtIn, false);
+  assert.deepEqual(parsed[0].joints.rightArm, sample[0].joints.rightArm);
+
+  assert.throws(() => parsePoseLibraryJson('{broken'), /Invalid JSON/);
+  assert.throws(() => parsePoseLibraryJson('{"foo":1}'), /missing a valid "poses" array/);
+  assert.throws(() => parsePoseLibraryJson('{"poses":[]}'), /No valid R6 pose/);
+});
+
+

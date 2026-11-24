@@ -1,17 +1,20 @@
 import * as THREE from 'three';
+import { buildRoblox3DFaceRig, Roblox3DFaceRig } from './robloxFaceRig';
 import {
   createPlasticBrickMaterial,
-  createRobloxFaceTexture,
   createStudBrickMaterial,
   StudTexturePair,
 } from './robloxTextures';
 import {
+  EvaluatedFaceState,
   EvaluatedPose,
+  FaceRigConfig,
   OrnamentSlot,
   R6_BODY_PARTS,
   R6BodyColors,
   R6BodyPartId,
   R6Ornaments,
+  SecondaryMotionState,
 } from './types';
 
 // Authentic Roblox R6 stud proportion: 1 stud = 0.55 world units (5 studs tall = 2.75 units)
@@ -20,13 +23,22 @@ const TORSO_BASE_Y = 3.0 * R6_STUD;
 
 export interface RobloxR6CharacterRig {
   root: THREE.Group;
+  hipPivot: THREE.Group;
   torsoPivot: THREE.Group;
   pivots: Record<R6BodyPartId, THREE.Group>;
   sockets: Record<OrnamentSlot, THREE.Group>;
+  faceRig: Roblox3DFaceRig;
   selectionRing: THREE.Mesh;
   applyPose: (pose: EvaluatedPose) => void;
+  applyHeadLookAt: (yawRad: number, pitchRad: number, weight: number) => void;
+  applyFaceState: (
+    face: EvaluatedFaceState,
+    gazeOverride?: { x: number; y: number } | null,
+  ) => void;
+  applySecondaryMotion: (sec: SecondaryMotionState) => void;
   setBodyColors: (colors: R6BodyColors) => void;
   setOrnaments: (ornaments: R6Ornaments) => void;
+  setFaceConfig: (config: FaceRigConfig) => void;
 }
 
 function disposeGroupContents(group: THREE.Group) {
@@ -63,12 +75,15 @@ function buildRoundedHeadGeometry(): THREE.LatheGeometry {
     new THREE.Vector2(r - bevel, h),
     new THREE.Vector2(0, h),
   ];
-  return new THREE.LatheGeometry(pts, 20);
+  const geo = new THREE.LatheGeometry(pts, 24);
+  geo.rotateY(Math.PI);
+  return geo;
 }
 
 export function buildRobloxR6CharacterRig(
   initialColors: R6BodyColors,
   initialOrnaments: R6Ornaments,
+  initialFaceConfig: FaceRigConfig,
   studTextures: StudTexturePair,
   shadowTex: THREE.CanvasTexture,
 ): RobloxR6CharacterRig {
@@ -129,10 +144,15 @@ export function buildRobloxR6CharacterRig(
     }),
   };
 
+  // --- ENHANCED R6 HIP / ROOT MOTION PIVOT (supports hip tilt, lateral sway, squash & stretch) ---
+  const hipPivot = new THREE.Group();
+  hipPivot.position.set(0, TORSO_BASE_Y, 0);
+  root.add(hipPivot);
+
   // --- TORSO (2 x 2 x 1 studs) ---
   const torsoPivot = new THREE.Group();
-  torsoPivot.position.set(0, TORSO_BASE_Y, 0);
-  root.add(torsoPivot);
+  torsoPivot.position.set(0, 0, 0);
+  hipPivot.add(torsoPivot);
 
   const torsoMesh = new THREE.Mesh(
     new THREE.BoxGeometry(2 * R6_STUD, 2 * R6_STUD, 1 * R6_STUD),
@@ -142,7 +162,7 @@ export function buildRobloxR6CharacterRig(
   torsoMesh.receiveShadow = true;
   torsoPivot.add(torsoMesh);
 
-  // --- HEAD (rounded classic cylinder + neck) ---
+  // --- HEAD (rounded classic cylinder + neck + 3D Sculpted Face Rig) ---
   const headPivot = new THREE.Group();
   headPivot.position.set(0, 1.0 * R6_STUD, 0);
   torsoPivot.add(headPivot);
@@ -152,6 +172,9 @@ export function buildRobloxR6CharacterRig(
   headMesh.castShadow = true;
   headMesh.receiveShadow = true;
   headPivot.add(headMesh);
+
+  const faceRig = buildRoblox3DFaceRig(initialFaceConfig, initialColors.head);
+  headPivot.add(faceRig.root);
 
   // --- LEFT ARM (+X side when facing +Z) ---
   const leftArmPivot = new THREE.Group();
@@ -181,10 +204,10 @@ export function buildRobloxR6CharacterRig(
   rightArmMesh.receiveShadow = true;
   rightArmPivot.add(rightArmMesh);
 
-  // --- LEFT LEG (+X side) ---
+  // --- LEFT LEG (+X side, parented under hipPivot so torso lean doesn't lift legs unnaturally) ---
   const leftLegPivot = new THREE.Group();
   leftLegPivot.position.set(0.51 * R6_STUD, -1.0 * R6_STUD, 0);
-  torsoPivot.add(leftLegPivot);
+  hipPivot.add(leftLegPivot);
 
   const leftLegMesh = new THREE.Mesh(
     new THREE.BoxGeometry(1 * R6_STUD, 2 * R6_STUD, 1 * R6_STUD),
@@ -198,7 +221,7 @@ export function buildRobloxR6CharacterRig(
   // --- RIGHT LEG (-X side) ---
   const rightLegPivot = new THREE.Group();
   rightLegPivot.position.set(-0.51 * R6_STUD, -1.0 * R6_STUD, 0);
-  torsoPivot.add(rightLegPivot);
+  hipPivot.add(rightLegPivot);
 
   const rightLegMesh = new THREE.Mesh(
     new THREE.BoxGeometry(1 * R6_STUD, 2 * R6_STUD, 1 * R6_STUD),
@@ -227,6 +250,7 @@ export function buildRobloxR6CharacterRig(
   hatSocket.position.set(0, 1.06 * R6_STUD, 0);
   headPivot.add(hatSocket);
 
+  // Kept in sockets map for compatibility; 3D sculpted face lives in faceRig
   const faceSocket = new THREE.Group();
   faceSocket.position.set(0, 0.56 * R6_STUD, 0.59 * R6_STUD);
   headPivot.add(faceSocket);
@@ -239,9 +263,8 @@ export function buildRobloxR6CharacterRig(
   backSocket.position.set(0, 0.1 * R6_STUD, -0.52 * R6_STUD);
   torsoPivot.add(backSocket);
 
-  // Legs socket spans hip belt + left/right leg attachment sub-groups
   const legsSocket = new THREE.Group();
-  torsoPivot.add(legsSocket);
+  hipPivot.add(legsSocket);
   const legLeftGuardSocket = new THREE.Group();
   legLeftGuardSocket.position.set(0, -1.0 * R6_STUD, 0);
   leftLegPivot.add(legLeftGuardSocket);
@@ -259,17 +282,33 @@ export function buildRobloxR6CharacterRig(
   };
 
   let currentOrnamentsJson = '';
+  let capeDrapePivot: THREE.Group | null = null;
+  let leftWingPivot: THREE.Group | null = null;
+  let rightWingPivot: THREE.Group | null = null;
 
   const rebuildOrnaments = (ornaments: R6Ornaments) => {
-    const nextJson = JSON.stringify(ornaments);
+    // Only compare structural 3D ornaments (face is now handled by faceRig)
+    const nextJson = JSON.stringify({
+      head: ornaments.head,
+      hat: ornaments.hat,
+      arm: ornaments.arm,
+      back: ornaments.back,
+      legs: ornaments.legs,
+    });
     if (nextJson === currentOrnamentsJson) return;
     currentOrnamentsJson = nextJson;
 
     buildHeadOrnament(headSocket, ornaments.head.id, ornaments.head.color);
     buildHatOrnament(hatSocket, ornaments.hat.id, ornaments.hat.color);
-    buildFaceOrnament(faceSocket, ornaments.face.id, ornaments.face.color);
     buildArmOrnament(armSocket, ornaments.arm.id, ornaments.arm.color);
-    buildBackOrnament(backSocket, ornaments.back.id, ornaments.back.color);
+    const backHandles = buildBackOrnament(
+      backSocket,
+      ornaments.back.id,
+      ornaments.back.color,
+    );
+    capeDrapePivot = backHandles.capePivot;
+    leftWingPivot = backHandles.leftWing;
+    rightWingPivot = backHandles.rightWing;
     buildLegsOrnaments(
       legsSocket,
       legLeftGuardSocket,
@@ -281,34 +320,82 @@ export function buildRobloxR6CharacterRig(
 
   rebuildOrnaments(initialOrnaments);
 
+  let baseHeadRot: [number, number, number] = [0, 0, 0];
+
   const applyPose = (pose: EvaluatedPose) => {
-    torsoPivot.position.y = TORSO_BASE_Y + pose.torsoOffsetY;
+    const hipOff = pose.hipOffset ?? [0, pose.torsoOffsetY, 0];
+    const hipTilt = pose.hipTilt ?? [0, 0, 0];
+    const squash = pose.squashY ?? 1;
+    const invXZ = 1 / Math.sqrt(Math.max(0.75, squash));
+
+    hipPivot.position.set(hipOff[0], TORSO_BASE_Y + hipOff[1], hipOff[2]);
+    hipPivot.rotation.set(hipTilt[0], hipTilt[1], hipTilt[2]);
+    hipPivot.scale.set(invXZ, squash, invXZ);
+
+    // Subtle contact shadow scale pulse when jumping
+    const lift = Math.max(0, hipOff[1]);
+    const shadowScale = Math.max(0.55, 1 - lift * 0.25);
+    shadowPlane.scale.set(shadowScale, shadowScale, 1);
+
     for (const part of R6_BODY_PARTS) {
       const r = pose.joints[part];
       pivots[part].rotation.set(r[0], r[1], r[2]);
     }
+    baseHeadRot = [pose.joints.head[0], pose.joints.head[1], pose.joints.head[2]];
+  };
+
+  const applyHeadLookAt = (yawRad: number, pitchRad: number, weight: number) => {
+    if (weight <= 0.001) return;
+    headPivot.rotation.set(
+      baseHeadRot[0] + pitchRad * weight,
+      baseHeadRot[1] + yawRad * weight,
+      baseHeadRot[2],
+    );
+  };
+
+  const applySecondaryMotion = (sec: SecondaryMotionState) => {
+    // Cape trailing billow
+    if (capeDrapePivot) {
+      capeDrapePivot.rotation.set(0.12 + sec.capePitch, 0, sec.capeRoll);
+    }
+    // Wings responsive flap / spread
+    if (leftWingPivot && rightWingPivot) {
+      leftWingPivot.rotation.y = -0.45 - sec.wingSpread;
+      rightWingPivot.rotation.y = 0.45 + sec.wingSpread;
+    }
+    // Hat / hair subtle inertia lag
+    hatSocket.rotation.set(sec.hatLagX, 0, sec.hatLagZ);
+    // Held prop follow-through
+    armSocket.rotation.x = sec.propSwing;
   };
 
   const setBodyColors = (colors: R6BodyColors) => {
     for (const part of R6_BODY_PARTS) {
       partMaterials[part].color.set(colors[part]);
     }
+    faceRig.setSkinColor(colors.head);
   };
 
   return {
     root,
+    hipPivot,
     torsoPivot,
     pivots,
     sockets,
+    faceRig,
     selectionRing,
     applyPose,
+    applyHeadLookAt,
+    applyFaceState: (face, gazeOverride) => faceRig.applyFaceState(face, gazeOverride),
+    applySecondaryMotion,
     setBodyColors,
     setOrnaments: rebuildOrnaments,
+    setFaceConfig: (config) => faceRig.setConfig(config),
   };
 }
 
 // =========================================================================
-// 6 Procedural Ornament Builders
+// Procedural 3D Ornament Builders (Head, Hat, Arm, Back, Legs)
 // =========================================================================
 
 function buildHeadOrnament(socket: THREE.Group, id: string, color: string) {
@@ -323,21 +410,21 @@ function buildHeadOrnament(socket: THREE.Group, id: string, color: string) {
       new THREE.BoxGeometry(0.28 * R6_STUD, 0.18 * R6_STUD, 0.08 * R6_STUD),
       lensMat,
     );
-    leftLens.position.set(-0.22 * R6_STUD, 0.08 * R6_STUD, 0.61 * R6_STUD);
+    leftLens.position.set(-0.22 * R6_STUD, 0.08 * R6_STUD, 0.65 * R6_STUD);
     const rightLens = leftLens.clone();
     rightLens.position.x = 0.22 * R6_STUD;
     const bridge = new THREE.Mesh(
       new THREE.BoxGeometry(0.2 * R6_STUD, 0.06 * R6_STUD, 0.07 * R6_STUD),
       lensMat,
     );
-    bridge.position.set(0, 0.1 * R6_STUD, 0.61 * R6_STUD);
+    bridge.position.set(0, 0.1 * R6_STUD, 0.65 * R6_STUD);
     const armL = new THREE.Mesh(
-      new THREE.BoxGeometry(0.06 * R6_STUD, 0.06 * R6_STUD, 0.85 * R6_STUD),
+      new THREE.BoxGeometry(0.06 * R6_STUD, 0.06 * R6_STUD, 0.88 * R6_STUD),
       lensMat,
     );
-    armL.position.set(0.56 * R6_STUD, 0.1 * R6_STUD, 0.18 * R6_STUD);
+    armL.position.set(0.58 * R6_STUD, 0.1 * R6_STUD, 0.2 * R6_STUD);
     const armR = armL.clone();
-    armR.position.x = -0.56 * R6_STUD;
+    armR.position.x = -0.58 * R6_STUD;
     socket.add(leftLens, rightLens, bridge, armL, armR);
   } else if (id === 'headphones') {
     const padMat = createPlasticBrickMaterial('#1b2a35', { roughness: 0.55 });
@@ -367,24 +454,33 @@ function buildHeadOrnament(socket: THREE.Group, id: string, color: string) {
     const glassMat = new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.45,
+      emissiveIntensity: 0.42,
       roughness: 0.12,
       metalness: 0.35,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.52,
     });
     const shield = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.63 * R6_STUD, 0.63 * R6_STUD, 0.24 * R6_STUD, 16, 1, false, -0.95, 1.9),
+      new THREE.CylinderGeometry(
+        0.67 * R6_STUD,
+        0.67 * R6_STUD,
+        0.24 * R6_STUD,
+        16,
+        1,
+        true,
+        -0.95,
+        1.9,
+      ),
       glassMat,
     );
     shield.position.set(0, 0.08 * R6_STUD, 0);
     socket.add(shield);
   } else if (id === 'domino') {
     const mask = new THREE.Mesh(
-      new THREE.BoxGeometry(0.84 * R6_STUD, 0.22 * R6_STUD, 0.08 * R6_STUD),
+      new THREE.BoxGeometry(0.84 * R6_STUD, 0.2 * R6_STUD, 0.06 * R6_STUD),
       mat,
     );
-    mask.position.set(0, 0.09 * R6_STUD, 0.6 * R6_STUD);
+    mask.position.set(0, 0.09 * R6_STUD, 0.64 * R6_STUD);
     socket.add(mask);
   }
 }
@@ -498,28 +594,11 @@ function buildHatOrnament(socket: THREE.Group, id: string, color: string) {
   }
 }
 
-function buildFaceOrnament(socket: THREE.Group, id: string, color: string) {
-  disposeGroupContents(socket);
-  const faceTex = createRobloxFaceTexture(id, color);
-  const facePlane = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.9 * R6_STUD, 0.9 * R6_STUD),
-    new THREE.MeshBasicMaterial({
-      map: faceTex,
-      transparent: true,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-    }),
-  );
-  socket.add(facePlane);
-}
-
 function buildArmOrnament(socket: THREE.Group, id: string, color: string) {
   disposeGroupContents(socket);
   if (id === 'none') return;
 
   if (id === 'sword') {
-    // Classic Roblox Linked Sword held forward along +Z/+Y
     const bladeMat = createPlasticBrickMaterial(color, { roughness: 0.18, metalness: 0.55 });
     const hiltMat = createPlasticBrickMaterial('#635f62', { roughness: 0.4, metalness: 0.3 });
     const grip = new THREE.Mesh(
@@ -593,9 +672,19 @@ function buildArmOrnament(socket: THREE.Group, id: string, color: string) {
   }
 }
 
-function buildBackOrnament(socket: THREE.Group, id: string, color: string) {
+function buildBackOrnament(
+  socket: THREE.Group,
+  id: string,
+  color: string,
+): {
+  capePivot: THREE.Group | null;
+  leftWing: THREE.Group | null;
+  rightWing: THREE.Group | null;
+} {
   disposeGroupContents(socket);
-  if (id === 'none') return;
+  if (id === 'none') {
+    return { capePivot: null, leftWing: null, rightWing: null };
+  }
 
   const mat = createPlasticBrickMaterial(color, { roughness: 0.32 });
 
@@ -639,7 +728,9 @@ function buildBackOrnament(socket: THREE.Group, id: string, color: string) {
     bridge.position.set(0, 0.1 * R6_STUD, -0.14 * R6_STUD);
     socket.add(bridge);
   } else if (id === 'wings') {
-    for (const side of [-1, 1]) {
+    let leftWing: THREE.Group | null = null;
+    let rightWing: THREE.Group | null = null;
+    for (const side of [-1, 1] as const) {
       const wing = new THREE.Group();
       wing.position.set(side * 0.2 * R6_STUD, 0.25 * R6_STUD, -0.15 * R6_STUD);
       wing.rotation.y = side * -0.45;
@@ -659,7 +750,10 @@ function buildBackOrnament(socket: THREE.Group, id: string, color: string) {
       lower.castShadow = true;
       wing.add(upper, lower);
       socket.add(wing);
+      if (side === 1) leftWing = wing;
+      else rightWing = wing;
     }
+    return { capePivot: null, leftWing, rightWing };
   } else if (id === 'backpack') {
     const flapMat = createPlasticBrickMaterial('#635f62', { roughness: 0.4 });
     const pack = new THREE.Mesh(
@@ -680,13 +774,20 @@ function buildBackOrnament(socket: THREE.Group, id: string, color: string) {
       roughness: 0.55,
       side: THREE.DoubleSide,
     });
+    // Pivot at the shoulder clasps so secondary motion swings the cape realistically
+    const capePivot = new THREE.Group();
+    capePivot.position.set(0, 0.78 * R6_STUD, -0.06 * R6_STUD);
+    capePivot.rotation.x = 0.12;
+    socket.add(capePivot);
+
     const drape = new THREE.Mesh(
       new THREE.BoxGeometry(1.85 * R6_STUD, 2.7 * R6_STUD, 0.08 * R6_STUD),
       capeMat,
     );
-    drape.position.set(0, -0.52 * R6_STUD, -0.22 * R6_STUD);
-    drape.rotation.x = 0.12;
+    drape.position.set(0, -1.3 * R6_STUD, -0.1 * R6_STUD);
     drape.castShadow = true;
+    capePivot.add(drape);
+
     const claspL = new THREE.Mesh(
       new THREE.BoxGeometry(0.28 * R6_STUD, 0.22 * R6_STUD, 0.18 * R6_STUD),
       createPlasticBrickMaterial('#f5cd30', { roughness: 0.25 }),
@@ -694,7 +795,8 @@ function buildBackOrnament(socket: THREE.Group, id: string, color: string) {
     claspL.position.set(-0.72 * R6_STUD, 0.78 * R6_STUD, -0.05 * R6_STUD);
     const claspR = claspL.clone();
     claspR.position.x = 0.72 * R6_STUD;
-    socket.add(drape, claspL, claspR);
+    socket.add(claspL, claspR);
+    return { capePivot, leftWing: null, rightWing: null };
   } else if (id === 'katana') {
     const bladeMat = createPlasticBrickMaterial('#d1d5db', { roughness: 0.2, metalness: 0.55 });
     for (const side of [-1, 1]) {
@@ -714,6 +816,7 @@ function buildBackOrnament(socket: THREE.Group, id: string, color: string) {
       socket.add(scabbard, hilt);
     }
   }
+  return { capePivot: null, leftWing: null, rightWing: null };
 }
 
 function buildLegsOrnaments(
