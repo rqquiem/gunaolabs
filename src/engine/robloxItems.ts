@@ -780,6 +780,77 @@ export function buildItemModelGroup(
       root.add(base, anvil, topArm);
       break;
     }
+
+    case 'steelUmbrella': {
+      const steelMat = createPlasticBrickMaterial(primaryColor, {
+        roughness: 0.22,
+        metalness: 0.86,
+      });
+      const rivetMat = createPlasticBrickMaterial('#e2e8f0', {
+        roughness: 0.16,
+        metalness: 0.92,
+      });
+      const gripMat = createPlasticBrickMaterial(accentColor, { roughness: 0.58 });
+      const darkMat = createPlasticBrickMaterial('#1e293b', { roughness: 0.65 });
+
+      // Rubberized grip centered cleanly at hand socket origin (0, 0, 0)
+      const grip = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.056, 0.056, 0.28, 10),
+        gripMat,
+      );
+      grip.position.y = 0.02;
+
+      const pommel = new THREE.Mesh(
+        new THREE.SphereGeometry(0.068, 10, 8),
+        darkMat,
+      );
+      pommel.position.y = -0.13;
+
+      const collar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.064, 0.064, 0.05, 10),
+        rivetMat,
+      );
+      collar.position.y = 0.17;
+
+      // Brushed steel shaft rising straight up to canopy hub
+      const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.036, 0.04, 1.18, 10),
+        rivetMat,
+      );
+      shaft.position.y = 0.74;
+
+      // Faceted reinforced steel canopy dome & rolled safety rim
+      const canopy = new THREE.Mesh(
+        new THREE.ConeGeometry(1.06, 0.38, 10),
+        steelMat,
+      );
+      canopy.position.y = 1.24;
+
+      const rim = new THREE.Mesh(
+        new THREE.TorusGeometry(1.04, 0.036, 8, 20),
+        rivetMat,
+      );
+      rim.rotation.x = Math.PI / 2;
+      rim.position.y = 1.06;
+
+      // Top pointed ferrule finial
+      const finial = new THREE.Mesh(
+        new THREE.ConeGeometry(0.052, 0.18, 8),
+        rivetMat,
+      );
+      finial.position.y = 1.48;
+
+      root.add(grip, pommel, collar, shaft, canopy, rim, finial);
+
+      // Decorative steel rivets around the dome rim
+      for (let i = 0; i < 10; i++) {
+        const ang = (i / 10) * Math.PI * 2;
+        const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.028, 6, 6), rivetMat);
+        rivet.position.set(Math.cos(ang) * 0.82, 1.14, Math.sin(ang) * 0.82);
+        root.add(rivet);
+      }
+      break;
+    }
   }
 
   setShadows(root, true, true);

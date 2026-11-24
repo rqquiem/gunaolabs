@@ -571,7 +571,7 @@ test('Map & Scene Library JSON roundtrip and embedded customMap preservation in 
 });
 
 test('Item & Prop catalog completeness, dual-wield grip presets, and summary formatting', () => {
-  assert.equal(BUILT_IN_ITEMS.length, 17);
+  assert.equal(BUILT_IN_ITEMS.length, 18);
   assert.equal(BUILT_IN_PROPS.length, 32);
   assert.equal(DUAL_WIELD_COMBOS.length, 6);
 
@@ -1043,12 +1043,27 @@ test('The Idiom Town 90s episode features 7 scenes, voiceover/dialogue roles, SF
       THE_IDIOM_TOWN_PROJECT.subtitles.some((s) => s.role === 'dialogue'),
   );
 
-  // Spot-check scene switches, prop visibility isolation, and smash-cut blackout
-  const s1 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 4.5);
-  assert.equal(s1.stage.customMap?.id, 'idiom_map_s1_verbatim');
-  assert.equal(s1.actors['prop-cats-dogs'].scale[0], 1);
-  assert.equal(s1.actors['prop-elephant'].scale[0], 0);
-  assert.equal(s1.screenBlackout, 0);
+  // Spot-check Scene 1 grounded umbrellas -> crouch pickup -> equipped held steel umbrellas
+  const s1Pre = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 2.0);
+  assert.equal(s1Pre.actors['prop-umb-1'].scale[0], 1);
+  assert.equal(s1Pre.actors['prop-umb-1'].position[1], 0);
+  assert.equal(s1Pre.actors['prop-umb-2'].scale[0], 1);
+  assert.equal(s1Pre.actors['idiom-man-umbrella'].heldItems?.right.itemId, 'none');
+
+  const s1Bend = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 4.7);
+  assert.equal(s1Bend.stage.customMap?.id, 'idiom_map_s1_verbatim');
+  assert.equal(s1Bend.actors['idiom-man-umbrella'].clip, 'crouch');
+  assert.equal(s1Bend.actors['idiom-bystander'].clip, 'crouch');
+  assert.equal(s1Bend.actors['prop-cats-dogs'].scale[0], 1);
+  assert.equal(s1Bend.actors['prop-elephant'].scale[0], 0);
+  assert.equal(s1Bend.screenBlackout, 0);
+
+  const s1Raised = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 6.0);
+  assert.equal(s1Raised.actors['prop-umb-1'].scale[0], 0);
+  assert.equal(s1Raised.actors['prop-umb-2'].scale[0], 0);
+  assert.equal(s1Raised.actors['idiom-man-umbrella'].heldItems?.right.itemId, 'steelUmbrella');
+  assert.equal(s1Raised.actors['idiom-man-umbrella'].heldItems?.right.visibilityScale, 1);
+  assert.equal(s1Raised.actors['idiom-bystander'].heldItems?.right.itemId, 'steelUmbrella');
 
   const s3 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 31);
   assert.equal(s3.stage.customMap?.id, 'idiom_map_s3_boardroom');

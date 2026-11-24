@@ -295,6 +295,20 @@ export const BUILT_IN_ITEMS: ItemCatalogEntry[] = [
     defaultLeftOffset: [0, 0.02, 0.08],
     defaultLeftRotDeg: [0, 0, 0],
   },
+  {
+    id: 'steelUmbrella',
+    name: 'Steel Umbrella',
+    category: 'props',
+    description: 'Heavy-duty riveted steel umbrella built to deflect falling cats and dogs.',
+    defaultPrimaryColor: '#64748b',
+    defaultAccentColor: '#0284c7',
+    defaultGripPreset: 'carry',
+    defaultScale: 1,
+    defaultRightOffset: [0, 0, 0.02],
+    defaultRightRotDeg: [60, -18, -5],
+    defaultLeftOffset: [0, 0, 0.02],
+    defaultLeftRotDeg: [60, 18, 5],
+  },
 ];
 
 export interface DualWieldComboPreset {

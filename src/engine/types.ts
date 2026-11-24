@@ -192,7 +192,8 @@ export type ItemId =
   | 'hairdryer'
   | 'bouquet'
   | 'snowShovel'
-  | 'stapler';
+  | 'stapler'
+  | 'steelUmbrella';
 
 export type HandSlot = 'right' | 'left';
 export type HandTargetMode = 'right' | 'left' | 'dual';

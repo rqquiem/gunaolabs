@@ -495,6 +495,11 @@ export function buildIdiomMapModuleGroup(
 
 function buildGoldenRetrieverMesh(furColor = '#eab308'): THREE.Group {
   const dog = new THREE.Group();
+  const centerWrap = new THREE.Group();
+  // Shift down by pawHeight (0.34) so local origin (0,0,0) is torso center of mass for clean 3D tumbling
+  centerWrap.position.y = -0.34;
+  dog.add(centerWrap);
+
   const furMat = createPlasticBrickMaterial(furColor, { roughness: 0.75 });
   const earMat = createPlasticBrickMaterial('#ca8a04', { roughness: 0.78 });
   const noseMat = createPlasticBrickMaterial('#18181b', { roughness: 0.3 });
@@ -511,7 +516,7 @@ function buildGoldenRetrieverMesh(furColor = '#eab308'): THREE.Group {
     const ear = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.24, 0.16), earMat);
     ear.position.set(ex, 0.66, 0.4);
     ear.rotation.z = ex > 0 ? -0.18 : 0.18;
-    dog.add(ear);
+    centerWrap.add(ear);
   }
   const tail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.36), furMat);
   tail.position.set(0, 0.56, -0.5);
@@ -524,14 +529,19 @@ function buildGoldenRetrieverMesh(furColor = '#eab308'): THREE.Group {
   ]) {
     const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.28, 0.12), furMat);
     leg.position.set(lx, 0.14, lz);
-    dog.add(leg);
+    centerWrap.add(leg);
   }
-  dog.add(body, head, snout, nose, tail);
+  centerWrap.add(body, head, snout, nose, tail);
   return dog;
 }
 
 function buildTabbyCatMesh(furColor = '#f97316'): THREE.Group {
   const cat = new THREE.Group();
+  const centerWrap = new THREE.Group();
+  // Shift down by pawHeight (0.24) so local origin (0,0,0) is torso center of mass
+  centerWrap.position.y = -0.24;
+  cat.add(centerWrap);
+
   const furMat = createPlasticBrickMaterial(furColor, { roughness: 0.72 });
   const stripeMat = createPlasticBrickMaterial('#7c2d12', { roughness: 0.75 });
   const eyeMat = createPlasticBrickMaterial('#bef264', { roughness: 0.25 });
@@ -547,13 +557,317 @@ function buildTabbyCatMesh(furColor = '#f97316'): THREE.Group {
     ear.position.set(ex, 0.65, 0.3);
     const eye = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, 0.03), eyeMat);
     eye.position.set(ex * 0.7, 0.5, 0.43);
-    cat.add(ear, eye);
+    centerWrap.add(ear, eye);
+  }
+  for (const [lx, lz] of [
+    [-0.1, 0.18],
+    [0.1, 0.18],
+    [-0.1, -0.18],
+    [0.1, -0.18],
+  ]) {
+    const paw = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.2, 0.08), furMat);
+    paw.position.set(lx, 0.1, lz);
+    centerWrap.add(paw);
   }
   const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.44, 8), stripeMat);
   tail.position.set(0, 0.48, -0.34);
   tail.rotation.x = -0.35;
-  cat.add(body, stripe, head, tail);
+  centerWrap.add(body, stripe, head, tail);
   return cat;
+}
+
+interface FallingPetSpec {
+  id: number;
+  isDog: boolean;
+  furColor: string;
+  spawnX: number;
+  spawnZ: number;
+  windVx: number;
+  windVz: number;
+  startTime: number;
+  period: number;
+  spinX: number;
+  spinZ: number;
+  yaw: number;
+}
+
+const FALLING_PET_SPECS: FallingPetSpec[] = [
+  // Direct street drop while characters look at clouds & bend down
+  { id: 0, isDog: true, furColor: '#eab308', spawnX: -1.15, spawnZ: 0.35, windVx: -0.18, windVz: 0.12, startTime: 3.50, period: 4.5, spinX: 3.8, spinZ: 2.1, yaw: 0.4 },
+  // Hits Umbrella 1 dome at t ≈ 5.73s (and 10.33s)
+  { id: 1, isDog: false, furColor: '#f97316', spawnX: 0.44, spawnZ: 1.98, windVx: -0.02, windVz: 0.08, startTime: 4.82, period: 4.6, spinX: -4.4, spinZ: 3.2, yaw: -0.5 },
+  // Hits Umbrella 2 dome at t ≈ 6.35s (and 11.15s)
+  { id: 2, isDog: true, furColor: '#d97706', spawnX: -1.84, spawnZ: 2.52, windVx: -0.04, windVz: 0.06, startTime: 5.45, period: 4.8, spinX: 4.6, spinZ: -2.8, yaw: -0.9 },
+  // Direct street drop left foreground
+  { id: 3, isDog: false, furColor: '#fde68a', spawnX: -3.45, spawnZ: 1.45, windVx: -0.22, windVz: 0.15, startTime: 4.10, period: 4.4, spinX: -3.5, spinZ: -2.5, yaw: 0.8 },
+  // Hits Umbrella 1 dome at t ≈ 7.35s
+  { id: 4, isDog: true, furColor: '#b45309', spawnX: -0.26, spawnZ: 2.58, windVx: 0.02, windVz: -0.04, startTime: 6.45, period: 4.6, spinX: 5.1, spinZ: 2.9, yaw: 0.2 },
+  // Hits Umbrella 2 dome at t ≈ 7.75s
+  { id: 5, isDog: false, furColor: '#475569', spawnX: -2.54, spawnZ: 3.08, windVx: -0.04, windVz: 0.04, startTime: 6.85, period: 4.7, spinX: -4.8, spinZ: -3.1, yaw: -0.3 },
+  // Direct street drop right side
+  { id: 6, isDog: true, furColor: '#f59e0b', spawnX: 1.92, spawnZ: 1.15, windVx: 0.25, windVz: 0.14, startTime: 5.15, period: 4.3, spinX: 4.1, spinZ: -3.4, yaw: 1.1 },
+  // Hits Umbrella 1 dome at t ≈ 8.80s
+  { id: 7, isDog: false, furColor: '#ea580c', spawnX: 0.36, spawnZ: 2.66, windVx: 0.03, windVz: 0.02, startTime: 7.90, period: 4.5, spinX: 5.3, spinZ: -3.6, yaw: -0.7 },
+  // Hits Umbrella 2 dome at t ≈ 9.35s
+  { id: 8, isDog: true, furColor: '#eab308', spawnX: -2.02, spawnZ: 3.16, windVx: 0.04, windVz: 0.05, startTime: 8.45, period: 4.6, spinX: -4.2, spinZ: 3.9, yaw: 0.6 },
+];
+
+const UMBRELLA_DOMES = [
+  { x: 0.08, y: 3.18, z: 2.30, radius: 1.06 },
+  { x: -2.22, y: 3.18, z: 2.84, radius: 1.06 },
+];
+
+function evaluateFallingPetPhysics(
+  spec: FallingPetSpec,
+  time: number,
+): {
+  visible: boolean;
+  x: number;
+  y: number;
+  z: number;
+  rotX: number;
+  rotY: number;
+  rotZ: number;
+  scaleX: number;
+  scaleY: number;
+  scaleZ: number;
+} {
+  if (time < spec.startTime) {
+    return {
+      visible: false,
+      x: spec.spawnX,
+      y: 11,
+      z: spec.spawnZ,
+      rotX: 0,
+      rotY: spec.yaw,
+      rotZ: 0,
+      scaleX: 0.001,
+      scaleY: 0.001,
+      scaleZ: 0.001,
+    };
+  }
+
+  const elapsed = time - spec.startTime;
+  const cycleIndex = Math.floor(elapsed / spec.period);
+  const tau = elapsed - cycleIndex * spec.period;
+  const cycleStartAbs = spec.startTime + cycleIndex * spec.period;
+
+  const g = 14.8;
+  const y0 = 10.2;
+  const vy0 = -0.8;
+  const pawH = spec.isDog ? 0.34 : 0.24;
+
+  // Check if pet intersects either raised steel umbrella dome (active from t = 5.20s onward)
+  const domeTargetY = 3.18 + pawH * 0.6;
+  const discDome = vy0 * vy0 - 4 * (-0.5 * g) * (y0 - domeTargetY);
+  const tDome = (-vy0 + Math.sqrt(Math.max(0, discDome))) / g; // positive fall root (~0.90s)
+  const domeAbsTime = cycleStartAbs + tDome;
+  const hitCandidateX = spec.spawnX + spec.windVx * tDome;
+  const hitCandidateZ = spec.spawnZ + spec.windVz * tDome;
+
+  let hitDome: (typeof UMBRELLA_DOMES)[number] | null = null;
+  if (domeAbsTime >= 5.2) {
+    for (const d of UMBRELLA_DOMES) {
+      const dist = Math.hypot(hitCandidateX - d.x, hitCandidateZ - d.z);
+      if (dist <= d.radius) {
+        hitDome = d;
+        break;
+      }
+    }
+  }
+
+  let x = spec.spawnX;
+  let y = y0;
+  let z = spec.spawnZ;
+  let rotX = 0;
+  let rotY = spec.yaw;
+  let rotZ = 0;
+  let scaleX = 1;
+  let scaleY = 1;
+  let scaleZ = 1;
+
+  if (hitDome) {
+    // Radial outward direction from curved steel dome center
+    const dx = hitCandidateX - hitDome.x;
+    const dz = hitCandidateZ - hitDome.z;
+    const dLen = Math.max(0.08, Math.hypot(dx, dz));
+    const nx = dx / dLen;
+    const nz = dz / dLen;
+
+    const vyRebound = 4.9;
+    const vxRebound = nx * 3.35;
+    const vzRebound = nz * 3.35;
+
+    // Solve ground hit time uGround after dome rebound: domeTargetY + vyRebound*u - 0.5*g*u^2 = pawH
+    const a = 0.5 * g;
+    const b = -vyRebound;
+    const c = pawH - domeTargetY;
+    const uGround = (-b + Math.sqrt(Math.max(0, b * b - 4 * a * c))) / (2 * a); // ~1.07s
+    const tGround = tDome + uGround;
+
+    // Single street restitution bounce after landing
+    const vyImpactGround = Math.abs(vyRebound - g * uGround);
+    const vyBounce1 = vyImpactGround * 0.36;
+    const tBounce1Dur = (2 * vyBounce1) / g; // ~0.53s
+    const tSettle = tGround + tBounce1Dur;
+
+    if (tau < tDome) {
+      // Phase 1: Gravity drop from storm cloud
+      x = spec.spawnX + spec.windVx * tau;
+      z = spec.spawnZ + spec.windVz * tau;
+      y = y0 + vy0 * tau - 0.5 * g * tau * tau;
+      rotX = spec.spinX * tau;
+      rotZ = spec.spinZ * tau;
+      scaleY = 1 + Math.min(0.14, tau * 0.12);
+      scaleX = 1 / Math.sqrt(scaleY);
+      scaleZ = scaleX;
+    } else if (tau < tGround) {
+      // Phase 2: Steel umbrella dome impact squash + radial outward tumble arc
+      const u = tau - tDome;
+      x = hitCandidateX + vxRebound * u;
+      z = hitCandidateZ + vzRebound * u;
+      y = domeTargetY + vyRebound * u - 0.5 * g * u * u;
+      rotX = spec.spinX * tDome + (spec.spinX * 1.9) * u;
+      rotZ = spec.spinZ * tDome + (spec.spinZ * 1.9) * u;
+      rotY = Math.atan2(vxRebound, vzRebound);
+      if (u < 0.11) {
+        const sq = Math.sin((u / 0.11) * Math.PI);
+        scaleY = 1 - sq * 0.34;
+        scaleX = 1 + sq * 0.22;
+        scaleZ = 1 + sq * 0.22;
+      }
+    } else if (tau < tSettle) {
+      // Phase 3: Street impact squash + restitution bounce + decaying roll
+      const u = tau - tGround;
+      const landX = hitCandidateX + vxRebound * uGround;
+      const landZ = hitCandidateZ + vzRebound * uGround;
+      x = landX + vxRebound * 0.55 * u;
+      z = landZ + vzRebound * 0.55 * u;
+      y = pawH + vyBounce1 * u - 0.5 * g * u * u;
+      const settleBlend = 1 - Math.min(1, u / tBounce1Dur);
+      rotX = (spec.spinX * 0.45) * settleBlend;
+      rotZ = (spec.spinZ * 0.45) * settleBlend;
+      rotY = Math.atan2(vxRebound, vzRebound);
+      if (u < 0.09) {
+        const sq = Math.sin((u / 0.09) * Math.PI);
+        scaleY = 1 - sq * 0.3;
+        scaleX = 1 + sq * 0.2;
+        scaleZ = 1 + sq * 0.2;
+      }
+    } else {
+      // Phase 4: Upright scamper away along rebound vector + smooth disappear before wrap
+      const u = tau - tSettle;
+      const landX = hitCandidateX + vxRebound * uGround;
+      const landZ = hitCandidateZ + vzRebound * uGround;
+      const baseX = landX + vxRebound * 0.55 * tBounce1Dur;
+      const baseZ = landZ + vzRebound * 0.55 * tBounce1Dur;
+      const scamperSpeed = 2.8;
+      x = baseX + nx * scamperSpeed * u;
+      z = baseZ + nz * scamperSpeed * u;
+      y = pawH + Math.abs(Math.sin(u * 16)) * 0.14;
+      rotX = Math.sin(u * 16) * 0.1;
+      rotY = Math.atan2(nx, nz);
+      rotZ = 0;
+      const fadeStart = Math.max(0.25, spec.period - tSettle - 0.35);
+      if (u > fadeStart) {
+        const f = Math.max(0.001, 1 - (u - fadeStart) / 0.35);
+        scaleX = f;
+        scaleY = f;
+        scaleZ = f;
+      }
+    }
+  } else {
+    // Direct street impact (outside umbrellas or before umbrellas are raised)
+    const a = 0.5 * g;
+    const b = -vy0;
+    const c = pawH - y0;
+    const tGround = (-b + Math.sqrt(Math.max(0, b * b - 4 * a * c))) / (2 * a); // ~1.10s
+    const vyImpact = Math.abs(vy0 - g * tGround);
+    const vyB1 = vyImpact * 0.40;
+    const durB1 = (2 * vyB1) / g; // ~0.92s
+    const vyB2 = vyB1 * 0.45;
+    const durB2 = (2 * vyB2) / g; // ~0.41s
+    const tAfterB1 = tGround + durB1;
+    const tSettle = tAfterB1 + durB2;
+    const skidVx = (spec.windVx >= 0 ? 1 : -1) * 1.45;
+    const skidVz = 0.75;
+
+    if (tau < tGround) {
+      x = spec.spawnX + spec.windVx * tau;
+      z = spec.spawnZ + spec.windVz * tau;
+      y = y0 + vy0 * tau - 0.5 * g * tau * tau;
+      rotX = spec.spinX * tau;
+      rotZ = spec.spinZ * tau;
+      scaleY = 1 + Math.min(0.14, tau * 0.12);
+      scaleX = 1 / Math.sqrt(scaleY);
+      scaleZ = scaleX;
+    } else if (tau < tAfterB1) {
+      const u = tau - tGround;
+      const hitX = spec.spawnX + spec.windVx * tGround;
+      const hitZ = spec.spawnZ + spec.windVz * tGround;
+      x = hitX + skidVx * u;
+      z = hitZ + skidVz * u;
+      y = pawH + vyB1 * u - 0.5 * g * u * u;
+      const blend = 1 - u / durB1;
+      rotX = (spec.spinX * 0.65) * blend;
+      rotZ = (spec.spinZ * 0.65) * blend;
+      rotY = Math.atan2(skidVx, skidVz);
+      if (u < 0.1) {
+        const sq = Math.sin((u / 0.1) * Math.PI);
+        scaleY = 1 - sq * 0.34;
+        scaleX = 1 + sq * 0.24;
+        scaleZ = 1 + sq * 0.24;
+      }
+    } else if (tau < tSettle) {
+      const u = tau - tAfterB1;
+      const b1X = spec.spawnX + spec.windVx * tGround + skidVx * durB1;
+      const b1Z = spec.spawnZ + spec.windVz * tGround + skidVz * durB1;
+      x = b1X + skidVx * 0.5 * u;
+      z = b1Z + skidVz * 0.5 * u;
+      y = pawH + vyB2 * u - 0.5 * g * u * u;
+      rotX = 0;
+      rotZ = 0;
+      rotY = Math.atan2(skidVx, skidVz);
+      if (u < 0.07) {
+        const sq = Math.sin((u / 0.07) * Math.PI);
+        scaleY = 1 - sq * 0.18;
+        scaleX = 1 + sq * 0.12;
+        scaleZ = 1 + sq * 0.12;
+      }
+    } else {
+      const u = tau - tSettle;
+      const sX = spec.spawnX + spec.windVx * tGround + skidVx * (durB1 + 0.5 * durB2);
+      const sZ = spec.spawnZ + spec.windVz * tGround + skidVz * (durB1 + 0.5 * durB2);
+      const runLen = Math.hypot(skidVx, skidVz);
+      const rx = skidVx / runLen;
+      const rz = skidVz / runLen;
+      x = sX + rx * 2.5 * u;
+      z = sZ + rz * 2.5 * u;
+      y = pawH + Math.abs(Math.sin(u * 16)) * 0.12;
+      rotX = Math.sin(u * 16) * 0.09;
+      rotY = Math.atan2(rx, rz);
+      const fadeStart = Math.max(0.2, spec.period - tSettle - 0.35);
+      if (u > fadeStart) {
+        const f = Math.max(0.001, 1 - (u - fadeStart) / 0.35);
+        scaleX = f;
+        scaleY = f;
+        scaleZ = f;
+      }
+    }
+  }
+
+  return {
+    visible: scaleY > 0.02,
+    x,
+    y,
+    z,
+    rotX,
+    rotY,
+    rotZ,
+    scaleX,
+    scaleY,
+    scaleZ,
+  };
 }
 
 export function buildIdiomPropGroup(
@@ -566,53 +880,62 @@ export function buildIdiomPropGroup(
 
   switch (propKind) {
     case 'rainingCatsDogs': {
-      const specs: { x: number; z: number; phase: number; isDog: boolean; rot: number }[] = [
-        { x: -1.6, z: -0.4, phase: 0.0, isDog: true, rot: 0.4 },
-        { x: 0.2, z: 0.6, phase: 1.3, isDog: false, rot: -0.5 },
-        { x: 1.5, z: -0.3, phase: 2.5, isDog: true, rot: -0.9 },
-        { x: -0.7, z: 1.3, phase: 3.7, isDog: false, rot: 0.8 },
-        { x: 0.9, z: 1.4, phase: 4.9, isDog: true, rot: 0.2 },
-        { x: -2.1, z: 0.9, phase: 5.8, isDog: false, rot: -0.3 },
-      ];
-      specs.forEach((s) => {
+      FALLING_PET_SPECS.forEach((s) => {
         const pet = s.isDog
-          ? buildGoldenRetrieverMesh(primaryColor)
-          : buildTabbyCatMesh(accentColor);
-        pet.position.set(s.x, 3.2, s.z);
-        pet.rotation.y = s.rot;
+          ? buildGoldenRetrieverMesh(s.furColor)
+          : buildTabbyCatMesh(s.furColor);
+        pet.position.set(s.spawnX, 10.2, s.spawnZ);
+        pet.rotation.y = s.yaw;
         pet.userData.isFallingPet = true;
-        pet.userData.baseX = s.x;
-        pet.userData.baseZ = s.z;
-        pet.userData.petPhase = s.phase;
+        pet.userData.petSpecIndex = s.id;
         root.add(pet);
       });
       break;
     }
 
     case 'steelUmbrella': {
+      // Grounded resting steel umbrella: tilted canopy rim/ferrule touches y=0 cleanly while grip points up at y ≈ 0.85
       const steelMat = createPlasticBrickMaterial(primaryColor, {
         roughness: 0.22,
         metalness: 0.84,
       });
+      const rivetMat = createPlasticBrickMaterial('#e2e8f0', {
+        roughness: 0.18,
+        metalness: 0.9,
+      });
       const gripMat = createPlasticBrickMaterial(accentColor, { roughness: 0.6 });
+
+      const umb = new THREE.Group();
+      // Tilt inverted/angled so lowest canopy/rim sits at y=0 and handle rises cleanly to y ≈ 0.85
+      umb.position.set(0, 0.24, 0);
+      umb.rotation.set(0.32, 0, -0.16);
+
       const canopy = new THREE.Mesh(
-        new THREE.ConeGeometry(1.18, 0.42, 12),
+        new THREE.ConeGeometry(0.92, 0.34, 10),
         steelMat,
       );
-      canopy.position.y = 2.95;
+      canopy.rotation.x = Math.PI;
+      canopy.position.y = 0.04;
+
       const rim = new THREE.Mesh(
-        new THREE.TorusGeometry(1.16, 0.045, 8, 24),
-        steelMat,
+        new THREE.TorusGeometry(0.9, 0.036, 8, 20),
+        rivetMat,
       );
       rim.rotation.x = Math.PI / 2;
-      rim.position.y = 2.75;
-      const finial = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.22, 8), steelMat);
-      finial.position.y = 3.24;
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.55, 8), steelMat);
-      shaft.position.y = 2.18;
-      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.26, 8), gripMat);
-      handle.position.y = 1.38;
-      root.add(canopy, rim, finial, shaft, handle);
+      rim.position.y = 0.21;
+
+      const finial = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.18, 8), rivetMat);
+      finial.rotation.x = Math.PI;
+      finial.position.y = -0.18;
+
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.04, 0.78, 8), rivetMat);
+      shaft.position.y = 0.42;
+
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.056, 0.056, 0.24, 8), gripMat);
+      handle.position.y = 0.82;
+
+      umb.add(canopy, rim, finial, shaft, handle);
+      root.add(umb);
       break;
     }
 
@@ -620,13 +943,13 @@ export function buildIdiomPropGroup(
       const beanMatA = createPlasticBrickMaterial(primaryColor, { roughness: 0.34, metalness: 0.08 });
       const beanMatB = createPlasticBrickMaterial(accentColor, { roughness: 0.38, metalness: 0.06 });
 
-      // Cascading stream arc from mouth height (~2.15) down to table (1.1) and floor (0.15)
-      for (let i = 0; i < 18; i++) {
-        const t = i / 17;
-        const arcZ = t * 0.85;
-        const arcY = 2.15 - t * t * 1.95;
+      // Cascading stream arc from mouth height (~1.95) down across cafe table (~1.1) to floor (0.12)
+      for (let i = 0; i < 22; i++) {
+        const t = i / 21;
+        const arcZ = t * 1.15;
+        const arcY = 1.95 - t * t * 1.82;
         const bean = new THREE.Mesh(
-          new THREE.SphereGeometry(0.08 + (i % 3) * 0.02, 8, 6),
+          new THREE.SphereGeometry(0.075 + (i % 3) * 0.018, 8, 6),
           i % 2 === 0 ? beanMatA : beanMatB,
         );
         bean.scale.set(1.2, 0.85, 0.9);
@@ -643,15 +966,19 @@ export function buildIdiomPropGroup(
         new THREE.ConeGeometry(0.68, 0.42, 12),
         beanMatA,
       );
-      tablePile.position.set(0, 1.25, 0.55);
+      tablePile.position.set(0, 1.24, 0.68);
       tablePile.userData.isBeanPile = true;
+      tablePile.userData.pileBaseY = 1.12;
+      tablePile.userData.pileHeight = 0.42;
 
       const floorPile = new THREE.Mesh(
-        new THREE.ConeGeometry(1.15, 0.48, 14),
+        new THREE.ConeGeometry(1.18, 0.52, 14),
         beanMatB,
       );
-      floorPile.position.set(0, 0.24, 0.85);
+      floorPile.position.set(0, 0.26, 1.25);
       floorPile.userData.isBeanPile = true;
+      floorPile.userData.pileBaseY = 0.0;
+      floorPile.userData.pileHeight = 0.52;
 
       root.add(tablePile, floorPile);
       break;
@@ -737,13 +1064,16 @@ export function buildIdiomPropGroup(
       const snowMat = createPlasticBrickMaterial(accentColor, { roughness: 0.78 });
 
       // Twin chunky ice blocks encasing both groom shoes
+      const iceCluster = new THREE.Group();
+      iceCluster.userData.isIceCluster = true;
       for (const ix of [-0.28, 0.28]) {
         const block = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.56, 0.72), iceMat);
         block.position.set(ix, 0.28, 0.06);
         const shard = new THREE.Mesh(new THREE.OctahedronGeometry(0.22, 0), iceMat);
         shard.position.set(ix + (ix > 0 ? 0.16 : -0.16), 0.52, -0.06);
-        root.add(block, shard);
+        iceCluster.add(block, shard);
       }
+      root.add(iceCluster);
       // Rising cold steam puffs
       for (let i = 0; i < 4; i++) {
         const puff = new THREE.Mesh(
@@ -796,6 +1126,7 @@ export function buildIdiomPropGroup(
         const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.08, 10), wheelMat);
         wheel.rotation.z = Math.PI / 2;
         wheel.position.set(wx, 0.11, wz);
+        wheel.userData.isCartWheel = true;
         root.add(leg, wheel);
       }
       root.add(bed, railL, railR);
@@ -828,6 +1159,7 @@ export function buildIdiomPropGroup(
         const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.08, 10), maneMat);
         wheel.rotation.z = Math.PI / 2;
         wheel.position.set(wx, 0.12, wz);
+        wheel.userData.isCartWheel = true;
         root.add(leg, wheel);
       }
 
@@ -936,15 +1268,27 @@ export function buildIdiomPropGroup(
       const milk = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.32, 0.18), milkMat);
       milk.rotation.z = 1.45;
       milk.position.set(-0.34, 0.09, 0.42);
-      for (const [ax, az] of [
-        [0.14, 0.68],
-        [-0.18, 0.62],
-        [0.45, 0.24],
-      ]) {
+      milk.userData.isSpillItem = true;
+      milk.userData.baseX = -0.34;
+      milk.userData.baseZ = 0.42;
+      milk.userData.rollDirX = -0.55;
+      milk.userData.rollDirZ = 0.42;
+
+      const appleCoords: [number, number, number, number][] = [
+        [0.14, 0.68, 0.35, 0.75],
+        [-0.18, 0.62, -0.45, 0.65],
+        [0.45, 0.24, 0.72, 0.38],
+      ];
+      appleCoords.forEach(([ax, az, vx, vz]) => {
         const apple = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), appleMat);
         apple.position.set(ax, 0.1, az);
+        apple.userData.isSpillItem = true;
+        apple.userData.baseX = ax;
+        apple.userData.baseZ = az;
+        apple.userData.rollDirX = vx;
+        apple.userData.rollDirZ = vz;
         root.add(apple);
-      }
+      });
       root.add(bag, baguette, milk);
       break;
     }
@@ -1040,23 +1384,37 @@ export function animateIdiomProp(group: THREE.Group, propKind: string | undefine
   if (propKind === 'rainingCatsDogs') {
     group.traverse((obj) => {
       if (obj.userData?.isFallingPet) {
-        const phase = (obj.userData.petPhase as number) ?? 0;
-        const cycle = (time * 0.72 + phase * 0.37) % 1;
-        // Drop smoothly from sky (y=9) down to umbrella top (y=3.1) with gentle bounce!
-        const y = cycle < 0.75
-          ? 9.2 - Math.pow(cycle / 0.75, 1.45) * 6.1
-          : 3.1 + Math.sin(((cycle - 0.75) / 0.25) * Math.PI) * 1.15;
-        obj.position.y = y;
-        obj.rotation.z = Math.sin(time * 2.4 + phase) * 0.14;
+        const idx = (obj.userData.petSpecIndex as number) ?? 0;
+        const spec = FALLING_PET_SPECS[idx] ?? FALLING_PET_SPECS[0];
+        const state = evaluateFallingPetPhysics(spec, time);
+        obj.visible = state.visible;
+        obj.position.set(state.x, state.y, state.z);
+        obj.rotation.set(state.rotX, state.rotY, state.rotZ);
+        obj.scale.set(state.scaleX, state.scaleY, state.scaleZ);
       }
     });
   } else if (propKind === 'beanWaterfall') {
+    const spillGrowth = THREE.MathUtils.clamp((time - 16.0) / 2.4, 0.15, 1.0);
     group.traverse((obj) => {
       if (obj.userData?.isBeanDrop) {
         const idx = (obj.userData.beanIndex as number) ?? 0;
-        const flowT = ((time * 2.8 + idx / 18) % 1);
-        obj.position.z = flowT * 0.88;
-        obj.position.y = 2.15 - flowT * flowT * 1.98;
+        const flowT = (time * 2.8 + idx / 22) % 1;
+        // Pour from mouth (z=0, y=1.95) onto table (z=0.68, y=1.12), then splash down to floor (z=1.25, y=0.14)
+        if (flowT < 0.56) {
+          const u = flowT / 0.56;
+          obj.position.z = u * 0.68;
+          obj.position.y = 1.95 - u * u * 0.83;
+        } else {
+          const u = (flowT - 0.56) / 0.44;
+          const bounce = Math.sin(u * Math.PI) * 0.18;
+          obj.position.z = 0.68 + u * 0.57;
+          obj.position.y = 1.12 + bounce - u * u * 1.0;
+        }
+      } else if (obj.userData?.isBeanPile) {
+        const baseY = (obj.userData.pileBaseY as number) ?? 0;
+        const height = (obj.userData.pileHeight as number) ?? 0.42;
+        obj.scale.set(0.65 + spillGrowth * 0.4, spillGrowth, 0.65 + spillGrowth * 0.4);
+        obj.position.y = baseY + (height * spillGrowth) / 2;
       }
     });
   } else if (propKind === 'africanElephant') {
@@ -1069,21 +1427,38 @@ export function animateIdiomProp(group: THREE.Group, propKind: string | undefine
       }
     });
   } else if (propKind === 'iceFeet') {
+    const meltT = THREE.MathUtils.clamp((time - 46.2) / 3.2, 0, 1);
+    const shiver = time >= 40.6 && time < 46.5 ? Math.sin(time * 38) * 0.018 : 0;
     group.traverse((obj) => {
-      if (obj.userData?.isIceSteam) {
+      if (obj.userData?.isIceCluster) {
+        const iceScale = 1 - meltT * 0.78;
+        obj.scale.set(iceScale, Math.max(0.18, iceScale), iceScale);
+        obj.position.x = shiver;
+      } else if (obj.userData?.isIceSteam) {
         const phase = (obj.userData.steamPhase as number) ?? 0;
-        const lift = ((time * 0.8 + phase) % 1);
-        obj.position.y = 0.62 + lift * 0.85;
-        obj.scale.setScalar(0.8 + lift * 0.7);
+        const steamSpeed = 0.8 + meltT * 1.6;
+        const lift = (time * steamSpeed + phase) % 1;
+        obj.position.y = 0.52 + lift * (0.85 + meltT * 0.45);
+        obj.scale.setScalar((0.75 + lift * 0.7) * (1 + meltT * 0.35));
+      }
+    });
+  } else if (propKind === 'stretcher') {
+    const rolling = time >= 57.2 && time <= 60.05;
+    group.traverse((obj) => {
+      if (obj.userData?.isCartWheel) {
+        obj.rotation.x = rolling ? -(time - 57.2) * 9.5 : 0;
       }
     });
   } else if (propKind === 'clydesdalePlatter') {
+    const rolling = time >= 69.4 && time <= 73.25;
     group.traverse((obj) => {
       if (obj.userData?.isHorseHead) {
         obj.rotation.z = Math.sin(time * 2.2) * 0.08;
         obj.rotation.x = Math.sin(time * 1.6) * 0.06;
       } else if (obj.userData?.isHorseTail) {
         obj.rotation.z = Math.sin(time * 4.4) * 0.18;
+      } else if (obj.userData?.isCartWheel) {
+        obj.rotation.x = rolling ? (time - 69.4) * 8.5 : 0;
       }
     });
   } else if (propKind === 'flyingPigs') {
@@ -1092,13 +1467,32 @@ export function animateIdiomProp(group: THREE.Group, propKind: string | undefine
         const bx = (obj.userData.baseX as number) ?? 0;
         const by = (obj.userData.baseY as number) ?? 4.6;
         const phase = (obj.userData.pigPhase as number) ?? 0;
-        obj.position.x = bx + Math.sin(time * 0.85 + phase) * 1.8;
-        obj.position.y = by + Math.sin(time * 2.1 + phase) * 0.25;
+        const theta = time * 0.85 + phase;
+        const dx = Math.cos(theta) * 1.9 * 0.85;
+        obj.position.x = bx + Math.sin(theta) * 1.9;
+        obj.position.y = by + Math.sin(time * 2.4 + phase) * 0.32;
+        obj.rotation.y = dx >= 0 ? Math.PI * 0.42 : -Math.PI * 0.42;
+        obj.rotation.z = -Math.cos(theta) * 0.24;
       } else {
         const wingSide = obj.userData?.isPigWing as number | undefined;
         if (wingSide) {
           obj.rotation.z = wingSide * Math.sin(time * 8.5) * 0.48;
         }
+      }
+    });
+  } else if (propKind === 'grocerySpill') {
+    const dt = THREE.MathUtils.clamp(time - 82.8, 0, 1.8);
+    const rollEase = 1 - Math.pow(1 - dt / 1.8, 2.2);
+    group.traverse((obj) => {
+      if (obj.userData?.isSpillItem) {
+        const bx = (obj.userData.baseX as number) ?? 0;
+        const bz = (obj.userData.baseZ as number) ?? 0;
+        const vx = (obj.userData.rollDirX as number) ?? 0;
+        const vz = (obj.userData.rollDirZ as number) ?? 0;
+        obj.position.x = bx + vx * rollEase;
+        obj.position.z = bz + vz * rollEase;
+        obj.rotation.x = vz * rollEase * 6.5;
+        obj.rotation.z = -vx * rollEase * 6.5;
       }
     });
   }

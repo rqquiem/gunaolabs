@@ -401,9 +401,15 @@ const ACTORS: SceneActorConfig[] = [
     clothing: { shirtId: 'jacket', shirtColor: '#2563eb', shirtAccent: '#e2e8f0', sleeveMode: 'long', pantsId: 'jeans', pantsColor: '#1e3a8a', pantsAccent: '#94a3b8', footwearId: 'sneakers' },
     keyframes: [
       { id: 'man-s1-0', time: 0, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'easeInOut' },
-      { id: 'man-s1-talk', time: 3.6, position: [0.3, 0, 1.4], rotation: [0, 0.2, 0], scale: [1, 1, 1], clip: 'idle', upperBodyClip: 'talkGesture', upperBodyWeight: 0.9, clipSpeed: 1, easing: 'easeInOut' },
-      { id: 'man-s1-brace', time: 5.7, position: [0.3, 0, 1.4], rotation: [0, 0.2, 0], scale: [1, 1, 1], clip: 'idle', upperBodyClip: 'point', upperBodyWeight: 0.75, clipSpeed: 1, easing: 'step' },
-      { id: 'man-hide', time: 12, position: [0.3, 0, 1.4], rotation: [0, 0.2, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+      { id: 'man-s1-talk', time: 3.6, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', upperBodyClip: 'talkGesture', upperBodyWeight: 0.9, clipSpeed: 1, easing: 'easeInOut' },
+      { id: 'man-s1-bend', time: 4.35, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'crouch', clipSpeed: 1, customJoints: { rightArm: [-0.50, 0, 0.24], torso: [0.10, 0.12, 0] }, easing: 'easeInOut' },
+      { id: 'man-s1-grab', time: 5.05, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'crouch', clipSpeed: 1, customJoints: { rightArm: [-0.50, 0, 0.24], torso: [0.10, 0.12, 0] }, easing: 'easeOutBack' },
+      { id: 'man-s1-raise', time: 5.25, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.20, 0, 0.28], torso: [0.04, 0.18, 0], head: [0.18, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'man-s1-clang1', time: 5.73, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.12, 0, 0.28], torso: [0.06, 0.18, 0], head: [0.12, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'man-s1-recover1', time: 5.95, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.20, 0, 0.28], torso: [0.04, 0.18, 0], head: [0.18, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'man-s1-clang2', time: 7.35, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.13, 0, 0.28], torso: [0.06, 0.18, 0], head: [0.12, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'man-s1-recover2', time: 7.55, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.20, 0, 0.28], torso: [0.04, 0.18, 0], head: [0.18, -0.10, 0] }, easing: 'step' },
+      { id: 'man-hide', time: 12, position: [0.3, 0, 1.4], rotation: [0, 0.25, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
       { id: 'man-s7-pre', time: 76.95, position: [2.2, 0, 1.2], rotation: [0, -0.8, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
       { id: 'man-s7-in', time: 77, position: [2.2, 0, 1.2], rotation: [0, -0.8, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'easeInOut' },
       { id: 'man-s7-dive', time: 82.9, position: [2.2, 0, 1.2], rotation: [0, 1.3, 0], scale: [1, 1, 1], clip: 'run', clipSpeed: 1.5, easing: 'easeInOut' },
@@ -412,7 +418,14 @@ const ACTORS: SceneActorConfig[] = [
     faceKeyframes: [
       { id: 'mf-0', time: 0, preset: 'happy', easing: 'step' },
       { id: 'mf-1', time: 3.4, preset: 'determined', easing: 'step' },
+      { id: 'mf-1b', time: 4.2, preset: 'surprised', easing: 'step' },
+      { id: 'mf-1c', time: 5.3, preset: 'determined', easing: 'step' },
       { id: 'mf-2', time: 82.8, preset: 'surprised', easing: 'step' },
+    ],
+    heldItemKeyframes: [
+      { id: 'manh-0', time: 0, right: createEmptyCharacterHeldItems().right, left: createEmptyCharacterHeldItems().left, easing: 'step' },
+      { id: 'manh-umb', time: 5.05, right: createDefaultHandStateForItem('steelUmbrella', 'right', { primaryColor: '#64748b', accentColor: '#0284c7' }), left: createEmptyCharacterHeldItems().left, easing: 'equipPop' },
+      { id: 'manh-off', time: 12, right: createEmptyCharacterHeldItems().right, left: createEmptyCharacterHeldItems().left, easing: 'step' },
     ],
   }),
 
@@ -425,7 +438,13 @@ const ACTORS: SceneActorConfig[] = [
     clothing: { shirtId: 'hoodie', shirtColor: '#16a34a', shirtAccent: '#fef08a', sleeveMode: 'long', pantsId: 'cargo', pantsColor: '#334155', pantsAccent: '#94a3b8', footwearId: 'boots' },
     keyframes: [
       { id: 'bys-s1-0', time: 0, position: [-2.2, 0, 1.9], rotation: [0, 0.5, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'easeInOut' },
-      { id: 'bys-s1-up', time: 5.7, position: [-2.2, 0, 1.9], rotation: [0, 0.45, 0], scale: [1, 1, 1], clip: 'idle', upperBodyClip: 'point', upperBodyWeight: 0.7, clipSpeed: 1, easing: 'step' },
+      { id: 'bys-s1-bend', time: 4.35, position: [-2.2, 0, 1.9], rotation: [0, 0.5, 0], scale: [1, 1, 1], clip: 'crouch', clipSpeed: 1, customJoints: { rightArm: [-0.50, 0, 0.24], torso: [0.10, 0.12, 0] }, easing: 'easeInOut' },
+      { id: 'bys-s1-grab', time: 5.05, position: [-2.2, 0, 1.9], rotation: [0, 0.5, 0], scale: [1, 1, 1], clip: 'crouch', clipSpeed: 1, customJoints: { rightArm: [-0.50, 0, 0.24], torso: [0.10, 0.12, 0] }, easing: 'easeOutBack' },
+      { id: 'bys-s1-raise', time: 5.25, position: [-2.2, 0, 1.9], rotation: [0, 0.45, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.20, 0, 0.28], torso: [0.04, 0.18, 0], head: [0.18, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'bys-s1-clang1', time: 6.35, position: [-2.2, 0, 1.9], rotation: [0, 0.45, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.12, 0, 0.28], torso: [0.06, 0.18, 0], head: [0.12, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'bys-s1-recover1', time: 6.55, position: [-2.2, 0, 1.9], rotation: [0, 0.45, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.20, 0, 0.28], torso: [0.04, 0.18, 0], head: [0.18, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'bys-s1-clang2', time: 7.75, position: [-2.2, 0, 1.9], rotation: [0, 0.45, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.13, 0, 0.28], torso: [0.06, 0.18, 0], head: [0.12, -0.10, 0] }, easing: 'easeInOut' },
+      { id: 'bys-s1-recover2', time: 7.95, position: [-2.2, 0, 1.9], rotation: [0, 0.45, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, customJoints: { rightArm: [-1.20, 0, 0.28], torso: [0.04, 0.18, 0], head: [0.18, -0.10, 0] }, easing: 'step' },
       { id: 'bys-hide', time: 12, position: [-2.2, 0, 1.9], rotation: [0, 0.45, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
       { id: 'bys-s7-pre', time: 76.95, position: [1.3, 0, 1.0], rotation: [0, -0.9, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
       { id: 'bys-s7-in', time: 77, position: [1.3, 0, 1.0], rotation: [0, -0.9, 0], scale: [1, 1, 1], clip: 'walk', clipSpeed: 0.6, easing: 'easeInOut' },
@@ -434,9 +453,14 @@ const ACTORS: SceneActorConfig[] = [
     ],
     faceKeyframes: [
       { id: 'bf-0', time: 0, preset: 'happy', easing: 'step' },
-      { id: 'bf-1', time: 5.5, preset: 'surprised', easing: 'step' },
+      { id: 'bf-1', time: 4.3, preset: 'surprised', easing: 'step' },
       { id: 'bf-2', time: 77, preset: 'happy', easing: 'step' },
       { id: 'bf-3', time: 82.8, preset: 'surprised', easing: 'step' },
+    ],
+    heldItemKeyframes: [
+      { id: 'bysh-0', time: 0, right: createEmptyCharacterHeldItems().right, left: createEmptyCharacterHeldItems().left, easing: 'step' },
+      { id: 'bysh-umb', time: 5.05, right: createDefaultHandStateForItem('steelUmbrella', 'right', { primaryColor: '#64748b', accentColor: '#dc2626' }), left: createEmptyCharacterHeldItems().left, easing: 'equipPop' },
+      { id: 'bysh-off', time: 12, right: createEmptyCharacterHeldItems().right, left: createEmptyCharacterHeldItems().left, easing: 'step' },
     ],
   }),
 
@@ -572,11 +596,13 @@ const ACTORS: SceneActorConfig[] = [
     hair: { styleId: 'swept', primaryColor: '#181c24', highlightColor: '#181c24', highlightPattern: 'none', volume: 1 },
     clothing: { shirtId: 'suitCoat', shirtColor: '#0f172a', shirtAccent: '#f8fafc', sleeveMode: 'long', pantsId: 'slacks', pantsColor: '#0f172a', pantsAccent: '#334155', footwearId: 'loafers' },
     keyframes: makeActorWindow('grm-s4', 38, 51, [0.95, 0.32, -2.0], [0, -Math.PI / 2, 0], [1, 1, 1], 'idle', [
-      { id: 'grm-freeze', time: 40.6, position: [0.95, 0.32, -2.0], rotation: [0, -Math.PI / 2, 0], scale: [1, 1, 1], clip: 'idle', upperBodyClip: 'block', upperBodyWeight: 0.7, clipSpeed: 1.5, easing: 'step' },
+      { id: 'grm-freeze', time: 40.6, position: [0.95, 0.32, -2.0], rotation: [0, -Math.PI / 2, 0], scale: [1, 1, 1], clip: 'idle', upperBodyClip: 'block', upperBodyWeight: 0.72, clipSpeed: 2.8, easing: 'step' },
+      { id: 'grm-thawed', time: 49.4, position: [0.95, 0.32, -2.0], rotation: [0, -Math.PI / 2, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
     ]),
     faceKeyframes: [
       { id: 'grmf-0', time: 38, preset: 'happy', easing: 'step' },
       { id: 'grmf-1', time: 40.5, preset: 'surprised', easing: 'step' },
+      { id: 'grmf-2', time: 49.4, preset: 'happy', easing: 'step' },
     ],
   }),
 
@@ -711,28 +737,28 @@ const ACTORS: SceneActorConfig[] = [
   // =======================================================================
 
   makePropActor('prop-cats-dogs', 'Raining Cats & Dogs', 'rainingCatsDogs', '#d97706', '#94a3b8', [
-    { id: 'cd-0', time: 0, position: [-0.8, 0, 1.4], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'cd-pre', time: 3.45, position: [-0.8, 0, 1.4], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'cd-on', time: 3.5, position: [-0.8, 0, 1.4], rotation: [0, 0, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'cd-off', time: 12, position: [-0.8, 0, 1.4], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cd-0', time: 0, position: [0, 0, 0], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cd-pre', time: 3.45, position: [0, 0, 0], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cd-on', time: 3.5, position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cd-off', time: 12, position: [0, 0, 0], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
   ]),
 
   makePropActor('prop-umb-1', 'Steel Umbrella 1', 'steelUmbrella', '#64748b', '#0284c7', [
-    { id: 'u1-0', time: 0, position: [0.3, 2.35, 1.45], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'u1-pre', time: 5.55, position: [0.3, 2.35, 1.45], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'u1-on', time: 5.65, position: [0.3, 2.35, 1.45], rotation: [0, 0.2, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'u1-off', time: 12, position: [0.3, 2.35, 1.45], rotation: [0, 0.2, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u1-0', time: 0, position: [-0.17, 0, 2.42], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u1-pre', time: 5.0, position: [-0.17, 0, 2.42], rotation: [0, 0.25, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u1-pick', time: 5.05, position: [-0.17, 0, 2.42], rotation: [0, 0.25, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u1-off', time: 12, position: [-0.17, 0, 2.42], rotation: [0, 0.25, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
   ]),
 
   makePropActor('prop-umb-2', 'Steel Umbrella 2', 'steelUmbrella', '#64748b', '#dc2626', [
-    { id: 'u2-0', time: 0, position: [-2.2, 2.35, 1.95], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'u2-pre', time: 5.65, position: [-2.2, 2.35, 1.95], rotation: [0, 0, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'u2-on', time: 5.75, position: [-2.2, 2.35, 1.95], rotation: [0, 0.45, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'u2-off', time: 12, position: [-2.2, 0, 1.95], rotation: [0, 0.45, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u2-0', time: 0, position: [-2.40, 0, 3.00], rotation: [0, 0.5, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u2-pre', time: 5.0, position: [-2.40, 0, 3.00], rotation: [0, 0.5, 0], scale: [1, 1, 1], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u2-pick', time: 5.05, position: [-2.40, 0, 3.00], rotation: [0, 0.5, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'u2-off', time: 12, position: [-2.40, 0, 3.00], rotation: [0, 0.5, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
   ]),
 
   makePropActor('prop-beans', 'Bean Waterfall', 'beanWaterfall', '#b45309', '#78350f',
-    makeActorWindow('beans', 16.0, 25, [-1.1, 0, 0.2], [0, 0, 0], [1.15, 1.15, 1.15], 'idle')),
+    makeActorWindow('beans', 16.0, 25, [-1.68, 0, 0.2], [0, Math.PI / 2, 0], [1.15, 1.15, 1.15], 'idle')),
 
   makePropActor('prop-elephant', 'Boardroom Elephant', 'africanElephant', '#64748b', '#ef4444',
     makeActorWindow('elph', 25, 38, [0, 1.14, 0], [0, 0.28, 0], [1.05, 1.05, 1.05], 'idle')),
@@ -741,11 +767,12 @@ const ACTORS: SceneActorConfig[] = [
     makeActorWindow('ice', 40.6, 51, [0.95, 0.32, -2.0], [0, -Math.PI / 2, 0], [1.15, 1.15, 1.15], 'idle')),
 
   makePropActor('prop-plaster-cast', 'Plaster Leg Cast', 'plasterCast', '#f8fafc', '#ef4444', [
-    { id: 'cst-0', time: 0, position: [-0.75, 0.14, 0.25], rotation: [0, 0.3, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'cst-pre', time: 55.95, position: [-0.75, 0.14, 0.25], rotation: [0, 0.3, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'cst-on', time: 56.0, position: [-0.75, 0.14, 0.25], rotation: [0, 0.5, 0], scale: [1.1, 1.1, 1.1], clip: 'idle', clipSpeed: 1, easing: 'easeOutBack' },
-    { id: 'cst-move', time: 57.6, position: [-1.52, 0.14, 0.55], rotation: [0, 0.5, 0], scale: [1.1, 1.1, 1.1], clip: 'idle', clipSpeed: 1, easing: 'step' },
-    { id: 'cst-off', time: 64, position: [-1.52, 0.14, 0.55], rotation: [0, 0.5, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cst-0', time: 0, position: [-0.78, 1.3, 0.32], rotation: [0, 0.3, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cst-pre', time: 55.95, position: [-0.78, 1.3, 0.32], rotation: [0, 0.3, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cst-on', time: 56.0, position: [-0.78, 1.3, 0.32], rotation: [0, 0.3, 0], scale: [1.1, 1.1, 1.1], clip: 'idle', clipSpeed: 1, easing: 'easeOutBack' },
+    { id: 'cst-snap', time: 56.25, position: [-0.80, 0.14, 0.34], rotation: [0, 0.5, 0], scale: [1.1, 1.1, 1.1], clip: 'idle', clipSpeed: 1, easing: 'easeInOut' },
+    { id: 'cst-move', time: 57.6, position: [-1.60, 0.14, 0.68], rotation: [0, 0.5, 0], scale: [1.1, 1.1, 1.1], clip: 'idle', clipSpeed: 1, easing: 'step' },
+    { id: 'cst-off', time: 64, position: [-1.60, 0.14, 0.68], rotation: [0, 0.5, 0], scale: [0, 0, 0], clip: 'idle', clipSpeed: 1, easing: 'step' },
   ]),
 
   makePropActor('prop-stretcher', 'Paramedic Stretcher', 'stretcher', '#dc2626', '#cbd5e1', [
@@ -878,8 +905,10 @@ const SUBTITLES: SubtitleCue[] = [
 const SFX_TRACK: SfxCue[] = [
   { id: 'sfx-1-thunder', time: 3.2, kind: 'thunder', label: 'Storm Thunderclap', volume: 0.82 },
   { id: 'sfx-1-pets', time: 4.1, kind: 'catsDogsRain', label: 'Barking & Meowing Rain', volume: 0.75 },
-  { id: 'sfx-1-clang1', time: 5.8, kind: 'umbrellaClang', label: 'Steel Umbrella Clang', volume: 0.8 },
-  { id: 'sfx-1-clang2', time: 7.7, kind: 'umbrellaClang', label: 'Steel Umbrella Bounce', volume: 0.72 },
+  { id: 'sfx-1-clang1', time: 5.73, kind: 'umbrellaClang', label: 'Steel Umbrella Clang 1', volume: 0.82 },
+  { id: 'sfx-1-clang2', time: 6.35, kind: 'umbrellaClang', label: 'Steel Umbrella Clang 2', volume: 0.78 },
+  { id: 'sfx-1-clang3', time: 7.75, kind: 'umbrellaClang', label: 'Steel Umbrella Clang 3', volume: 0.76 },
+  { id: 'sfx-1-clang4', time: 9.35, kind: 'umbrellaClang', label: 'Steel Umbrella Clang 4', volume: 0.72 },
   { id: 'sfx-2-cafe', time: 12.4, kind: 'cafeChatter', label: 'Cafe Espresso Steam', volume: 0.55 },
   { id: 'sfx-2-beans', time: 16.0, kind: 'beanCascade', label: 'Pinto Bean Avalanche', volume: 0.85 },
   { id: 'sfx-3-hum', time: 25.4, kind: 'officeSilence', label: 'Awkward Office Hum', volume: 0.5 },
