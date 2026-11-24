@@ -73,6 +73,7 @@ export type R6BodyColors = Record<R6BodyPartId, string>;
 
 export type HairStyleId =
   | 'none'
+  | 'longWavyPart'
   | 'spiky'
   | 'swept'
   | 'bob'
@@ -94,6 +95,7 @@ export interface HairConfig {
   highlightColor: string;
   highlightPattern: HairHighlightPattern;
   volume: number; // 0.8 .. 1.25
+  flowerAccessory?: boolean;
 }
 
 export type ShirtStyleId =

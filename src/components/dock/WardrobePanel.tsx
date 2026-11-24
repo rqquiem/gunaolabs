@@ -286,17 +286,21 @@ export const WardrobePanel: React.FC<WardrobePanelProps> = ({
                     key={entry.id}
                     type="button"
                     title={entry.description}
-                    onClick={() =>
+                    onClick={() => {
+                      const shouldDefaultColors = hair.styleId === 'none';
+                      const shouldEnableFlower =
+                        entry.id === 'longWavyPart' && hair.styleId !== 'longWavyPart';
                       onUpdateHair(actor.id, {
                         styleId: entry.id as HairStyleId,
-                        ...(hair.styleId === 'none'
+                        ...(shouldDefaultColors
                           ? {
                               primaryColor: entry.defaultColor,
                               highlightColor: entry.defaultHighlight,
                             }
                           : {}),
-                      })
-                    }
+                        ...(shouldEnableFlower ? { flowerAccessory: true } : {}),
+                      });
+                    }}
                     className={`px-2 py-1.5 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate text-left ${
                       active
                         ? 'bg-[#00a2ff]/20 border-[#00a2ff] text-[#38bdf8]'
@@ -312,7 +316,7 @@ export const WardrobePanel: React.FC<WardrobePanelProps> = ({
 
           <div className="space-y-2">
             <span className="block text-xs font-medium text-slate-400">
-              Hair Color, Highlights & Volume
+              Hair Color, Highlights & Flower Pin
             </span>
             <div className="flex flex-wrap items-center gap-1">
               {HAIR_COLOR_SWATCHES.map((sw) => (
@@ -380,23 +384,47 @@ export const WardrobePanel: React.FC<WardrobePanelProps> = ({
               ))}
             </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-slate-400 w-12 shrink-0">Volume</span>
-              <input
-                type="range"
-                min={0.85}
-                max={1.2}
-                step={0.05}
-                aria-label="Hair volume"
-                value={hair.volume}
-                onChange={(e) =>
-                  onUpdateHair(actor.id, { volume: Number(e.target.value) })
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                aria-pressed={Boolean(hair.flowerAccessory)}
+                onClick={() =>
+                  onUpdateHair(actor.id, {
+                    flowerAccessory: !hair.flowerAccessory,
+                  })
                 }
-                className="studio-slider flex-1"
-              />
-              <span className="text-[11px] font-mono-tabular text-slate-300 w-8 text-right">
-                {Math.round(hair.volume * 100)}%
-              </span>
+                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+                  hair.flowerAccessory
+                    ? 'bg-[#ec4899]/20 border-[#ec4899] text-[#fbcfe8]'
+                    : 'bg-[#2b2e35] border-[#393d47] text-slate-300 hover:bg-[#363a43]'
+                }`}
+              >
+                <span
+                  aria-hidden="true"
+                  className="w-2.5 h-2.5 rounded-sm border border-white/40"
+                  style={{ backgroundColor: hair.flowerAccessory ? '#f472b6' : '#475569' }}
+                />
+                <span>Hibiscus Pin: {hair.flowerAccessory ? 'On' : 'Off'}</span>
+              </button>
+
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                <span className="text-[11px] text-slate-400 shrink-0">Vol</span>
+                <input
+                  type="range"
+                  min={0.85}
+                  max={1.2}
+                  step={0.05}
+                  aria-label="Hair volume"
+                  value={hair.volume}
+                  onChange={(e) =>
+                    onUpdateHair(actor.id, { volume: Number(e.target.value) })
+                  }
+                  className="studio-slider flex-1 min-w-0"
+                />
+                <span className="text-[11px] font-mono-tabular text-slate-300 w-8 text-right shrink-0">
+                  {Math.round(hair.volume * 100)}%
+                </span>
+              </div>
             </div>
           </div>
         </div>

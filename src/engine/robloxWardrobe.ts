@@ -870,7 +870,7 @@ export function buildClothing3DTrims(
 }
 
 // =========================================================================
-// 3. Dedicated Hair Framework (10 Styles, Dual-Color, Hat-Stackable, Physics)
+// 3. Dedicated Blocky Hair Framework (11 Faceted Styles, Solid Matte R6 Plastic)
 // =========================================================================
 
 export interface RobloxHairRig {
@@ -879,29 +879,216 @@ export interface RobloxHairRig {
   applyPhysics: (hairPitch: number, hairRoll: number) => void;
 }
 
-function createExtrudedHairLock(
-  width: number,
-  length: number,
+function makeHairPlasticMat(color: string, isAccent = false): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: isAccent ? 0.5 : 0.56,
+    metalness: 0.02,
+    flatShading: true,
+  });
+}
+
+function createPolygonExtrude(
+  points: [number, number][],
   depth: number,
-  curveX = 0.08,
+  bevel = 0.018 * S,
 ): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();
-  shape.moveTo(-width * 0.5, 0);
-  shape.lineTo(width * 0.5, 0);
-  shape.quadraticCurveTo(width * 0.45 + curveX, -length * 0.55, curveX, -length);
-  shape.quadraticCurveTo(-width * 0.42 + curveX * 0.4, -length * 0.55, -width * 0.5, 0);
+  shape.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) {
+    shape.lineTo(points[i][0], points[i][1]);
+  }
   shape.closePath();
 
   const geo = new THREE.ExtrudeGeometry(shape, {
     depth,
-    bevelEnabled: true,
-    bevelSegments: 2,
     steps: 1,
-    bevelSize: 0.025 * S,
-    bevelThickness: 0.025 * S,
+    curveSegments: 1,
+    bevelEnabled: bevel > 0,
+    bevelSegments: 1,
+    bevelSize: bevel,
+    bevelThickness: bevel,
   });
   geo.translate(0, 0, -depth * 0.5);
+  geo.computeVertexNormals();
   return geo;
+}
+
+function createOctaBlockGeo(
+  width: number,
+  height: number,
+  depth: number,
+  chamfer = 0.14 * S,
+  bevel = 0.016 * S,
+): THREE.ExtrudeGeometry {
+  const hw = width * 0.5;
+  const hd = depth * 0.5;
+  const c = Math.min(chamfer, hw * 0.45, hd * 0.45);
+  const pts: [number, number][] = [
+    [-hw + c, -hd],
+    [hw - c, -hd],
+    [hw, -hd + c],
+    [hw, hd - c],
+    [hw - c, hd],
+    [-hw + c, hd],
+    [-hw, hd - c],
+    [-hw, -hd + c],
+  ];
+  const geo = createPolygonExtrude(pts, height, bevel);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, -height * 0.5, 0);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function createBlockySpikeGeo(radius: number, height: number): THREE.ConeGeometry {
+  const geo = new THREE.ConeGeometry(radius, height, 4, 1);
+  geo.rotateY(Math.PI / 4);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function createFacetedHibiscus(): THREE.Group {
+  const flower = new THREE.Group();
+  const outerMat = makeHairPlasticMat('#fdf2f8', false);
+  const innerMat = makeHairPlasticMat('#f472b6', true);
+  const stamenMat = makeHairPlasticMat('#fde047', true);
+
+  const outerPetalGeo = createPolygonExtrude(
+    [
+      [0, 0],
+      [-0.08 * S, 0.09 * S],
+      [-0.065 * S, 0.21 * S],
+      [0, 0.24 * S],
+      [0.065 * S, 0.21 * S],
+      [0.08 * S, 0.09 * S],
+    ],
+    0.024 * S,
+    0.008 * S,
+  );
+  const innerPetalGeo = createPolygonExtrude(
+    [
+      [0, 0],
+      [-0.052 * S, 0.06 * S],
+      [-0.04 * S, 0.145 * S],
+      [0, 0.165 * S],
+      [0.04 * S, 0.145 * S],
+      [0.052 * S, 0.06 * S],
+    ],
+    0.026 * S,
+    0.007 * S,
+  );
+
+  for (let i = 0; i < 5; i++) {
+    const angle = (i * Math.PI * 2) / 5 + 0.22;
+    const petalPivot = new THREE.Group();
+    petalPivot.rotation.z = angle;
+
+    const outer = new THREE.Mesh(outerPetalGeo, outerMat);
+    outer.rotation.x = -0.24;
+    outer.position.set(0, 0.015 * S, 0);
+    outer.castShadow = true;
+
+    const inner = new THREE.Mesh(innerPetalGeo, innerMat);
+    inner.rotation.x = -0.22;
+    inner.position.set(0, 0.012 * S, 0.01 * S);
+
+    petalPivot.add(outer, inner);
+    flower.add(petalPivot);
+  }
+
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.036 * S, 0.044 * S, 0.04 * S, 6), innerMat);
+  core.rotation.x = Math.PI / 2;
+  core.position.z = 0.02 * S;
+  flower.add(core);
+
+  const stamenStem = new THREE.Mesh(new THREE.BoxGeometry(0.02 * S, 0.02 * S, 0.15 * S), stamenMat);
+  stamenStem.position.set(0.015 * S, 0.02 * S, 0.08 * S);
+  stamenStem.rotation.set(-0.22, 0.18, 0);
+  const stamenTip = new THREE.Mesh(new THREE.OctahedronGeometry(0.028 * S, 0), stamenMat);
+  stamenTip.position.set(0.028 * S, 0.038 * S, 0.155 * S);
+  flower.add(stamenStem, stamenTip);
+
+  return flower;
+}
+
+function addBlockySkullShell(
+  crownGroup: THREE.Group,
+  sidesGroup: THREE.Group,
+  baseMat: THREE.Material,
+  sideMat: THREE.Material,
+  options: {
+    splitPart?: boolean;
+    topHeight?: number;
+    backDrop?: number;
+    sideDrop?: number;
+    crownOffsetY?: number;
+  } = {},
+) {
+  const topH = options.topHeight ?? 0.34 * S;
+  const backDrop = options.backDrop ?? 0.88 * S;
+  const sideDrop = options.sideDrop ?? 0.56 * S;
+  const crownY = options.crownOffsetY ?? 0.44 * S;
+
+  if (options.splitPart) {
+    const halfGeo = createPolygonExtrude(
+      [
+        [0.015 * S, 0],
+        [0.64 * S, 0.04 * S],
+        [0.64 * S, topH * 0.72],
+        [0.44 * S, topH],
+        [0.06 * S, topH],
+        [0.01 * S, topH * 0.62],
+      ],
+      1.26 * S,
+      0.018 * S,
+    );
+    const rightHalf = new THREE.Mesh(halfGeo, baseMat);
+    rightHalf.position.set(0, crownY - topH * 0.5, -0.02 * S);
+    rightHalf.castShadow = true;
+
+    const leftHalf = rightHalf.clone();
+    leftHalf.scale.x = -1;
+    crownGroup.add(rightHalf, leftHalf);
+  } else {
+    const topCap = new THREE.Mesh(
+      createOctaBlockGeo(1.32 * S, topH, 1.3 * S, 0.2 * S, 0.018 * S),
+      baseMat,
+    );
+    topCap.position.set(0, crownY, -0.02 * S);
+    topCap.castShadow = true;
+    crownGroup.add(topCap);
+  }
+
+  // Faceted back-of-head plate (wraps rear skull cleanly behind ears without touching face)
+  const backPlate = new THREE.Mesh(
+    createOctaBlockGeo(1.26 * S, backDrop, 0.38 * S, 0.14 * S, 0.016 * S),
+    sideMat,
+  );
+  backPlate.position.set(0, 0.42 * S - backDrop * 0.5, -0.46 * S);
+  backPlate.castShadow = true;
+  crownGroup.add(backPlate);
+
+  // Subtle side temple plates framing the R6 head sides
+  if (sideDrop > 0) {
+    const templeGeo = createPolygonExtrude(
+      [
+        [-0.36 * S, 0],
+        [0.24 * S, 0],
+        [0.16 * S, -sideDrop],
+        [-0.36 * S, -sideDrop * 0.85],
+      ],
+      0.16 * S,
+      0.015 * S,
+    );
+    templeGeo.rotateY(Math.PI / 2);
+    for (const side of [-1, 1]) {
+      const temple = new THREE.Mesh(templeGeo, sideMat);
+      temple.position.set(side * 0.59 * S, 0.32 * S, -0.04 * S);
+      temple.castShadow = true;
+      sidesGroup.add(temple);
+    }
+  }
 }
 
 export function buildHairRig(
@@ -919,13 +1106,22 @@ export function buildHairRig(
   const sidesGroup = new THREE.Group();
   const tailPivot = new THREE.Group();
   tailPivot.position.set(0, 0.16 * S, -0.58 * S);
+  const accessoryGroup = new THREE.Group();
 
-  root.add(crownGroup, bangsGroup, sidesGroup, tailPivot);
+  root.add(crownGroup, bangsGroup, sidesGroup, tailPivot, accessoryGroup);
 
   if (hair.styleId === 'none') {
+    if (hair.flowerAccessory) {
+      const flower = createFacetedHibiscus();
+      flower.position.set(0.45 * S, 0.44 * S, 0.5 * S);
+      flower.rotation.set(-0.26, 0.42, -0.2);
+      accessoryGroup.add(flower);
+    }
     return {
       root,
-      applyHatTuck: () => {},
+      applyHatTuck: (tuck) => {
+        accessoryGroup.visible = tuck !== 'fullCover';
+      },
       applyPhysics: () => {},
     };
   }
@@ -933,55 +1129,220 @@ export function buildHairRig(
   const vol = THREE.MathUtils.clamp(hair.volume || 1, 0.8, 1.25);
   root.scale.setScalar(vol);
 
-  const baseMat = new THREE.MeshPhysicalMaterial({
-    color: hair.primaryColor,
-    roughness: 0.44,
-    metalness: 0.04,
-    sheen: 0.45,
-    sheenRoughness: 0.5,
-  });
+  const baseMat = makeHairPlasticMat(hair.primaryColor, false);
 
   const hiColor =
     hair.highlightPattern === 'none'
       ? hair.primaryColor
       : hair.highlightPattern === 'ombre'
-        ? shadeHex(hair.highlightColor, 0.06)
+        ? shadeHex(hair.highlightColor, 0.05)
         : hair.highlightColor;
 
-  const accentMat = new THREE.MeshPhysicalMaterial({
-    color: hiColor,
-    roughness: 0.38,
-    metalness: 0.06,
-    sheen: 0.55,
-    sheenRoughness: 0.45,
-  });
+  const accentMat = makeHairPlasticMat(hiColor, true);
 
   const pickMat = (isTipOrStreak: boolean) => {
     if (hair.highlightPattern === 'none') return baseMat;
-    if (hair.highlightPattern === 'ombre') return isTipOrStreak ? accentMat : baseMat;
     return isTipOrStreak ? accentMat : baseMat;
   };
 
-  // Scalp cap common foundation (fits snugly over rounded R6 head)
-  const capDome = new THREE.Mesh(
-    new THREE.SphereGeometry(0.62 * S, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.54),
-    baseMat,
-  );
-  capDome.position.y = 0.04 * S;
-  capDome.castShadow = true;
-  crownGroup.add(capDome);
-
   const style: HairStyleId = hair.styleId;
 
-  if (style === 'spiky') {
-    const spikeGeo = new THREE.ConeGeometry(0.22 * S, 0.62 * S, 5);
+  if (style === 'longWavyPart') {
+    // Reference-inspired blocky center-parted silhouette with inverted-V forehead arch
+    // and asymmetric sweeping S-wave (viewer-left -X) + sleek tapered drape (viewer-right +X)
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      splitPart: true,
+      topHeight: 0.34 * S,
+      backDrop: 0.94 * S,
+      sideDrop: 0,
+      crownOffsetY: 0.46 * S,
+    });
+
+    // Iconic inverted-V arched bangs framing the R6 face cleanly without blocking eyes
+    const bangLeft = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [0.01 * S, 0.12 * S],
+          [-0.24 * S, 0.04 * S],
+          [-0.64 * S, -0.34 * S],
+          [-0.68 * S, -0.14 * S],
+          [-0.28 * S, 0.22 * S],
+          [0.01 * S, 0.26 * S],
+        ],
+        0.22 * S,
+        0.018 * S,
+      ),
+      baseMat,
+    );
+    bangLeft.position.set(0, 0.24 * S, 0.56 * S);
+    bangLeft.rotation.x = -0.16;
+    bangLeft.castShadow = true;
+
+    const bangRight = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.01 * S, 0.12 * S],
+          [0.24 * S, 0.04 * S],
+          [0.64 * S, -0.34 * S],
+          [0.68 * S, -0.14 * S],
+          [0.28 * S, 0.22 * S],
+          [-0.01 * S, 0.26 * S],
+        ],
+        0.22 * S,
+        0.018 * S,
+      ),
+      pickMat(hair.highlightPattern === 'streaks'),
+    );
+    bangRight.position.set(0, 0.24 * S, 0.56 * S);
+    bangRight.rotation.x = -0.16;
+    bangRight.castShadow = true;
+    bangsGroup.add(bangLeft, bangRight);
+
+    // Viewer-left (-X) signature chunky stepped S-wave drape cascading over front shoulder
+    const leftUpperWave = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [0.1 * S, 0.34 * S],
+          [-0.14 * S, 0.24 * S],
+          [-0.28 * S, -0.26 * S],
+          [-0.36 * S, -0.82 * S],
+          [-0.22 * S, -1.32 * S],
+          [-0.02 * S, -1.62 * S],
+          [0.14 * S, -1.46 * S],
+          [0.06 * S, -0.92 * S],
+          [0.14 * S, -0.36 * S],
+        ],
+        0.28 * S,
+        0.02 * S,
+      ),
+      pickMat(hair.highlightPattern === 'ombre'),
+    );
+    leftUpperWave.position.set(-0.62 * S, 0.08 * S, 0.14 * S);
+    leftUpperWave.rotation.set(-0.1, 0.26, 0.04);
+    leftUpperWave.castShadow = true;
+
+    // Secondary front sculpted wave ridge for crisp faceted depth & tip/streak highlights
+    const leftCurlRidge = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.04 * S, -0.34 * S],
+          [-0.22 * S, -0.66 * S],
+          [-0.3 * S, -1.04 * S],
+          [-0.14 * S, -1.48 * S],
+          [0.08 * S, -1.66 * S],
+          [0.12 * S, -1.38 * S],
+          [-0.04 * S, -1.0 * S],
+          [0.08 * S, -0.6 * S],
+        ],
+        0.18 * S,
+        0.018 * S,
+      ),
+      pickMat(hair.highlightPattern !== 'none'),
+    );
+    leftCurlRidge.position.set(-0.64 * S, 0.06 * S, 0.28 * S);
+    leftCurlRidge.rotation.set(-0.14, 0.34, 0.06);
+    leftCurlRidge.castShadow = true;
+
+    // Viewer-right (+X) sleek vertical tapered drape
+    const rightSleekDrape = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.12 * S, 0.34 * S],
+          [0.14 * S, 0.26 * S],
+          [0.24 * S, -0.32 * S],
+          [0.22 * S, -0.92 * S],
+          [0.12 * S, -1.42 * S],
+          [-0.04 * S, -1.56 * S],
+          [-0.1 * S, -1.16 * S],
+          [-0.08 * S, -0.42 * S],
+        ],
+        0.24 * S,
+        0.018 * S,
+      ),
+      pickMat(hair.highlightPattern === 'ombre'),
+    );
+    rightSleekDrape.position.set(0.62 * S, 0.08 * S, 0.1 * S);
+    rightSleekDrape.rotation.set(-0.08, -0.22, -0.03);
+    rightSleekDrape.castShadow = true;
+
+    const rightTipFacet = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [0.02 * S, -0.98 * S],
+          [0.14 * S, -1.24 * S],
+          [0.06 * S, -1.54 * S],
+          [-0.08 * S, -1.44 * S],
+        ],
+        0.16 * S,
+        0.014 * S,
+      ),
+      pickMat(hair.highlightPattern === 'tips' || hair.highlightPattern === 'ombre'),
+    );
+    rightTipFacet.position.set(0.61 * S, 0.08 * S, 0.18 * S);
+    rightTipFacet.rotation.set(-0.08, -0.22, -0.03);
+
+    sidesGroup.add(leftUpperWave, leftCurlRidge, rightSleekDrape, rightTipFacet);
+
+    // Back layered faceted veil (swings with tailPivot and clears torso cleanly)
+    const backVeilTop = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.68 * S, 0.28 * S],
+          [0.68 * S, 0.28 * S],
+          [0.74 * S, -0.58 * S],
+          [0.36 * S, -0.82 * S],
+          [0, -0.68 * S],
+          [-0.36 * S, -0.82 * S],
+          [-0.74 * S, -0.58 * S],
+        ],
+        0.2 * S,
+        0.02 * S,
+      ),
+      baseMat,
+    );
+    backVeilTop.position.set(0, -0.04 * S, -0.08 * S);
+    backVeilTop.rotation.x = 0.08;
+    backVeilTop.castShadow = true;
+
+    const backVeilLower = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.7 * S, -0.46 * S],
+          [0.7 * S, -0.46 * S],
+          [0.66 * S, -1.32 * S],
+          [0.32 * S, -1.56 * S],
+          [0, -1.24 * S],
+          [-0.32 * S, -1.56 * S],
+          [-0.66 * S, -1.32 * S],
+        ],
+        0.18 * S,
+        0.018 * S,
+      ),
+      pickMat(hair.highlightPattern === 'ombre' || hair.highlightPattern === 'tips'),
+    );
+    backVeilLower.position.set(0, -0.04 * S, -0.1 * S);
+    backVeilLower.rotation.x = 0.1;
+    backVeilLower.castShadow = true;
+
+    tailPivot.add(backVeilTop, backVeilLower);
+  } else if (style === 'spiky') {
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      topHeight: 0.28 * S,
+      backDrop: 0.78 * S,
+      sideDrop: 0.36 * S,
+      crownOffsetY: 0.42 * S,
+    });
+
+    const spikeGeo = createBlockySpikeGeo(0.24 * S, 0.68 * S);
     const crownSpikes: [number, number, number, number, number, boolean][] = [
-      [0, 0.56, 0.18, 0.42, 0, false],
-      [-0.34, 0.46, 0.1, 0.25, 0.55, true],
-      [0.34, 0.46, 0.1, 0.25, -0.55, false],
-      [0, 0.58, -0.18, -0.32, 0, true],
-      [-0.32, 0.44, -0.28, -0.45, 0.38, false],
-      [0.32, 0.44, -0.28, -0.45, -0.38, true],
+      [0, 0.62, 0.18, 0.46, 0, false],
+      [-0.36, 0.52, 0.14, 0.28, 0.56, true],
+      [0.36, 0.52, 0.14, 0.28, -0.56, false],
+      [0, 0.64, -0.18, -0.34, 0, true],
+      [-0.38, 0.48, -0.26, -0.48, 0.42, false],
+      [0.38, 0.48, -0.26, -0.48, -0.42, true],
+      [-0.5, 0.36, -0.04, 0.08, 0.78, false],
+      [0.5, 0.36, -0.04, 0.08, -0.78, true],
     ];
     for (const [x, y, z, rx, rz, hi] of crownSpikes) {
       const m = new THREE.Mesh(spikeGeo, pickMat(hi && hair.highlightPattern !== 'none'));
@@ -990,236 +1351,513 @@ export function buildHairRig(
       m.castShadow = true;
       crownGroup.add(m);
     }
-    // Forehead spikes stay visible under brimmed hats!
-    for (const [bx, rz, hi] of [
-      [-0.24, 0.18, false],
-      [0, 0, true],
-      [0.24, -0.18, false],
+
+    // Sharp jagged blocky fringe wedges above brows (visible under brimmed hats)
+    const bangWedge = createPolygonExtrude(
+      [
+        [-0.15 * S, 0],
+        [0.15 * S, 0],
+        [0.03 * S, -0.28 * S],
+      ],
+      0.1 * S,
+      0.012 * S,
+    );
+    for (const [bx, by, rz, hi] of [
+      [-0.34, 0.42, 0.2, false],
+      [-0.11, 0.44, 0.06, true],
+      [0.12, 0.44, -0.06, false],
+      [0.34, 0.42, -0.2, true],
     ] as const) {
       const bang = new THREE.Mesh(
-        createExtrudedHairLock(0.22 * S, 0.36 * S, 0.1 * S, 0.02 * S),
-        pickMat(hi && hair.highlightPattern === 'tips'),
+        bangWedge,
+        pickMat(hi && (hair.highlightPattern === 'tips' || hair.highlightPattern === 'streaks')),
       );
-      bang.position.set(bx * S, 0.42 * S, 0.58 * S);
+      bang.position.set(bx * S, by * S, 0.56 * S);
       bang.rotation.set(-0.22, 0, rz);
+      bang.castShadow = true;
       bangsGroup.add(bang);
     }
   } else if (style === 'swept') {
-    // Swept top wave + side bangs
-    const wave = new THREE.Mesh(
-      new THREE.BoxGeometry(1.18 * S, 0.36 * S, 1.12 * S),
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      topHeight: 0.3 * S,
+      backDrop: 0.82 * S,
+      sideDrop: 0.48 * S,
+      crownOffsetY: 0.44 * S,
+    });
+
+    // Diagonal stepped top crest
+    const topSlab = new THREE.Mesh(
+      createOctaBlockGeo(1.18 * S, 0.24 * S, 1.18 * S, 0.18 * S, 0.018 * S),
       baseMat,
     );
-    wave.position.set(0.06 * S, 0.46 * S, 0.04 * S);
-    wave.rotation.z = -0.14;
-    crownGroup.add(wave);
+    topSlab.position.set(0.06 * S, 0.56 * S, 0.04 * S);
+    topSlab.rotation.z = -0.14;
+    topSlab.castShadow = true;
+    crownGroup.add(topSlab);
 
-    const sweep = new THREE.Mesh(
-      createExtrudedHairLock(0.68 * S, 0.48 * S, 0.14 * S, 0.22 * S),
+    // Sweeping angular side-swept fringe prism clearing eyes
+    const sweepFringe = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.6 * S, 0.24 * S],
+          [0.54 * S, 0.12 * S],
+          [0.62 * S, -0.16 * S],
+          [0.12 * S, 0.02 * S],
+          [-0.48 * S, -0.06 * S],
+        ],
+        0.18 * S,
+        0.016 * S,
+      ),
       pickMat(hair.highlightPattern !== 'none'),
     );
-    sweep.position.set(-0.14 * S, 0.52 * S, 0.56 * S);
-    sweep.rotation.set(-0.28, 0.15, 0.38);
-    bangsGroup.add(sweep);
+    sweepFringe.position.set(0.04 * S, 0.34 * S, 0.55 * S);
+    sweepFringe.rotation.set(-0.18, 0.08, -0.06);
+    sweepFringe.castShadow = true;
+    bangsGroup.add(sweepFringe);
 
+    // Layered sideburn wedges
+    const sideWedge = createPolygonExtrude(
+      [
+        [-0.14 * S, 0],
+        [0.14 * S, 0],
+        [0.06 * S, -0.44 * S],
+        [-0.08 * S, -0.34 * S],
+      ],
+      0.14 * S,
+      0.014 * S,
+    );
     for (const side of [-1, 1]) {
-      const lock = new THREE.Mesh(
-        createExtrudedHairLock(0.26 * S, 0.56 * S, 0.12 * S, side * -0.06 * S),
-        baseMat,
-      );
-      lock.position.set(side * 0.56 * S, 0.32 * S, 0.28 * S);
-      lock.rotation.y = side * 0.35;
+      const lock = new THREE.Mesh(sideWedge, baseMat);
+      lock.position.set(side * 0.58 * S, 0.26 * S, 0.36 * S);
+      lock.rotation.set(-0.08, side * 0.42, 0);
       sidesGroup.add(lock);
     }
   } else if (style === 'sidePart') {
-    const leftSide = new THREE.Mesh(
-      new THREE.BoxGeometry(0.62 * S, 0.24 * S, 1.12 * S),
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      topHeight: 0.26 * S,
+      backDrop: 0.8 * S,
+      sideDrop: 0.42 * S,
+      crownOffsetY: 0.42 * S,
+    });
+
+    // Asymmetric parted blocky slabs with clean part groove at x = -0.18*S
+    const majorSlab = new THREE.Mesh(
+      createOctaBlockGeo(0.82 * S, 0.22 * S, 1.2 * S, 0.14 * S, 0.016 * S),
       baseMat,
     );
-    leftSide.position.set(0.28 * S, 0.48 * S, 0);
-    leftSide.rotation.z = -0.12;
-    const rightSide = new THREE.Mesh(
-      new THREE.BoxGeometry(0.46 * S, 0.18 * S, 1.08 * S),
+    majorSlab.position.set(0.22 * S, 0.54 * S, 0.02 * S);
+    majorSlab.rotation.z = -0.1;
+    majorSlab.castShadow = true;
+
+    const minorSlab = new THREE.Mesh(
+      createOctaBlockGeo(0.46 * S, 0.16 * S, 1.14 * S, 0.12 * S, 0.014 * S),
       pickMat(hair.highlightPattern === 'streaks'),
     );
-    rightSide.position.set(-0.34 * S, 0.44 * S, 0);
-    rightSide.rotation.z = 0.16;
-    crownGroup.add(leftSide, rightSide);
+    minorSlab.position.set(-0.4 * S, 0.48 * S, 0);
+    minorSlab.rotation.z = 0.14;
+    minorSlab.castShadow = true;
+    crownGroup.add(majorSlab, minorSlab);
 
-    const frontCurl = new THREE.Mesh(
-      createExtrudedHairLock(0.44 * S, 0.34 * S, 0.12 * S, 0.14 * S),
-      baseMat,
+    const frontSwoop = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.18 * S, 0.18 * S],
+          [0.54 * S, 0.14 * S],
+          [0.58 * S, -0.08 * S],
+          [0.06 * S, 0.02 * S],
+        ],
+        0.15 * S,
+        0.015 * S,
+      ),
+      pickMat(hair.highlightPattern === 'tips' || hair.highlightPattern === 'ombre'),
     );
-    frontCurl.position.set(0.18 * S, 0.5 * S, 0.56 * S);
-    frontCurl.rotation.set(-0.2, 0, -0.3);
-    bangsGroup.add(frontCurl);
+    frontSwoop.position.set(0.06 * S, 0.34 * S, 0.56 * S);
+    frontSwoop.rotation.x = -0.18;
+    bangsGroup.add(frontSwoop);
   } else if (style === 'undercut') {
-    // Tapered shaved sides + voluminous swept top
-    const fadeBand = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.61 * S, 0.59 * S, 0.34 * S, 18, 1, true),
-      makeClothMat(shadeHex(hair.primaryColor, -0.25), 0.7),
+    // Tapered matte 8-sided fade collar + tall angular forward-swept pompadour extrusion
+    const fadeCollar = new THREE.Mesh(
+      createOctaBlockGeo(1.24 * S, 0.54 * S, 1.24 * S, 0.22 * S, 0.012 * S),
+      makeHairPlasticMat(shadeHex(hair.primaryColor, -0.26), false),
     );
-    fadeBand.position.y = 0.04 * S;
-    sidesGroup.add(fadeBand);
+    fadeCollar.position.set(0, 0.14 * S, -0.02 * S);
+    sidesGroup.add(fadeCollar);
 
-    const topPompadour = new THREE.Mesh(
-      new THREE.BoxGeometry(0.84 * S, 0.38 * S, 1.24 * S),
-      pickMat(hair.highlightPattern === 'streaks'),
+    // Sculpted side-profile pompadour extruded along X
+    const pompGeo = createPolygonExtrude(
+      [
+        [-0.6 * S, 0],
+        [0.48 * S, 0],
+        [0.72 * S, 0.26 * S],
+        [0.54 * S, 0.48 * S],
+        [-0.18 * S, 0.42 * S],
+        [-0.62 * S, 0.22 * S],
+      ],
+      0.86 * S,
+      0.022 * S,
     );
-    topPompadour.position.set(0, 0.54 * S, 0.12 * S);
-    topPompadour.rotation.x = -0.14;
-    topPompadour.castShadow = true;
-    crownGroup.add(topPompadour);
+    pompGeo.rotateY(-Math.PI / 2);
+    const pomp = new THREE.Mesh(pompGeo, baseMat);
+    pomp.position.set(0, 0.34 * S, 0.04 * S);
+    pomp.castShadow = true;
+
+    const pompStreak = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [0.08 * S, 0.26 * S],
+          [0.64 * S, 0.26 * S],
+          [0.52 * S, 0.44 * S],
+          [-0.08 * S, 0.4 * S],
+        ],
+        0.24 * S,
+        0.016 * S,
+      ),
+      pickMat(hair.highlightPattern !== 'none'),
+    );
+    pompStreak.rotation.y = -Math.PI / 2;
+    pompStreak.position.set(0.16 * S, 0.36 * S, 0.06 * S);
+    crownGroup.add(pomp, pompStreak);
   } else if (style === 'bob') {
-    // Side-parted bangs + chin-length rounded side & back curtains
-    for (const side of [-1, 1]) {
-      const curtain = new THREE.Mesh(
-        createExtrudedHairLock(0.42 * S, 0.92 * S, 0.18 * S, side * 0.04 * S),
-        pickMat(hair.highlightPattern === 'tips' || hair.highlightPattern === 'ombre'),
-      );
-      curtain.position.set(side * 0.58 * S, 0.36 * S, 0.06 * S);
-      curtain.rotation.y = side * Math.PI * 0.5;
-      sidesGroup.add(curtain);
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      splitPart: true,
+      topHeight: 0.32 * S,
+      backDrop: 0.52 * S,
+      sideDrop: 0,
+      crownOffsetY: 0.46 * S,
+    });
 
-      const bang = new THREE.Mesh(
-        createExtrudedHairLock(0.38 * S, 0.42 * S, 0.12 * S, side * 0.08 * S),
-        baseMat,
-      );
-      bang.position.set(side * 0.24 * S, 0.48 * S, 0.56 * S);
-      bang.rotation.set(-0.18, 0, side * -0.14);
-      bangsGroup.add(bang);
-    }
-    const backBob = new THREE.Mesh(
-      new THREE.BoxGeometry(1.16 * S, 0.88 * S, 0.24 * S),
-      pickMat(hair.highlightPattern === 'ombre'),
+    // Inverted-V parted bangs framing forehead
+    const bobBangGeo = createPolygonExtrude(
+      [
+        [0, 0.16 * S],
+        [0.56 * S, -0.18 * S],
+        [0.6 * S, 0.04 * S],
+        [0.24 * S, 0.26 * S],
+        [0, 0.28 * S],
+      ],
+      0.16 * S,
+      0.015 * S,
     );
-    backBob.position.set(0, -0.34 * S, 0.06 * S);
+    for (const side of [-1, 1]) {
+      const bang = new THREE.Mesh(bobBangGeo, baseMat);
+      bang.scale.x = side;
+      bang.position.set(0, 0.24 * S, 0.56 * S);
+      bang.rotation.x = -0.14;
+      bangsGroup.add(bang);
+
+      // Flared chin-length faceted cheek curtains
+      const curtain = new THREE.Mesh(
+        createPolygonExtrude(
+          [
+            [-0.12 * S, 0.32 * S],
+            [0.14 * S, 0.32 * S],
+            [0.22 * S, -0.44 * S],
+            [0.06 * S, -0.76 * S],
+            [-0.14 * S, -0.66 * S],
+          ],
+          0.32 * S,
+          0.018 * S,
+        ),
+        pickMat(hair.highlightPattern === 'tips' || hair.highlightPattern === 'streaks'),
+      );
+      curtain.position.set(side * 0.62 * S, 0.08 * S, 0.06 * S);
+      curtain.rotation.set(0, side * -0.14, side * -0.06);
+      curtain.castShadow = true;
+      sidesGroup.add(curtain);
+    }
+
+    // Stepped blocky back bob shield
+    const backBob = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.64 * S, 0.24 * S],
+          [0.64 * S, 0.24 * S],
+          [0.72 * S, -0.68 * S],
+          [0.44 * S, -0.84 * S],
+          [-0.44 * S, -0.84 * S],
+          [-0.72 * S, -0.68 * S],
+        ],
+        0.22 * S,
+        0.018 * S,
+      ),
+      pickMat(hair.highlightPattern === 'ombre' || hair.highlightPattern === 'tips'),
+    );
+    backBob.position.set(0, -0.02 * S, -0.06 * S);
+    backBob.rotation.x = 0.08;
+    backBob.castShadow = true;
     tailPivot.add(backBob);
   } else if (style === 'curly') {
-    const curlGeo = new THREE.SphereGeometry(0.28 * S, 10, 8);
-    const pts: [number, number, number, boolean][] = [
-      [0, 0.62, 0, false],
-      [-0.36, 0.52, 0.22, true],
-      [0.36, 0.52, 0.22, false],
-      [-0.46, 0.36, -0.18, false],
-      [0.46, 0.36, -0.18, true],
-      [0, 0.52, -0.38, false],
-      [-0.24, 0.48, -0.36, true],
-      [0.24, 0.48, -0.36, false],
-      [0, 0.54, 0.38, true],
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      topHeight: 0.34 * S,
+      backDrop: 0.86 * S,
+      sideDrop: 0.44 * S,
+      crownOffsetY: 0.44 * S,
+    });
+
+    // Sculpted cluster of chunky low-poly beveled blocks instead of smooth spheres
+    const puffGeo = createOctaBlockGeo(0.46 * S, 0.42 * S, 0.46 * S, 0.1 * S, 0.016 * S);
+    const curlNodes: [number, number, number, number, number, boolean][] = [
+      [0, 0.66, 0.04, 0.1, 0.2, false],
+      [-0.36, 0.58, 0.22, 0.2, 0.35, true],
+      [0.36, 0.58, 0.22, -0.2, -0.35, false],
+      [0, 0.58, 0.38, 0.3, 0.1, true],
+      [-0.44, 0.48, -0.2, -0.25, 0.4, false],
+      [0.44, 0.48, -0.2, -0.25, -0.4, true],
+      [0, 0.54, -0.38, -0.35, 0.25, false],
+      [-0.26, 0.58, -0.32, -0.3, -0.2, true],
+      [0.26, 0.58, -0.32, -0.3, 0.2, false],
+      [-0.56, 0.32, 0.04, 0.1, 0.55, true],
+      [0.56, 0.32, 0.04, 0.1, -0.55, false],
     ];
-    for (const [x, y, z, hi] of pts) {
-      const c = new THREE.Mesh(curlGeo, pickMat(hi && hair.highlightPattern !== 'none'));
+    for (const [x, y, z, rx, rz, hi] of curlNodes) {
+      const c = new THREE.Mesh(puffGeo, pickMat(hi && hair.highlightPattern !== 'none'));
       c.position.set(x * S, y * S, z * S);
+      c.rotation.set(rx, rz * 0.5, rz);
       c.castShadow = true;
       crownGroup.add(c);
     }
+
     for (const side of [-1, 1]) {
-      const puff = new THREE.Mesh(curlGeo, baseMat);
-      puff.position.set(side * 0.56 * S, 0.24 * S, 0.16 * S);
-      sidesGroup.add(puff);
+      const sideCurl = new THREE.Mesh(
+        createOctaBlockGeo(0.38 * S, 0.42 * S, 0.38 * S, 0.09 * S, 0.014 * S),
+        pickMat(side === 1 && hair.highlightPattern === 'streaks'),
+      );
+      sideCurl.position.set(side * 0.62 * S, 0.16 * S, 0.1 * S);
+      sideCurl.rotation.z = side * -0.22;
+      sidesGroup.add(sideCurl);
     }
   } else if (style === 'mohawk') {
-    const finGeo = createExtrudedHairLock(0.24 * S, 0.54 * S, 0.26 * S, 0);
-    for (let i = 0; i < 5; i++) {
+    // Faceted shaved-side ridge + 6 interlocking beveled chisel blades
+    const shavedCap = new THREE.Mesh(
+      createOctaBlockGeo(1.22 * S, 0.24 * S, 1.24 * S, 0.2 * S, 0.012 * S),
+      makeHairPlasticMat(shadeHex(hair.primaryColor, -0.28), false),
+    );
+    shavedCap.position.set(0, 0.34 * S, -0.02 * S);
+    sidesGroup.add(shavedCap);
+
+    const finGeo = createPolygonExtrude(
+      [
+        [-0.14 * S, 0],
+        [0.14 * S, 0],
+        [0.18 * S, 0.44 * S],
+        [0, 0.62 * S],
+        [-0.14 * S, 0.42 * S],
+      ],
+      0.24 * S,
+      0.016 * S,
+    );
+    finGeo.rotateY(Math.PI / 2);
+
+    for (let i = 0; i < 6; i++) {
       const fin = new THREE.Mesh(
         finGeo,
-        pickMat(i % 2 === 1 && hair.highlightPattern !== 'none'),
+        pickMat(
+          (i % 2 === 1 && hair.highlightPattern === 'streaks') ||
+            (i >= 4 && hair.highlightPattern === 'ombre') ||
+            (i === 0 && hair.highlightPattern === 'tips'),
+        ),
       );
-      fin.rotation.x = Math.PI - 0.25 + i * 0.14;
-      fin.position.set(0, (0.48 - i * 0.05) * S, (0.42 - i * 0.24) * S);
+      fin.position.set(0, (0.44 - i * 0.04) * S, (0.44 - i * 0.2) * S);
+      fin.rotation.x = 0.24 - i * 0.18;
       fin.castShadow = true;
       crownGroup.add(fin);
     }
   } else if (style === 'ponytail') {
-    // Sleek pulled-back crown + bangs + elastic tie + flowing curved ponytail
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      splitPart: true,
+      topHeight: 0.3 * S,
+      backDrop: 0.84 * S,
+      sideDrop: 0.42 * S,
+      crownOffsetY: 0.44 * S,
+    });
+
+    const bangHalfGeo = createPolygonExtrude(
+      [
+        [0.02 * S, 0.16 * S],
+        [0.54 * S, -0.14 * S],
+        [0.58 * S, 0.04 * S],
+        [0.2 * S, 0.26 * S],
+        [0.02 * S, 0.26 * S],
+      ],
+      0.14 * S,
+      0.014 * S,
+    );
     for (const side of [-1, 1]) {
-      const bang = new THREE.Mesh(
-        createExtrudedHairLock(0.32 * S, 0.38 * S, 0.1 * S, side * 0.08 * S),
-        baseMat,
-      );
-      bang.position.set(side * 0.22 * S, 0.46 * S, 0.56 * S);
-      bang.rotation.set(-0.2, 0, side * -0.15);
+      const bang = new THREE.Mesh(bangHalfGeo, baseMat);
+      bang.scale.x = side;
+      bang.position.set(0, 0.24 * S, 0.56 * S);
+      bang.rotation.x = -0.16;
       bangsGroup.add(bang);
     }
-    const band = new THREE.Mesh(
-      new THREE.TorusGeometry(0.16 * S, 0.05 * S, 8, 16),
+
+    // Hexagonal blocky hair tie collar
+    const tie = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18 * S, 0.18 * S, 0.12 * S, 6),
       accentMat,
     );
-    band.position.set(0, 0.06 * S, -0.02 * S);
-    const tailCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0, 0.06 * S, -0.02 * S),
-      new THREE.Vector3(0, -0.08 * S, -0.34 * S),
-      new THREE.Vector3(0, -0.56 * S, -0.46 * S),
-      new THREE.Vector3(0, -1.04 * S, -0.32 * S),
-    ]);
-    const tailMesh = new THREE.Mesh(
-      new THREE.TubeGeometry(tailCurve, 14, 0.18 * S, 10, false),
-      pickMat(hair.highlightPattern === 'ombre' || hair.highlightPattern === 'tips'),
+    tie.rotation.x = Math.PI / 2 - 0.35;
+    tie.position.set(0, 0.08 * S, -0.02 * S);
+
+    // Segmented faceted blocky ponytail prisms hanging gracefully down tailPivot
+    const upperTail = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.16 * S, 0.04 * S],
+          [0.16 * S, 0.04 * S],
+          [0.24 * S, -0.52 * S],
+          [0, -0.64 * S],
+          [-0.24 * S, -0.52 * S],
+        ],
+        0.26 * S,
+        0.018 * S,
+      ),
+      baseMat,
     );
-    tailMesh.castShadow = true;
-    const tipMesh = new THREE.Mesh(
-      new THREE.ConeGeometry(0.18 * S, 0.32 * S, 10),
+    upperTail.position.set(0, 0.04 * S, -0.18 * S);
+    upperTail.rotation.x = 0.24;
+    upperTail.castShadow = true;
+
+    const lowerTail = new THREE.Mesh(
+      createPolygonExtrude(
+        [
+          [-0.22 * S, -0.44 * S],
+          [0.22 * S, -0.44 * S],
+          [0.18 * S, -1.06 * S],
+          [0, -1.32 * S],
+          [-0.18 * S, -1.06 * S],
+        ],
+        0.22 * S,
+        0.018 * S,
+      ),
       pickMat(hair.highlightPattern !== 'none'),
     );
-    tipMesh.rotation.x = Math.PI - 0.3;
-    tipMesh.position.set(0, -1.18 * S, -0.26 * S);
-    tailPivot.add(band, tailMesh, tipMesh);
+    lowerTail.position.set(0, 0.02 * S, -0.24 * S);
+    lowerTail.rotation.x = 0.06;
+    lowerTail.castShadow = true;
+
+    tailPivot.add(tie, upperTail, lowerTail);
   } else if (style === 'twinTails') {
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      splitPart: true,
+      topHeight: 0.3 * S,
+      backDrop: 0.8 * S,
+      sideDrop: 0.38 * S,
+      crownOffsetY: 0.44 * S,
+    });
+
+    const bangHalfGeo = createPolygonExtrude(
+      [
+        [0.01 * S, 0.16 * S],
+        [0.54 * S, -0.16 * S],
+        [0.58 * S, 0.04 * S],
+        [0.2 * S, 0.26 * S],
+        [0.01 * S, 0.26 * S],
+      ],
+      0.14 * S,
+      0.014 * S,
+    );
+
     for (const side of [-1, 1]) {
-      const bang = new THREE.Mesh(
-        createExtrudedHairLock(0.34 * S, 0.42 * S, 0.11 * S, side * 0.08 * S),
-        baseMat,
-      );
-      bang.position.set(side * 0.24 * S, 0.46 * S, 0.56 * S);
-      bang.rotation.set(-0.2, 0, side * -0.16);
+      const bang = new THREE.Mesh(bangHalfGeo, baseMat);
+      bang.scale.x = side;
+      bang.position.set(0, 0.24 * S, 0.56 * S);
+      bang.rotation.x = -0.16;
       bangsGroup.add(bang);
 
-      const tie = new THREE.Mesh(
-        new THREE.TorusGeometry(0.13 * S, 0.045 * S, 8, 14),
+      const scrunchie = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.15 * S, 0.15 * S, 0.12 * S, 6),
         accentMat,
       );
-      tie.rotation.y = Math.PI / 2;
-      tie.position.set(side * 0.62 * S, 0.06 * S, 0.34 * S);
+      scrunchie.rotation.z = Math.PI / 2;
+      scrunchie.position.set(side * 0.66 * S, 0.06 * S, 0.36 * S);
 
-      const curve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(side * 0.62 * S, 0.06 * S, 0.34 * S),
-        new THREE.Vector3(side * 0.86 * S, -0.26 * S, 0.22 * S),
-        new THREE.Vector3(side * 0.92 * S, -0.82 * S, 0.14 * S),
-      ]);
-      const tail = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, 12, 0.14 * S, 8, false),
+      // Flared low-poly faceted twin tail prism
+      const twinTail = new THREE.Mesh(
+        createPolygonExtrude(
+          [
+            [-0.1 * S, 0.04 * S],
+            [0.1 * S, 0.04 * S],
+            [0.24 * S, -0.68 * S],
+            [0.12 * S, -1.18 * S],
+            [-0.08 * S, -1.04 * S],
+            [-0.16 * S, -0.58 * S],
+          ],
+          0.22 * S,
+          0.016 * S,
+        ),
         pickMat(hair.highlightPattern !== 'none'),
       );
-      tail.castShadow = true;
-      tailPivot.add(tie, tail);
+      twinTail.scale.x = side;
+      twinTail.position.set(side * 0.78 * S, 0.02 * S, 0.24 * S);
+      twinTail.rotation.set(0.12, side * -0.16, side * 0.16);
+      twinTail.castShadow = true;
+
+      tailPivot.add(scrunchie, twinTail);
     }
   } else if (style === 'braids') {
+    addBlockySkullShell(crownGroup, sidesGroup, baseMat, baseMat, {
+      splitPart: true,
+      topHeight: 0.3 * S,
+      backDrop: 0.84 * S,
+      sideDrop: 0.4 * S,
+      crownOffsetY: 0.44 * S,
+    });
+
+    const bangHalfGeo = createPolygonExtrude(
+      [
+        [0.01 * S, 0.16 * S],
+        [0.52 * S, -0.14 * S],
+        [0.56 * S, 0.04 * S],
+        [0.2 * S, 0.26 * S],
+        [0.01 * S, 0.26 * S],
+      ],
+      0.14 * S,
+      0.014 * S,
+    );
+
+    const linkGeo = createOctaBlockGeo(0.24 * S, 0.22 * S, 0.24 * S, 0.06 * S, 0.012 * S);
+
     for (const side of [-1, 1]) {
-      const bang = new THREE.Mesh(
-        createExtrudedHairLock(0.3 * S, 0.38 * S, 0.1 * S, side * 0.06 * S),
-        baseMat,
-      );
-      bang.position.set(side * 0.22 * S, 0.46 * S, 0.56 * S);
-      bang.rotation.set(-0.2, 0, side * -0.14);
+      const bang = new THREE.Mesh(bangHalfGeo, baseMat);
+      bang.scale.x = side;
+      bang.position.set(0, 0.24 * S, 0.56 * S);
+      bang.rotation.x = -0.16;
       bangsGroup.add(bang);
 
-      for (let seg = 0; seg < 4; seg++) {
-        const bead = new THREE.Mesh(
-          new THREE.SphereGeometry(0.14 * S, 10, 8),
-          seg === 3 ? pickMat(hair.highlightPattern !== 'none') : baseMat,
-        );
-        bead.position.set(side * 0.34 * S, (-0.12 - seg * 0.22) * S, 0.04 * S);
-        bead.castShadow = true;
-        tailPivot.add(bead);
+      for (let seg = 0; seg < 5; seg++) {
+        const useHighlight =
+          (seg >= 3 && (hair.highlightPattern === 'tips' || hair.highlightPattern === 'ombre')) ||
+          (seg % 2 === 1 && hair.highlightPattern === 'streaks');
+        const link = new THREE.Mesh(linkGeo, pickMat(useHighlight));
+        link.position.set(side * 0.38 * S, (-0.12 - seg * 0.2) * S, -0.04 * S);
+        link.rotation.y = (seg % 2 === 0 ? 0.35 : -0.35) + Math.PI / 4;
+        link.scale.setScalar(1 - seg * 0.06);
+        link.castShadow = true;
+        tailPivot.add(link);
       }
+
       const tie = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.1 * S, 0.1 * S, 0.08 * S, 10),
+        new THREE.CylinderGeometry(0.11 * S, 0.11 * S, 0.08 * S, 6),
         accentMat,
       );
-      tie.position.set(side * 0.34 * S, -0.9 * S, 0.04 * S);
-      tailPivot.add(tie);
+      tie.position.set(side * 0.38 * S, -1.04 * S, -0.04 * S);
+
+      const tassel = new THREE.Mesh(
+        createBlockySpikeGeo(0.11 * S, 0.26 * S),
+        pickMat(hair.highlightPattern !== 'none'),
+      );
+      tassel.rotation.x = Math.PI;
+      tassel.position.set(side * 0.38 * S, -1.18 * S, -0.04 * S);
+      tailPivot.add(tie, tassel);
     }
+  }
+
+  // Optional Hibiscus Flower Accessory pinned at upper viewer-right (+X) temple
+  if (hair.flowerAccessory) {
+    const flower = createFacetedHibiscus();
+    flower.position.set(0.45 * S, 0.44 * S, 0.52 * S);
+    flower.rotation.set(-0.26, 0.42, -0.2);
+    accessoryGroup.add(flower);
   }
 
   const applyHatTuck = (tuck: HatTuckProfile) => {
@@ -1229,23 +1867,30 @@ export function buildHairRig(
       crownGroup.position.set(0, 0, 0);
       bangsGroup.visible = true;
       sidesGroup.visible = true;
+      accessoryGroup.visible = true;
+      accessoryGroup.position.set(0, 0, 0);
     } else if (tuck === 'brim') {
       crownGroup.visible = true;
       crownGroup.scale.set(0.95, 0.42, 0.95);
       crownGroup.position.set(0, -0.06 * S, 0);
       bangsGroup.visible = true;
       sidesGroup.visible = true;
+      accessoryGroup.visible = true;
+      accessoryGroup.position.set(0, -0.04 * S, 0.02 * S);
     } else if (tuck === 'crown') {
       crownGroup.visible = true;
       crownGroup.scale.set(0.9, 0.34, 0.9);
       crownGroup.position.set(0, -0.08 * S, 0);
       bangsGroup.visible = true;
       sidesGroup.visible = true;
+      accessoryGroup.visible = true;
+      accessoryGroup.position.set(0.03 * S, -0.08 * S, 0.03 * S);
     } else {
       // fullCover (helmets, hoods)
       crownGroup.visible = false;
       bangsGroup.visible = true;
       sidesGroup.visible = false;
+      accessoryGroup.visible = false;
     }
   };
 
@@ -1253,7 +1898,8 @@ export function buildHairRig(
 
   const applyPhysics = (hairPitch: number, hairRoll: number) => {
     tailPivot.rotation.set(hairPitch, 0, hairRoll);
-    bangsGroup.rotation.set(hairPitch * 0.25, 0, hairRoll * 0.2);
+    bangsGroup.rotation.set(hairPitch * 0.2, 0, hairRoll * 0.16);
+    sidesGroup.rotation.set(hairPitch * 0.15, 0, hairRoll * 0.14);
   };
 
   return { root, applyHatTuck, applyPhysics };

@@ -44,6 +44,7 @@ export const CLASSIC_BRICK_COLORS: BrickColorSwatch[] = [
 ];
 
 export const HAIR_COLOR_SWATCHES: BrickColorSwatch[] = [
+  { name: 'Honey Blonde', hex: '#dfc099' },
   { name: 'Espresso', hex: '#3b2416' },
   { name: 'Jet Black', hex: '#181c24' },
   { name: 'Chestnut', hex: '#6b3f24' },
@@ -134,16 +135,17 @@ export interface HairCatalogEntry {
 
 export const HAIR_STYLE_CATALOG: HairCatalogEntry[] = [
   { id: 'none', label: 'None', description: 'Bare classic stud head', defaultColor: '#3b2416', defaultHighlight: '#f59e0b', hasTail: false },
-  { id: 'spiky', label: 'Spiky', description: 'Dynamic angled classic spikes', defaultColor: '#3b2416', defaultHighlight: '#f59e0b', hasTail: false },
-  { id: 'swept', label: 'Swept Fringe', description: 'Layered side-swept bangs & crown', defaultColor: '#181c24', defaultHighlight: '#38bdf8', hasTail: false },
-  { id: 'sidePart', label: 'Neat Part', description: 'Clean parted hair with soft volume', defaultColor: '#6b3f24', defaultHighlight: '#eab308', hasTail: false },
-  { id: 'undercut', label: 'Undercut', description: 'Textured top crop with tapered sides', defaultColor: '#181c24', defaultHighlight: '#a855f7', hasTail: false },
-  { id: 'bob', label: 'Layered Bob', description: 'Chin-length bob with side locks', defaultColor: '#8f3622', defaultHighlight: '#fb923c', hasTail: true },
-  { id: 'curly', label: 'Curly Afro', description: 'Voluminous sculpted curl clusters', defaultColor: '#181c24', defaultHighlight: '#64748b', hasTail: false },
-  { id: 'mohawk', label: 'Punk Mohawk', description: 'Bold central ridge crest', defaultColor: '#dc2626', defaultHighlight: '#fde047', hasTail: false },
-  { id: 'ponytail', label: 'High Ponytail', description: 'Sleek crown with flowing back tail', defaultColor: '#3b2416', defaultHighlight: '#ec4899', hasTail: true },
-  { id: 'twinTails', label: 'Twin Tails', description: 'Parted bangs with dual animated tails', defaultColor: '#eab308', defaultHighlight: '#ec4899', hasTail: true },
-  { id: 'braids', label: 'Twin Braids', description: 'Woven back braids with colored ties', defaultColor: '#3b2416', defaultHighlight: '#38bdf8', hasTail: true },
+  { id: 'longWavyPart', label: 'Long Wavy Part', description: 'Blocky center-parted waves with optional hibiscus flower', defaultColor: '#dfc099', defaultHighlight: '#f7e5cc', hasTail: true },
+  { id: 'spiky', label: 'Spiky', description: 'Faceted classic blocky spikes', defaultColor: '#3b2416', defaultHighlight: '#f59e0b', hasTail: false },
+  { id: 'swept', label: 'Swept Fringe', description: 'Stepped blocky side-swept bangs & crown', defaultColor: '#181c24', defaultHighlight: '#38bdf8', hasTail: false },
+  { id: 'sidePart', label: 'Neat Part', description: 'Clean faceted parted hair blocks', defaultColor: '#6b3f24', defaultHighlight: '#eab308', hasTail: false },
+  { id: 'undercut', label: 'Undercut', description: 'Angular top crop with tapered fade collar', defaultColor: '#181c24', defaultHighlight: '#a855f7', hasTail: false },
+  { id: 'bob', label: 'Layered Bob', description: 'Chin-length blocky bob with cheek curtains', defaultColor: '#8f3622', defaultHighlight: '#fb923c', hasTail: true },
+  { id: 'curly', label: 'Curly Afro', description: 'Chunky low-poly sculpted curl blocks', defaultColor: '#181c24', defaultHighlight: '#64748b', hasTail: false },
+  { id: 'mohawk', label: 'Punk Mohawk', description: 'Bold central ridge of beveled blades', defaultColor: '#dc2626', defaultHighlight: '#fde047', hasTail: false },
+  { id: 'ponytail', label: 'High Ponytail', description: 'Faceted crown with segmented blocky tail', defaultColor: '#3b2416', defaultHighlight: '#ec4899', hasTail: true },
+  { id: 'twinTails', label: 'Twin Tails', description: 'Parted bangs with dual blocky flared tails', defaultColor: '#eab308', defaultHighlight: '#ec4899', hasTail: true },
+  { id: 'braids', label: 'Twin Braids', description: 'Woven diamond-cut blocky back braids', defaultColor: '#3b2416', defaultHighlight: '#38bdf8', hasTail: true },
 ];
 
 export const HAIR_HIGHLIGHT_PATTERNS: { id: HairHighlightPattern; label: string }[] = [
@@ -722,6 +724,7 @@ export function createDefaultHairConfig(): HairConfig {
     highlightColor: '#f59e0b',
     highlightPattern: 'none',
     volume: 1,
+    flowerAccessory: false,
   };
 }
 
@@ -740,7 +743,10 @@ export function createDefaultClothingConfig(): ClothingConfig {
 
 export function resolveActorHair(actor?: Partial<SceneActorConfig> | null): HairConfig {
   if (actor?.hair) {
-    return { ...actor.hair };
+    return {
+      ...actor.hair,
+      flowerAccessory: Boolean(actor.hair.flowerAccessory),
+    };
   }
   // Graceful legacy migration if an older project used hat === 'spiky'
   if (actor?.ornaments?.hat?.id === 'spiky') {
@@ -750,10 +756,16 @@ export function resolveActorHair(actor?: Partial<SceneActorConfig> | null): Hair
       highlightColor: actor.ornaments.hat.accentColor || '#f59e0b',
       highlightPattern: 'none',
       volume: 1,
+      flowerAccessory: false,
     };
   }
   const bundle = ROBLOX_AVATAR_BUNDLES.find((b) => b.id === actor?.bundleId);
-  if (bundle) return { ...bundle.hair };
+  if (bundle) {
+    return {
+      ...bundle.hair,
+      flowerAccessory: Boolean(bundle.hair.flowerAccessory),
+    };
+  }
   return createDefaultHairConfig();
 }
 

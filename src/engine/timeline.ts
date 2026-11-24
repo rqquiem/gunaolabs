@@ -1901,6 +1901,7 @@ function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
             ? hair.highlightPattern
             : ('none' as const),
           volume: typeof hair.volume === 'number' ? clamp(hair.volume, 0.8, 1.25) : 1,
+          flowerAccessory: Boolean(hair.flowerAccessory),
         }
       : undefined;
 

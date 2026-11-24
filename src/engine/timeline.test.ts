@@ -907,7 +907,8 @@ test('Chapter markers, map cue CRUD, and multi-track ripple shift work cleanly',
 });
 
 test('Wardrobe catalogs, hat-tuck profiles, dual-color ornaments, and outfit presets are complete', () => {
-  assert.ok(HAIR_STYLE_CATALOG.length >= 11);
+  assert.ok(HAIR_STYLE_CATALOG.length >= 12);
+  assert.ok(HAIR_STYLE_CATALOG.some((h) => h.id === 'longWavyPart'));
   assert.equal(HAIR_HIGHLIGHT_PATTERNS.length, 4);
   assert.ok(SHIRT_CATALOG.length >= 11);
   assert.ok(PANT_CATALOG.length >= 8);
@@ -954,15 +955,16 @@ test('Hair framework, layered clothing, legacy spiky-hat migration, and hair sec
   assert.equal(migratedActor.hair?.styleId, 'spiky');
   assert.equal(migratedActor.ornaments?.hat.id, 'none');
 
-  // Custom hair, clothing, and dual-color ornaments survive JSON serialization & clamp volume
+  // Custom hair (including longWavyPart + flowerAccessory), clothing, and dual-color ornaments survive JSON roundtrip
   const styledActor = {
     ...CROSSROADS_SHOWDOWN_PROJECT.actors[0],
     hair: {
-      styleId: 'twinTails' as const,
-      primaryColor: '#ec4899',
-      highlightColor: '#38bdf8',
+      styleId: 'longWavyPart' as const,
+      primaryColor: '#dfc099',
+      highlightColor: '#f7e5cc',
       highlightPattern: 'ombre' as const,
       volume: 1.8, // should clamp to <= 1.25
+      flowerAccessory: true,
     },
     clothing: {
       shirtId: 'hoodie' as const,
@@ -988,7 +990,8 @@ test('Hair framework, layered clothing, legacy spiky-hat migration, and hair sec
     }),
   );
   const roundtrip = parsedStyled.actors[0];
-  assert.equal(roundtrip.hair?.styleId, 'twinTails');
+  assert.equal(roundtrip.hair?.styleId, 'longWavyPart');
+  assert.equal(roundtrip.hair?.flowerAccessory, true);
   assert.equal(roundtrip.hair?.highlightPattern, 'ombre');
   assert.equal(roundtrip.hair?.volume, 1.25);
   assert.equal(roundtrip.clothing?.shirtId, 'hoodie');
