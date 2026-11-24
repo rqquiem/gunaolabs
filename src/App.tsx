@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TopBar } from './components/TopBar';
 import { StudioDock } from './components/StudioDock';
-import { TimelinePanel } from './components/dock/TimelinePanel';
+import { TimelinePanel, SelectedKeyRef } from './components/dock/TimelinePanel';
 import { ScenePanel } from './components/dock/ScenePanel';
 import { CharacterPanel } from './components/dock/CharacterPanel';
 import { CutscenePanel } from './components/dock/CutscenePanel';
@@ -21,28 +21,37 @@ import {
   serializePoseLibrary,
 } from './engine/poseLibrary';
 import {
+  clamp,
   deleteActorKeyframe,
   deleteCameraKeyframe,
+  deleteChapterMarker,
   deleteFaceKeyframe,
   deleteItemKeyframe,
   deleteLightingKeyframe,
+  deleteMapKeyframe,
   deleteStageLight,
   deleteSubtitleCue,
   evaluateActorAt,
   evaluateLightingAt,
   evaluateProceduralClipPose,
+  evaluateStageAt,
+  getChapterBounds,
   moveActorKeyframeTime,
   moveCameraKeyframeTime,
   moveFaceKeyframeTime,
   moveItemKeyframeTime,
   moveLightingKeyframeTime,
+  moveMapKeyframeTime,
   parseProjectJson,
+  rippleShiftProjectFrom,
   serializeProject,
   upsertActorKeyframe,
   upsertCameraKeyframe,
+  upsertChapterMarker,
   upsertFaceKeyframe,
   upsertItemKeyframe,
   upsertLightingKeyframe,
+  upsertMapKeyframe,
   upsertStageLight,
   upsertSubtitleCue,
 } from './engine/timeline';
@@ -79,6 +88,7 @@ import {
   CameraFramingPreset,
   CameraKeyframe,
   CameraMode,
+  ChapterMarker,
   CharacterHeldItems,
   DockTab,
   EasingType,
@@ -478,9 +488,9 @@ export default function App() {
 
   const handleKeyCameraAtCurrentTime = useCallback(() => {
     const pose = engineRef.current?.getOrbitCameraPose() ?? {
-      position: [5, 3, 6] as Vec3Tuple,
+      position: [6.4, 3.8, 8.2] as Vec3Tuple,
       target: [0, 1.3, 0] as Vec3Tuple,
-      fov: 45,
+      fov: 52,
     };
     setProject((prev) =>
       upsertCameraKeyframe(prev, {
@@ -500,7 +510,8 @@ export default function App() {
   }, [currentTime]);
 
   const handleKeyLightingAtCurrentTime = useCallback(() => {
-    const evalLight = evaluateLightingAt(projectRef.current, currentTime);
+    const stage = evaluateStageAt(projectRef.current, currentTime);
+    const evalLight = evaluateLightingAt(projectRef.current, currentTime, stage);
     setProject((prev) =>
       upsertLightingKeyframe(prev, {
         id: `lkf_${Date.now()}`,
@@ -515,6 +526,48 @@ export default function App() {
       }),
     );
   }, [currentTime]);
+
+  const handleKeyMapAtCurrentTime = useCallback(
+    (map: MapDefinition, applyAtmosphere = true) => {
+      const env = map.builtIn && map.builtInSourceId ? map.builtInSourceId : 'custom';
+      const customSnapshot: MapDefinition | undefined =
+        env === 'custom'
+          ? {
+              ...map,
+              builtIn: false,
+              baseplate: { ...map.baseplate },
+              recommendedLighting: { ...map.recommendedLighting },
+              modules: map.modules.map((m) => ({
+                ...m,
+                position: [...m.position] as Vec3Tuple,
+              })),
+            }
+          : undefined;
+      setProject((prev) =>
+        upsertMapKeyframe(prev, {
+          id: `mkf_${Date.now()}`,
+          time: currentTime,
+          environment: env,
+          mapId: map.id,
+          ...(customSnapshot ? { customMap: customSnapshot } : {}),
+          applyAtmosphere,
+          label: map.name,
+        }),
+      );
+    },
+    [currentTime],
+  );
+
+  const handleUpsertChapter = useCallback((chapter: ChapterMarker) => {
+    setProject((prev) => upsertChapterMarker(prev, chapter));
+  }, []);
+
+  const handleRippleShiftFrom = useCallback(
+    (fromTime: number, deltaSec: number) => {
+      setProject((prev) => rippleShiftProjectFrom(prev, fromTime, deltaSec));
+    },
+    [],
+  );
 
   const handleApplyFramingPreset = useCallback(
     (preset: CameraFramingPreset) => {
@@ -1226,15 +1279,7 @@ export default function App() {
   );
 
   const handleUpdateKeyframeEasing = useCallback(
-    (
-      ref:
-        | { kind: 'camera'; keyframeId: string }
-        | { kind: 'lighting'; keyframeId: string }
-        | { kind: 'actor'; actorId: string; keyframeId: string }
-        | { kind: 'face'; actorId: string; keyframeId: string }
-        | { kind: 'item'; actorId: string; keyframeId: string },
-      easing: EasingType,
-    ) => {
+    (ref: SelectedKeyRef, easing: EasingType) => {
       setProject((prev) => {
         if (ref.kind === 'camera') {
           return {
@@ -1267,7 +1312,7 @@ export default function App() {
             ),
           };
         }
-        if (ref.kind === 'item') {
+        if (ref.kind === 'item' || ref.kind === 'map') {
           return prev;
         }
         return {
@@ -1313,7 +1358,10 @@ export default function App() {
     engineRef.current?.setPlaying(false);
     setProject(cloned);
     setCurrentTime(0);
+    setExportOptions((prev) => ({ ...prev, range: undefined }));
+    engineRef.current?.syncProject(cloned);
     engineRef.current?.setTime(0);
+    engineRef.current?.snapOrbitToDirectorCamera();
     setSelectedActorId(cloned.actors[0]?.id ?? null);
     setSelectedMapModuleId(null);
     setJointDraft({});
@@ -1523,10 +1571,45 @@ export default function App() {
   }, [project.id]);
 
   const handleStartExport = useCallback(() => {
-    const totalFrames = Math.max(
-      1,
-      Math.round(Math.max(0.1, project.duration) * exportOptions.fps),
-    );
+    const projDur = Math.max(0.2, project.duration);
+    let resolvedOpts = exportOptions;
+    let startSec = 0;
+    let endSec = projDur;
+
+    if (exportOptions.range?.mode === 'chapter' && exportOptions.range.chapterId) {
+      const bounds = getChapterBounds(
+        project.chapters,
+        exportOptions.range.chapterId,
+        projDur,
+      );
+      if (bounds) {
+        startSec = bounds.startSec;
+        endSec = bounds.endSec;
+        resolvedOpts = {
+          ...exportOptions,
+          range: {
+            mode: 'chapter',
+            chapterId: bounds.chapter.id,
+            startSec,
+            endSec,
+          },
+        };
+      }
+    } else if (exportOptions.range?.mode === 'custom') {
+      startSec = clamp(exportOptions.range.startSec, 0, Math.max(0, projDur - 0.1));
+      endSec = clamp(exportOptions.range.endSec, startSec + 0.1, projDur);
+      resolvedOpts = {
+        ...exportOptions,
+        range: {
+          mode: 'custom',
+          startSec,
+          endSec,
+        },
+      };
+    }
+
+    const clipDuration = Math.max(0.1, endSec - startSec);
+    const totalFrames = Math.max(2, Math.round(clipDuration * exportOptions.fps));
     setIsPlaying(false);
     setRecordingState((prev) => {
       if (prev.blobUrl) URL.revokeObjectURL(prev.blobUrl);
@@ -1534,10 +1617,11 @@ export default function App() {
         status: 'recording',
         progress: 0,
         elapsedSec: 0,
-        durationSec: project.duration,
+        durationSec: clipDuration,
         currentFrame: 0,
         totalFrames,
         encoderBackend: null,
+        streamedBytes: 0,
         blobUrl: null,
         mimeType: null,
         fileExtension: null,
@@ -1546,7 +1630,7 @@ export default function App() {
       };
     });
 
-    engineRef.current?.startMp4Export(exportOptions, {
+    engineRef.current?.startMp4Export(resolvedOpts, {
       onProgress: (info) => {
         setRecordingState((prev) => ({
           ...prev,
@@ -1556,6 +1640,7 @@ export default function App() {
           currentFrame: info.currentFrame,
           totalFrames: info.totalFrames,
           encoderBackend: info.encoderBackend,
+          streamedBytes: info.streamedBytes ?? prev.streamedBytes,
           progress:
             info.totalFrames > 0
               ? Math.min(1, info.currentFrame / info.totalFrames)
@@ -1575,9 +1660,10 @@ export default function App() {
           ...prev,
           status: 'ready',
           progress: 1,
-          elapsedSec: prev.elapsedSec || projectRef.current.duration,
-          durationSec: projectRef.current.duration,
+          elapsedSec: prev.elapsedSec || clipDuration,
+          durationSec: clipDuration,
           encoderBackend: result.encoderBackend,
+          streamedBytes: result.fileSizeBytes,
           blobUrl: result.blobUrl,
           mimeType: result.mimeType,
           fileExtension: result.fileExtension,
@@ -1594,7 +1680,7 @@ export default function App() {
         }));
       },
     });
-  }, [exportOptions, project.duration]);
+  }, [exportOptions, project.chapters, project.duration]);
 
   const handleStopExport = useCallback(() => {
     engineRef.current?.stopMp4Export();
@@ -1610,6 +1696,7 @@ export default function App() {
       elapsedSec: 0,
       currentFrame: 0,
       encoderBackend: null,
+      streamedBytes: 0,
       error: null,
     }));
   }, []);
@@ -1625,6 +1712,7 @@ export default function App() {
         currentFrame: 0,
         totalFrames: Math.round(projectRef.current.duration * exportOptions.fps),
         encoderBackend: null,
+        streamedBytes: 0,
         blobUrl: null,
         mimeType: null,
         fileExtension: null,
@@ -1652,6 +1740,7 @@ export default function App() {
       engineRef.current?.setPlaying(false);
       setProject(parsed);
       setCurrentTime(0);
+      setExportOptions((prev) => ({ ...prev, range: undefined }));
       engineRef.current?.setTime(0);
       setSelectedActorId(parsed.actors[0]?.id ?? null);
       setItemDraft(null);
@@ -1742,6 +1831,8 @@ export default function App() {
             playbackSpeed={playbackSpeed}
             cameraMode={cameraMode}
             selectedActorId={selectedActorId}
+            builtInMaps={BUILT_IN_MAPS}
+            customMaps={customMaps}
             onTogglePlay={handleTogglePlay}
             onSeek={handleSeek}
             onChangeSpeed={(spd) => {
@@ -1758,6 +1849,7 @@ export default function App() {
             onKeyItemAtCurrentTime={() => handleCommitItemKeyframe('equipPop')}
             onKeyCameraAtCurrentTime={handleKeyCameraAtCurrentTime}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
+            onKeyMapAtCurrentTime={handleKeyMapAtCurrentTime}
             onMoveActorKeyframe={(actorId, kfId, newTime) =>
               setProject((p) => moveActorKeyframeTime(p, actorId, kfId, newTime))
             }
@@ -1772,6 +1864,9 @@ export default function App() {
             }
             onMoveLightingKeyframe={(kfId, newTime) =>
               setProject((p) => moveLightingKeyframeTime(p, kfId, newTime))
+            }
+            onMoveMapKeyframe={(kfId, newTime) =>
+              setProject((p) => moveMapKeyframeTime(p, kfId, newTime))
             }
             onUpdateKeyframeEasing={handleUpdateKeyframeEasing}
             onUpdateItemKeyframeCurve={handleUpdateItemKeyframeCurve}
@@ -1790,6 +1885,14 @@ export default function App() {
             onDeleteLightingKeyframe={(kfId) =>
               setProject((p) => deleteLightingKeyframe(p, kfId))
             }
+            onDeleteMapKeyframe={(kfId) =>
+              setProject((p) => deleteMapKeyframe(p, kfId))
+            }
+            onUpsertChapter={handleUpsertChapter}
+            onDeleteChapter={(chId) =>
+              setProject((p) => deleteChapterMarker(p, chId))
+            }
+            onRippleShiftFrom={handleRippleShiftFrom}
           />
         )}
 
@@ -1806,6 +1909,7 @@ export default function App() {
             onUpdateProject={(updater) => setProject(updater)}
             onLoadPreset={handleLoadPreset}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
+            onKeyMapAtCurrentTime={handleKeyMapAtCurrentTime}
             onToggleLightHelpers={() => {
               const next = !showLightHelpers;
               setShowLightHelpers(next);

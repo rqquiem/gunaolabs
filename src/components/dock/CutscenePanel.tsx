@@ -165,6 +165,30 @@ export const CutscenePanel: React.FC<CutscenePanelProps> = ({
               {preset.label}
             </button>
           ))}
+          {activeShot && (
+            <button
+              type="button"
+              onClick={() => {
+                const dx = activeShot.position[0] - activeShot.target[0];
+                const dy = activeShot.position[1] - activeShot.target[1];
+                const dz = activeShot.position[2] - activeShot.target[2];
+                const dist = Math.hypot(dx, dy, dz);
+                const scale = dist > 0.2 ? 1.25 : 1;
+                const nextPos: [number, number, number] = [
+                  Math.round((activeShot.target[0] + dx * scale) * 100) / 100,
+                  Math.round(Math.max(0.6, activeShot.target[1] + dy * scale) * 100) / 100,
+                  Math.round((activeShot.target[2] + dz * scale) * 100) / 100,
+                ];
+                onUpdateCameraKeyframe({
+                  ...activeShot,
+                  position: nextPos,
+                });
+              }}
+              className="px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-[#38bdf8] hover:border-[#00a2ff] hover:text-white transition-colors whitespace-nowrap shrink-0"
+            >
+              Zoom Out +25%
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
@@ -276,13 +300,13 @@ export const CutscenePanel: React.FC<CutscenePanelProps> = ({
                 <input
                   type="number"
                   min={20}
-                  max={85}
+                  max={90}
                   aria-label={`Shot ${activeShotIndex + 1} FOV`}
                   value={activeShot.fov}
                   onChange={(e) =>
                     onUpdateCameraKeyframe({
                       ...activeShot,
-                      fov: Math.max(20, Math.min(85, Number(e.target.value) || 45)),
+                      fov: Math.max(20, Math.min(90, Number(e.target.value) || 52)),
                     })
                   }
                   className="w-full px-1.5 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-slate-200 font-mono-tabular"

@@ -22,12 +22,14 @@ import {
   AnimationProject,
   CameraFramingPreset,
   CameraMode,
+  EnvironmentId,
   EvaluatedFaceState,
   EvaluatedFrame,
   EvaluatedHeldItems,
   EvaluatedPose,
   GizmoMode,
   LightingMood,
+  MapDefinition,
   SceneActorConfig,
   StageLightConfig,
   Vec3Tuple,
@@ -75,6 +77,13 @@ const _quatA = new THREE.Quaternion();
 const _raycaster = new THREE.Raycaster();
 const _pointer = new THREE.Vector2();
 
+function computeResponsiveFov(baseFov: number, aspect: number): number {
+  const safeAspect = Math.max(0.55, aspect);
+  // Keep horizontal framing generous in narrower/square viewports while matching authored 16:9 FOV 1:1
+  const comp = clamp(Math.pow(1.6 / safeAspect, 0.62), 1.0, 1.52);
+  return clamp(baseFov * comp, 20, 82);
+}
+
 export function detectSoftwareWebGL(): boolean {
   try {
     const canvas = document.createElement('canvas');
@@ -112,6 +121,7 @@ export class StageEngine {
   private skyboxTex: THREE.CubeTexture | null = null;
   private currentSkyKey = '';
   private envGroup: THREE.Group | null = null;
+  private envCache = new Map<string, THREE.Group>();
   private currentEnvSignature = '';
   private selectedMapModuleId: string | null = null;
 
@@ -122,6 +132,7 @@ export class StageEngine {
   private isPlaying = false;
   private playbackSpeed = 1;
   private cameraMode: CameraMode = 'orbit';
+  private orbitBaseFov = 52;
   private showCameraRig = true;
   private showLightHelpers = true;
   private selectedActorId: string | null = null;
@@ -192,10 +203,21 @@ export class StageEngine {
     );
 
     // Cameras
-    this.orbitCamera = new THREE.PerspectiveCamera(45, width / height, 0.1, 160);
-    this.orbitCamera.position.set(5.4, 3.4, 6.8);
+    const initialAspect = width / height;
+    this.orbitCamera = new THREE.PerspectiveCamera(
+      computeResponsiveFov(this.orbitBaseFov, initialAspect),
+      initialAspect,
+      0.1,
+      160,
+    );
+    this.orbitCamera.position.set(6.4, 3.8, 8.2);
 
-    this.directorCamera = new THREE.PerspectiveCamera(44, width / height, 0.25, 80);
+    this.directorCamera = new THREE.PerspectiveCamera(
+      computeResponsiveFov(52, initialAspect),
+      initialAspect,
+      0.25,
+      80,
+    );
     this.scene.add(this.directorCamera);
 
     this.cameraHelper = new THREE.CameraHelper(this.directorCamera);
@@ -306,9 +328,11 @@ export class StageEngine {
     const height = Math.max(this.container.clientHeight, 240);
     const aspect = width / height;
     this.orbitCamera.aspect = aspect;
-    this.orbitCamera.fov = aspect < 0.85 ? 58 : 45;
+    this.orbitCamera.fov = computeResponsiveFov(this.orbitBaseFov, aspect);
     this.orbitCamera.updateProjectionMatrix();
     this.directorCamera.aspect = aspect;
+    const baseDirectorFov = this.lastEvaluatedFrame?.camera.fov ?? 52;
+    this.directorCamera.fov = computeResponsiveFov(baseDirectorFov, aspect);
     this.directorCamera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
     this.requestRender();
@@ -347,52 +371,105 @@ export class StageEngine {
     }
   };
 
-  public syncProject(project: AnimationProject) {
-    this.project = project;
-
-    // 1. Classic Roblox Skybox & Lighting
-    const moodSpec = getRobloxLightingSpec(project.lightingMood, project.environment);
-    const skyKey = `${project.lightingMood}:${project.environment}`;
+  private applyStageAppearance(
+    env: EnvironmentId,
+    customMap: MapDefinition | undefined,
+    mood: LightingMood,
+    forceCustomRebuild = false,
+  ) {
+    // 1. Skybox & Fog
+    const moodSpec = getRobloxLightingSpec(mood, env);
+    const skyKey = `${mood}:${env}`;
     if (this.currentSkyKey !== skyKey) {
       this.skyboxTex?.dispose();
-      this.skyboxTex = createClassicSkyboxCubeTexture(
-        project.lightingMood as LightingMood,
-        project.environment,
-      );
+      this.skyboxTex = createClassicSkyboxCubeTexture(mood, env);
       this.scene.background = this.skyboxTex;
       this.currentSkyKey = skyKey;
     }
     this.scene.fog = new THREE.FogExp2(moodSpec.fogColor, moodSpec.fogDensity);
-    this.renderer.toneMappingExposure = moodSpec.exposure;
 
-    this.keyLight.color.setHex(moodSpec.keyColor);
-    this.keyLight.intensity = project.keyIntensity;
-    this.rimLight.color.setHex(moodSpec.rimColor);
-    this.rimLight.intensity = project.rimIntensity;
-    this.hemiLight.color.setHex(moodSpec.hemiSky);
-    this.hemiLight.groundColor.setHex(moodSpec.hemiGround);
-    this.hemiLight.intensity = project.ambientIntensity;
+    // 2. Environment & Custom Modular Maps with bounded LRU cache for instant mid-scene switching
+    const nextEnvSignature = getActiveMapSignature(env, customMap);
+    if (forceCustomRebuild && env === 'custom' && this.envCache.has(nextEnvSignature)) {
+      const stale = this.envCache.get(nextEnvSignature)!;
+      if (stale === this.envGroup) {
+        this.scene.remove(stale);
+        this.envGroup = null;
+      }
+      this.disposeObject3D(stale);
+      this.envCache.delete(nextEnvSignature);
+      this.currentEnvSignature = '';
+    }
 
-    // 2. Environment & Custom Modular Maps
-    const nextEnvSignature = getActiveMapSignature(
-      project.environment,
-      project.customMap,
-    );
     if (this.currentEnvSignature !== nextEnvSignature) {
       if (this.envGroup) {
+        this.envGroup.visible = false;
         this.scene.remove(this.envGroup);
-        this.disposeObject3D(this.envGroup);
       }
-      this.envGroup = buildRobloxEnvironmentGroup(
-        project.environment,
-        this.renderer.capabilities.getMaxAnisotropy(),
-        this.studTextures,
-        project.customMap,
-        this.getVisibleMapModuleId(),
-      );
-      this.scene.add(this.envGroup);
+
+      let targetGroup = this.envCache.get(nextEnvSignature);
+      if (targetGroup) {
+        // Refresh insertion order for LRU cache
+        this.envCache.delete(nextEnvSignature);
+        this.envCache.set(nextEnvSignature, targetGroup);
+      } else {
+        targetGroup = buildRobloxEnvironmentGroup(
+          env,
+          this.renderer.capabilities.getMaxAnisotropy(),
+          this.studTextures,
+          customMap,
+          this.getVisibleMapModuleId(),
+        );
+        this.envCache.set(nextEnvSignature, targetGroup);
+        // Evict oldest cached environments if cache exceeds 6 stages
+        while (this.envCache.size > 6) {
+          const oldestKey = this.envCache.keys().next().value;
+          if (!oldestKey || oldestKey === nextEnvSignature) break;
+          const evicted = this.envCache.get(oldestKey);
+          this.envCache.delete(oldestKey);
+          if (evicted) {
+            if (evicted === this.envGroup) {
+              this.scene.remove(evicted);
+              this.envGroup = null;
+            }
+            this.disposeObject3D(evicted);
+          }
+        }
+      }
+
+      targetGroup.visible = true;
+      this.scene.add(targetGroup);
+      this.envGroup = targetGroup;
       this.currentEnvSignature = nextEnvSignature;
+      this.updateMapModuleSelectionRings();
     }
+  }
+
+  public syncProject(project: AnimationProject) {
+    this.project = project;
+
+    // 1. Evaluate active stage at currentTime for Skybox, Fog, and Map geometry
+    const preFrame = evaluateProjectAt(project, this.currentTime);
+    const activeStage = preFrame.stage;
+    const moodSpec = getRobloxLightingSpec(
+      activeStage.lightingMood,
+      activeStage.environment,
+    );
+    this.applyStageAppearance(
+      activeStage.environment,
+      activeStage.customMap,
+      activeStage.lightingMood,
+      false,
+    );
+    this.renderer.toneMappingExposure = preFrame.lighting.exposure ?? moodSpec.exposure;
+
+    this.keyLight.color.setHex(moodSpec.keyColor);
+    this.keyLight.intensity = preFrame.lighting.keyIntensity;
+    this.rimLight.color.setHex(moodSpec.rimColor);
+    this.rimLight.intensity = preFrame.lighting.rimIntensity;
+    this.hemiLight.color.setHex(moodSpec.hemiSky);
+    this.hemiLight.groundColor.setHex(moodSpec.hemiGround);
+    this.hemiLight.intensity = preFrame.lighting.ambientIntensity;
 
     // 3. Actors diff
     const nextIds = new Set(project.actors.map((a) => a.id));
@@ -646,7 +723,7 @@ export class StageEngine {
     }
 
     const samples: THREE.Vector3[] = [];
-    const steps = 80;
+    const steps = clamp(Math.round(this.project.duration * 1.5), 80, 180);
     for (let i = 0; i <= steps; i++) {
       const t = (i / steps) * this.project.duration;
       const frame = evaluateProjectAt(this.project, t);
@@ -870,6 +947,12 @@ export class StageEngine {
       frame.camera.target[1],
       frame.camera.target[2],
     );
+    this.orbitBaseFov = frame.camera.fov;
+    this.orbitCamera.fov = computeResponsiveFov(
+      this.orbitBaseFov,
+      this.orbitCamera.aspect,
+    );
+    this.orbitCamera.updateProjectionMatrix();
     this.orbitControls.update();
     this.requestRender();
   }
@@ -888,35 +971,35 @@ export class StageEngine {
 
     let position: Vec3Tuple;
     let target: Vec3Tuple;
-    let fov = 45;
+    let fov = 52;
 
     switch (preset) {
       case 'closeUp': {
         position = [
-          round2(primaryPos[0] + 0.65),
-          round2(primaryPos[1] + 1.65),
-          round2(primaryPos[2] + 2.05),
+          round2(primaryPos[0] + 0.95),
+          round2(primaryPos[1] + 1.8),
+          round2(primaryPos[2] + 3.2),
         ];
         target = [
           round2(primaryPos[0]),
-          round2(primaryPos[1] + 1.48),
+          round2(primaryPos[1] + 1.55),
           round2(primaryPos[2]),
         ];
-        fov = 36;
+        fov = 46;
         break;
       }
       case 'lowAngle': {
         position = [
-          round2(primaryPos[0] - 1.35),
-          round2(primaryPos[1] + 0.48),
-          round2(primaryPos[2] + 2.35),
+          round2(primaryPos[0] - 2.1),
+          round2(primaryPos[1] + 0.7),
+          round2(primaryPos[2] + 4.1),
         ];
         target = [
           round2(primaryPos[0]),
-          round2(primaryPos[1] + 1.42),
+          round2(primaryPos[1] + 1.35),
           round2(primaryPos[2]),
         ];
-        fov = 48;
+        fov = 52;
         break;
       }
       case 'twoShot': {
@@ -927,22 +1010,30 @@ export class StageEngine {
         const cx = (primaryPos[0] + secondPos[0]) * 0.5;
         const cy = (primaryPos[1] + secondPos[1]) * 0.5;
         const cz = (primaryPos[2] + secondPos[2]) * 0.5;
-        position = [round2(cx + 0.4), round2(cy + 2.0), round2(cz + 4.4)];
+        const span = Math.hypot(
+          secondPos[0] - primaryPos[0],
+          secondPos[2] - primaryPos[2],
+        );
+        const dist = Math.max(6.4, round2(span * 1.35 + 3.8));
+        position = [round2(cx + 0.65), round2(cy + 2.45), round2(cz + dist)];
         target = [round2(cx), round2(cy + 1.35), round2(cz)];
-        fov = 44;
+        fov = 52;
         break;
       }
       case 'wide':
       default: {
-        position = [0, 3.6, 8.2];
-        target = [0, 1.3, 0];
-        fov = 46;
+        position = [0, 4.2, 10.2];
+        target = [0, 1.35, 0];
+        fov = 54;
         break;
       }
     }
 
     this.orbitCamera.position.set(position[0], position[1], position[2]);
     this.orbitControls.target.set(target[0], target[1], target[2]);
+    this.orbitBaseFov = fov;
+    this.orbitCamera.fov = computeResponsiveFov(fov, this.orbitCamera.aspect);
+    this.orbitCamera.updateProjectionMatrix();
     this.orbitControls.update();
     this.requestRender();
     return { position, target, fov };
@@ -954,7 +1045,7 @@ export class StageEngine {
     return {
       position: [round2(p.x), round2(p.y), round2(p.z)],
       target: [round2(t.x), round2(t.y), round2(t.z)],
-      fov: Math.round(this.orbitCamera.fov),
+      fov: Math.round(this.orbitBaseFov),
     };
   }
 
@@ -1050,10 +1141,10 @@ export class StageEngine {
     if (frame.camera.rollRad !== 0) {
       this.directorCamera.rotateZ(frame.camera.rollRad);
     }
-    const targetFov =
-      this.directorCamera.aspect < 0.85
-        ? Math.min(78, frame.camera.fov * 1.32)
-        : frame.camera.fov;
+    const targetFov = computeResponsiveFov(
+      frame.camera.fov,
+      this.directorCamera.aspect,
+    );
     if (Math.abs(this.directorCamera.fov - targetFov) > 0.05) {
       this.directorCamera.fov = targetFov;
       this.directorCamera.updateProjectionMatrix();
@@ -1123,10 +1214,17 @@ export class StageEngine {
       managed.rig.applyFaceState(activeFace, gazeOverride);
     }
 
+    // Hot-swap map/skybox cleanly if timeline crosses a Stage/Map cue
+    this.applyStageAppearance(
+      frame.stage.environment,
+      frame.stage.customMap,
+      frame.stage.lightingMood,
+    );
+
     // Apply keyframeable global lighting & sun orbit
     const moodSpec = getRobloxLightingSpec(
-      this.project.lightingMood,
-      this.project.environment,
+      frame.stage.lightingMood,
+      frame.stage.environment,
     );
     const az = degToRad(frame.lighting.sunAzimuth);
     const el = degToRad(Math.max(5, Math.min(89, frame.lighting.sunElevation)));
@@ -1143,7 +1241,10 @@ export class StageEngine {
       this.keyLight.color.setHex(moodSpec.keyColor);
     }
     this.keyLight.intensity = frame.lighting.keyIntensity;
+    this.rimLight.color.setHex(moodSpec.rimColor);
     this.rimLight.intensity = frame.lighting.rimIntensity;
+    this.hemiLight.color.setHex(moodSpec.hemiSky);
+    this.hemiLight.groundColor.setHex(moodSpec.hemiGround);
     this.hemiLight.intensity = frame.lighting.ambientIntensity;
     this.renderer.toneMappingExposure = frame.lighting.exposure;
 
@@ -1273,6 +1374,7 @@ export class StageEngine {
         currentFrame: number;
         totalFrames: number;
         encoderBackend: VideoEncoderBackend;
+        streamedBytes?: number;
       }) => void;
       onFinalizing: (encoderBackend: VideoEncoderBackend) => void;
       onComplete: (result: VideoRecordedResult) => void;
@@ -1296,6 +1398,7 @@ export class StageEngine {
         currentFrame: number;
         totalFrames: number;
         encoderBackend: VideoEncoderBackend;
+        streamedBytes?: number;
       }) => void;
       onFinalizing: (encoderBackend: VideoEncoderBackend) => void;
       onComplete: (result: VideoRecordedResult) => void;
@@ -1314,6 +1417,7 @@ export class StageEngine {
     clearTimeout(this.frameId);
     this.poseOverride = null;
     this.faceOverride = null;
+    this.itemOverride = null;
     this.cameraMode = 'director';
     this.orbitControls.enabled = false;
     this.transformControls.detach();
@@ -1336,9 +1440,19 @@ export class StageEngine {
       this.directorCamera.aspect = targetDims.width / targetDims.height;
       this.directorCamera.updateProjectionMatrix();
 
+      const projectDur = Math.max(0.1, this.project.duration);
+      const startSec = options.range
+        ? clamp(options.range.startSec, 0, Math.max(0, projectDur - 0.1))
+        : 0;
+      const endSec = options.range
+        ? clamp(options.range.endSec, startSec + 0.1, projectDur)
+        : projectDur;
+      const clipDuration = Math.max(0.1, endSec - startSec);
+
       recorder = await Mp4CutsceneRecorder.create(
         this.renderer.domElement,
         options,
+        clipDuration,
       );
       this.mp4Recorder = recorder;
 
@@ -1348,8 +1462,7 @@ export class StageEngine {
       }
 
       const fps = options.fps;
-      const duration = Math.max(0.1, this.project.duration);
-      const totalFrames = Math.max(2, Math.round(duration * fps));
+      const totalFrames = Math.max(2, Math.round(clipDuration * fps));
       const frameDurationSec = 1 / fps;
       const keyIntervalFrames = fps * 2;
       const gl = this.renderer.getContext();
@@ -1362,7 +1475,8 @@ export class StageEngine {
           break;
         }
 
-        const t = Math.min(duration, frameIdx * frameDurationSec);
+        const outTimestampSec = frameIdx * frameDurationSec;
+        const t = Math.min(endSec, startSec + outTimestampSec);
         this.currentTime = t;
         this.evaluateAndApply(t);
         this.renderer.render(this.scene, this.directorCamera);
@@ -1372,17 +1486,18 @@ export class StageEngine {
         await recorder.addFrame(
           this.renderer.domElement,
           sub ? { speaker: sub.speaker, text: sub.text } : null,
-          frameIdx * frameDurationSec,
+          outTimestampSec,
           frameDurationSec,
           frameIdx % keyIntervalFrames === 0,
         );
 
         callbacks.onProgress({
-          elapsedSec: Math.min(duration, (frameIdx + 1) * frameDurationSec),
-          durationSec: duration,
+          elapsedSec: Math.min(clipDuration, (frameIdx + 1) * frameDurationSec),
+          durationSec: clipDuration,
           currentFrame: frameIdx + 1,
           totalFrames,
           encoderBackend: recorder.backend,
+          streamedBytes: recorder.getStreamedBytes(),
         });
 
         // Yield to keep UI controls (Stop Early / Cancel) and progress bar responsive
@@ -1484,7 +1599,12 @@ export class StageEngine {
       this.disposeObject3D(l.fixtureGroup);
       l.light.dispose();
     });
-    if (this.envGroup) this.disposeObject3D(this.envGroup);
+    this.envCache.forEach((group) => {
+      this.scene.remove(group);
+      this.disposeObject3D(group);
+    });
+    this.envCache.clear();
+    this.envGroup = null;
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode === this.container) {
       this.container.removeChild(this.renderer.domElement);

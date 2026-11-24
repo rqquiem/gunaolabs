@@ -1,4 +1,5 @@
 import {
+  AppendOnlyStreamTarget,
   BufferTarget,
   CanvasSource,
   Mp4OutputFormat,
@@ -18,6 +19,7 @@ export interface VideoRecordedResult {
   fileExtension: 'mp4';
   fileSizeBytes: number;
   encoderBackend: VideoEncoderBackend;
+  isFragmentedStream?: boolean;
 }
 
 export interface ExportDimensions {
@@ -282,6 +284,7 @@ export class Mp4CutsceneRecorder {
   public readonly width: number;
   public readonly height: number;
   public readonly backend: VideoEncoderBackend;
+  public readonly isStreamingFragmented: boolean;
 
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -289,9 +292,11 @@ export class Mp4CutsceneRecorder {
   private disposed = false;
   private submittedFrames = 0;
   private encodedPackets = 0;
+  private streamedBytes = 0;
+  private streamedParts: Uint8Array<ArrayBuffer>[] = [];
 
   // Primary: Mediabunny WebCodecs pipeline
-  private output: Output<Mp4OutputFormat, BufferTarget> | null = null;
+  private output: Output<Mp4OutputFormat, BufferTarget | AppendOnlyStreamTarget> | null = null;
   private canvasSource: CanvasSource | null = null;
 
   // Fallback: MediaRecorder MP4-only pipeline
@@ -310,6 +315,7 @@ export class Mp4CutsceneRecorder {
     options: VideoExportOptions,
     canvas: HTMLCanvasElement,
     ctx: CanvasRenderingContext2D,
+    isStreamingFragmented: boolean,
   ) {
     this.width = width;
     this.height = height;
@@ -317,17 +323,27 @@ export class Mp4CutsceneRecorder {
     this.options = options;
     this.canvas = canvas;
     this.ctx = ctx;
+    this.isStreamingFragmented = isStreamingFragmented;
+  }
+
+  public getStreamedBytes(): number {
+    return this.streamedBytes;
   }
 
   public static async create(
     sourceCanvas: HTMLCanvasElement,
     options: VideoExportOptions,
+    estimatedDurationSec = 0,
   ): Promise<Mp4CutsceneRecorder> {
     const { width, height } = resolveExportDimensions(
       sourceCanvas,
       options.resolution,
     );
     const bitrateBps = options.bitrateMbps * 1_000_000;
+    const useStreaming =
+      typeof options.streamingMode === 'boolean'
+        ? options.streamingMode
+        : estimatedDurationSec > 45;
 
     // Attach hidden compositing canvas inside viewport bounds so Chromium compositor & captureStream never occlude updates
     const canvas = document.createElement('canvas');
@@ -365,6 +381,7 @@ export class Mp4CutsceneRecorder {
         options,
         canvas,
         ctx,
+        useStreaming,
       );
       try {
         await recorder.initWebCodecsPipeline(profile);
@@ -394,6 +411,7 @@ export class Mp4CutsceneRecorder {
       options,
       canvas,
       ctx,
+      false,
     );
     try {
       recorder.initMediaRecorderMp4Fallback(mp4Mime, bitrateBps);
@@ -405,9 +423,30 @@ export class Mp4CutsceneRecorder {
   }
 
   private async initWebCodecsPipeline(profile: WebCodecsEncoderProfile) {
-    const target = new BufferTarget();
-    const format = new Mp4OutputFormat({ fastStart: 'in-memory' });
-    this.output = new Output({ format, target });
+    this.streamedBytes = 0;
+    this.streamedParts = [];
+
+    if (this.isStreamingFragmented) {
+      const writable = new WritableStream<Uint8Array>({
+        write: (chunk) => {
+          if (this.disposed || chunk.byteLength === 0) return;
+          const copy = new Uint8Array(new ArrayBuffer(chunk.byteLength));
+          copy.set(chunk);
+          this.streamedParts.push(copy);
+          this.streamedBytes += copy.byteLength;
+        },
+      });
+      const target = new AppendOnlyStreamTarget(writable);
+      const format = new Mp4OutputFormat({
+        fastStart: 'fragmented',
+        minimumFragmentDuration: 2,
+      });
+      this.output = new Output({ format, target });
+    } else {
+      const target = new BufferTarget();
+      const format = new Mp4OutputFormat({ fastStart: 'in-memory' });
+      this.output = new Output({ format, target });
+    }
 
     this.canvasSource = new CanvasSource(this.canvas, {
       codec: 'avc',
@@ -651,27 +690,43 @@ export class Mp4CutsceneRecorder {
       try {
         this.canvasSource?.close();
         await this.output.finalize();
-        const buffer = this.output.target.buffer;
-        if (!buffer || buffer.byteLength === 0) {
-          throw new Error('MP4 muxer produced an empty buffer.');
-        }
+
         if (this.submittedFrames > 1 && this.encodedPackets < 2) {
           throw new Error(
             'H.264 encoder stalled after the first frame. Try lowering resolution or quality and export again.',
           );
         }
+
         const mimeType = await this.output
           .getMimeType()
           .catch(() => 'video/mp4');
-        const blob = new Blob([buffer], { type: 'video/mp4' });
+
+        let blob: Blob;
+        if (this.isStreamingFragmented) {
+          if (this.streamedParts.length === 0 || this.streamedBytes === 0) {
+            throw new Error('Streaming fMP4 muxer produced zero bytes.');
+          }
+          blob = new Blob(this.streamedParts, { type: 'video/mp4' });
+          this.streamedParts = [];
+        } else {
+          const target = this.output.target as BufferTarget;
+          const buffer = target.buffer;
+          if (!buffer || buffer.byteLength === 0) {
+            throw new Error('MP4 muxer produced an empty buffer.');
+          }
+          blob = new Blob([buffer], { type: 'video/mp4' });
+        }
+
         return {
           blobUrl: URL.createObjectURL(blob),
           mimeType: mimeType || 'video/mp4',
           fileExtension: 'mp4',
           fileSizeBytes: blob.size,
           encoderBackend: 'webcodecs',
+          isFragmentedStream: this.isStreamingFragmented,
         };
       } finally {
+        this.streamedParts = [];
         this.detachCanvas();
       }
     }
@@ -689,6 +744,7 @@ export class Mp4CutsceneRecorder {
 
   public async cancel(): Promise<void> {
     this.disposed = true;
+    this.streamedParts = [];
     if (this.backend === 'webcodecs' && this.output) {
       try {
         this.canvasSource?.close();

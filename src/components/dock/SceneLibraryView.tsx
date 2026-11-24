@@ -8,6 +8,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { getActiveMapLabel } from '../../engine/mapLibrary';
+import { formatTimecode } from '../../engine/timeline';
 import {
   AnimationProject,
   SCENE_CATEGORIES,
@@ -195,8 +196,14 @@ export const SceneLibraryView: React.FC<SceneLibraryViewProps> = ({
                       </span>
                     </div>
                     <div className="text-[10px] text-slate-400 truncate">
-                      {SCENE_CATEGORY_LABELS[scene.category]} · {scene.project.duration}s ·{' '}
-                      {actorsCount} actors · {shotsCount} shots
+                      {SCENE_CATEGORY_LABELS[scene.category]} ·{' '}
+                      {scene.project.duration >= 60
+                        ? formatTimecode(scene.project.duration).slice(0, 5)
+                        : `${scene.project.duration}s`}{' '}
+                      · {actorsCount} actors · {shotsCount} shots
+                      {scene.project.chapters && scene.project.chapters.length > 0
+                        ? ` · ${scene.project.chapters.length} ch`
+                        : ''}
                     </div>
                     <div className="text-[10px] text-slate-500 truncate">
                       Map: {mapLabel}

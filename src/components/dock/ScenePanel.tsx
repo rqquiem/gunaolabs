@@ -11,10 +11,12 @@ import {
   Trash2,
 } from 'lucide-react';
 import { getActiveMapLabel } from '../../engine/mapLibrary';
-import { evaluateLightingAt, formatTimecode } from '../../engine/timeline';
+import { evaluateLightingAt, evaluateStageAt, formatTimecode } from '../../engine/timeline';
 import {
   AnimationProject,
   LightingMood,
+  MAX_SCENE_DURATION,
+  MIN_SCENE_DURATION,
   MapDefinition,
   SceneCategory,
   SceneLibraryEntry,
@@ -39,6 +41,7 @@ interface ScenePanelProps {
   onUpdateProject: (updater: (prev: AnimationProject) => AnimationProject) => void;
   onLoadPreset: (preset: AnimationProject) => void;
   onKeyLightingAtCurrentTime: () => void;
+  onKeyMapAtCurrentTime?: (map: MapDefinition, applyAtmosphere: boolean) => void;
   onToggleLightHelpers: () => void;
   onUpsertStageLight: (light: StageLightConfig) => void;
   onDeleteStageLight: (lightId: string) => void;
@@ -66,6 +69,14 @@ const MOODS: { id: LightingMood; label: string }[] = [
   { id: 'overcast', label: 'Cloudy Day' },
 ];
 
+const DURATION_PRESETS: { label: string; sec: number }[] = [
+  { label: '15s', sec: 15 },
+  { label: '3m', sec: 180 },
+  { label: '5m', sec: 300 },
+  { label: '8m', sec: 480 },
+  { label: '10m', sec: 600 },
+];
+
 export const ScenePanel: React.FC<ScenePanelProps> = ({
   project,
   currentTime,
@@ -78,6 +89,7 @@ export const ScenePanel: React.FC<ScenePanelProps> = ({
   onUpdateProject,
   onLoadPreset,
   onKeyLightingAtCurrentTime,
+  onKeyMapAtCurrentTime,
   onToggleLightHelpers,
   onUpsertStageLight,
   onDeleteStageLight,
@@ -100,9 +112,10 @@ export const ScenePanel: React.FC<ScenePanelProps> = ({
   const [subTab, setSubTab] = useState<SceneSubTab>('maps');
   const [applyAtmosphere, setApplyAtmosphere] = useState(true);
 
-  const evalLight = evaluateLightingAt(project, currentTime);
+  const evalStage = evaluateStageAt(project, currentTime);
+  const evalLight = evaluateLightingAt(project, currentTime, evalStage);
   const stageLights = project.stageLights ?? [];
-  const activeMapLabel = getActiveMapLabel(project);
+  const activeMapLabel = evalStage.label || getActiveMapLabel(project);
 
   const handleChangeSubTab = (next: SceneSubTab) => {
     setSubTab(next);
@@ -201,27 +214,60 @@ export const ScenePanel: React.FC<ScenePanelProps> = ({
           })}
         </div>
 
-        <div className="flex items-center gap-3 text-xs shrink-0">
-          <span className="hidden sm:inline text-slate-400 truncate max-w-[260px]">
+        <div className="flex flex-wrap items-center gap-2 text-xs shrink-0">
+          <span className="hidden lg:inline text-slate-400 truncate max-w-[210px]">
             Stage: <strong className="text-slate-200 font-medium">{activeMapLabel}</strong>
           </span>
+          {onKeyMapAtCurrentTime && (
+            <button
+              type="button"
+              onClick={() => onKeyMapAtCurrentTime(activeBuiltInOrCustomMap, applyAtmosphere)}
+              title="Cue current active map on the Stage/Map timeline track at the playhead"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-slate-100 hover:bg-[#363a43] whitespace-nowrap shrink-0"
+            >
+              <Plus className="w-3 h-3 text-orange-400" aria-hidden="true" />
+              <span>Key Map ({formatTimecode(currentTime)})</span>
+            </button>
+          )}
+          <div className="flex items-center gap-1">
+            {DURATION_PRESETS.map((preset) => (
+              <button
+                key={preset.sec}
+                type="button"
+                onClick={() => onUpdateProject((p) => ({ ...p, duration: preset.sec }))}
+                className={`px-1.5 py-0.5 rounded text-[11px] font-mono-tabular border transition-colors whitespace-nowrap shrink-0 ${
+                  Math.abs(project.duration - preset.sec) < 0.1
+                    ? 'bg-[#00a2ff]/20 border-[#00a2ff] text-[#38bdf8]'
+                    : 'bg-[#14161a] border-[#393d47] text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-1.5">
             <label htmlFor="scene-duration" className="text-slate-400 shrink-0">
-              Duration (s)
+              Length
             </label>
             <input
               id="scene-duration"
               type="number"
-              min={2}
-              max={60}
+              min={MIN_SCENE_DURATION}
+              max={MAX_SCENE_DURATION}
               step={1}
-              value={project.duration}
+              value={Math.round(project.duration)}
               onChange={(e) => {
-                const val = Math.max(2, Math.min(60, Number(e.target.value) || 8));
+                const raw = Number(e.target.value);
+                const val = Number.isFinite(raw)
+                  ? Math.max(MIN_SCENE_DURATION, Math.min(MAX_SCENE_DURATION, raw))
+                  : 8;
                 onUpdateProject((p) => ({ ...p, duration: val }));
               }}
               className="w-16 px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-xs font-mono-tabular text-slate-100"
             />
+            <span className="text-[11px] font-mono-tabular text-slate-500 whitespace-nowrap">
+              {formatTimecode(project.duration)}
+            </span>
           </div>
         </div>
       </div>

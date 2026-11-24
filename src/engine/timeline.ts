@@ -7,11 +7,18 @@ import {
   isValidItemId,
   isValidPropKind,
 } from './itemCatalog';
-import { isBuiltInMapId, sanitizeMapDefinition } from './mapLibrary';
+import {
+  getActiveMapLabel,
+  getBuiltInMapByEnv,
+  isBuiltInMapId,
+  sanitizeMapDefinition,
+} from './mapLibrary';
 import {
   ActorKeyframe,
   AnimationProject,
+  CHAPTER_COLORS,
   CameraKeyframe,
+  ChapterMarker,
   CharacterHeldItems,
   EasingType,
   EnvironmentId,
@@ -22,10 +29,14 @@ import {
   EvaluatedHeldItems,
   EvaluatedLightingState,
   EvaluatedPose,
+  EvaluatedStageState,
   FaceKeyframe,
   HeldHandItemState,
   HeldItemKeyframe,
   LightingKeyframe,
+  MAX_SCENE_DURATION,
+  MIN_SCENE_DURATION,
+  MapKeyframe,
   PoseClipId,
   R6_BODY_PARTS,
   R6BodyPartId,
@@ -816,9 +827,9 @@ export function evaluateCameraAt(
   const sorted = sortByTime(cameraTrack);
   if (sorted.length === 0) {
     return {
-      position: [6, 3.8, 8],
+      position: [6.4, 3.8, 8.2],
       target: [0, 1.3, 0],
-      fov: 45,
+      fov: 52,
       rollRad: 0,
       shakeOffset: [0, 0, 0],
     };
@@ -926,17 +937,72 @@ export function evaluateCameraAt(
   };
 }
 
+export function evaluateStageAt(
+  project: AnimationProject,
+  time: number,
+): EvaluatedStageState {
+  const baseLabel = getActiveMapLabel(project);
+  const track = project.mapTrack;
+  if (!track || track.length === 0) {
+    return {
+      environment: project.environment,
+      mapId: project.mapId,
+      customMap: project.customMap,
+      lightingMood: project.lightingMood,
+      label: baseLabel,
+    };
+  }
+
+  const sorted = sortByTime(track);
+  let activeCue: MapKeyframe | null = null;
+  for (const kf of sorted) {
+    if (kf.time <= time + 0.0005) {
+      activeCue = kf;
+    } else {
+      break;
+    }
+  }
+
+  if (!activeCue) {
+    return {
+      environment: project.environment,
+      mapId: project.mapId,
+      customMap: project.customMap,
+      lightingMood: project.lightingMood,
+      label: baseLabel,
+    };
+  }
+
+  const rec =
+    activeCue.environment === 'custom' && activeCue.customMap
+      ? activeCue.customMap.recommendedLighting
+      : activeCue.environment !== 'custom'
+        ? getBuiltInMapByEnv(activeCue.environment).recommendedLighting
+        : undefined;
+
+  return {
+    environment: activeCue.environment,
+    mapId: activeCue.mapId,
+    customMap: activeCue.customMap,
+    lightingMood: activeCue.applyAtmosphere && rec ? rec.mood : project.lightingMood,
+    recommendedLighting: activeCue.applyAtmosphere ? rec : undefined,
+    label: activeCue.label,
+  };
+}
+
 export function evaluateLightingAt(
   project: AnimationProject,
   time: number,
+  stage?: EvaluatedStageState,
 ): EvaluatedLightingState {
+  const rec = stage?.recommendedLighting;
   const baseState: EvaluatedLightingState = {
-    sunAzimuth: project.sunAzimuth ?? 42,
-    sunElevation: project.sunElevation ?? 54,
-    keyIntensity: project.keyIntensity,
-    rimIntensity: project.rimIntensity,
-    ambientIntensity: project.ambientIntensity,
-    exposure: project.exposure ?? 1.06,
+    sunAzimuth: rec?.sunAzimuth ?? project.sunAzimuth ?? 42,
+    sunElevation: rec?.sunElevation ?? project.sunElevation ?? 54,
+    keyIntensity: rec?.keyIntensity ?? project.keyIntensity,
+    rimIntensity: rec?.rimIntensity ?? project.rimIntensity,
+    ambientIntensity: rec?.ambientIntensity ?? project.ambientIntensity,
+    exposure: rec?.exposure ?? project.exposure ?? 1.06,
     keyColor: null,
   };
 
@@ -1042,11 +1108,13 @@ export function evaluateProjectAt(
   for (const actor of project.actors) {
     actors[actor.id] = evaluateActorAt(actor, clampedTime, project.subtitles);
   }
+  const stage = evaluateStageAt(project, clampedTime);
   return {
     time: clampedTime,
     actors,
     camera: evaluateCameraAt(project.cameraTrack, clampedTime, actors),
-    lighting: evaluateLightingAt(project, clampedTime),
+    lighting: evaluateLightingAt(project, clampedTime, stage),
+    stage,
     subtitle: evaluateSubtitleAt(project.subtitles, clampedTime),
   };
 }
@@ -1425,6 +1493,239 @@ export function deleteSubtitleCue(
   };
 }
 
+export function upsertMapKeyframe(
+  project: AnimationProject,
+  keyframe: MapKeyframe,
+): AnimationProject {
+  const snapTime = snapTimeToStep(keyframe.time, project.duration);
+  const currentTrack = project.mapTrack ?? [];
+  const existingIdx = currentTrack.findIndex(
+    (kf) => kf.id === keyframe.id || Math.abs(kf.time - snapTime) < 0.04,
+  );
+  const nextTrack = [...currentTrack];
+  const normalized: MapKeyframe = { ...keyframe, time: snapTime };
+  if (existingIdx >= 0) {
+    nextTrack[existingIdx] = {
+      ...nextTrack[existingIdx],
+      ...normalized,
+      id: nextTrack[existingIdx].id,
+    };
+  } else {
+    nextTrack.push(normalized);
+  }
+  nextTrack.sort((a, b) => a.time - b.time);
+  return { ...project, mapTrack: nextTrack };
+}
+
+export function moveMapKeyframeTime(
+  project: AnimationProject,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  const nextTrack = (project.mapTrack ?? [])
+    .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+    .sort((a, b) => a.time - b.time);
+  return { ...project, mapTrack: nextTrack };
+}
+
+export function deleteMapKeyframe(
+  project: AnimationProject,
+  keyframeId: string,
+): AnimationProject {
+  return {
+    ...project,
+    mapTrack: (project.mapTrack ?? []).filter((kf) => kf.id !== keyframeId),
+  };
+}
+
+export function upsertChapterMarker(
+  project: AnimationProject,
+  chapter: ChapterMarker,
+): AnimationProject {
+  const snapTime = snapTimeToStep(chapter.time, project.duration);
+  const current = project.chapters ?? [];
+  const existingIdx = current.findIndex(
+    (c) => c.id === chapter.id || Math.abs(c.time - snapTime) < 0.08,
+  );
+  const next = [...current];
+  const normalized: ChapterMarker = {
+    ...chapter,
+    time: snapTime,
+    title: chapter.title.trim().slice(0, 48) || 'Chapter',
+  };
+  if (existingIdx >= 0) {
+    next[existingIdx] = {
+      ...next[existingIdx],
+      ...normalized,
+      id: next[existingIdx].id,
+    };
+  } else {
+    next.push(normalized);
+  }
+  next.sort((a, b) => a.time - b.time);
+  return { ...project, chapters: next };
+}
+
+export function moveChapterMarkerTime(
+  project: AnimationProject,
+  chapterId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  const next = (project.chapters ?? [])
+    .map((c) => (c.id === chapterId ? { ...c, time: snapped } : c))
+    .sort((a, b) => a.time - b.time);
+  return { ...project, chapters: next };
+}
+
+export function deleteChapterMarker(
+  project: AnimationProject,
+  chapterId: string,
+): AnimationProject {
+  return {
+    ...project,
+    chapters: (project.chapters ?? []).filter((c) => c.id !== chapterId),
+  };
+}
+
+export function getChapterBounds(
+  chapters: ChapterMarker[] | undefined,
+  chapterId: string,
+  duration: number,
+): { startSec: number; endSec: number; chapter: ChapterMarker } | null {
+  if (!chapters || chapters.length === 0) return null;
+  const sorted = sortByTime(chapters);
+  const idx = sorted.findIndex((c) => c.id === chapterId);
+  if (idx < 0) return null;
+  const startSec = clamp(sorted[idx].time, 0, duration);
+  const endSec =
+    idx + 1 < sorted.length
+      ? clamp(sorted[idx + 1].time, startSec + 0.1, duration)
+      : duration;
+  return {
+    startSec,
+    endSec: Math.max(startSec + 0.1, endSec),
+    chapter: sorted[idx],
+  };
+}
+
+export function getChapterAtTime(
+  chapters: ChapterMarker[] | undefined,
+  time: number,
+): ChapterMarker | null {
+  if (!chapters || chapters.length === 0) return null;
+  const sorted = sortByTime(chapters);
+  let active: ChapterMarker | null = null;
+  for (const ch of sorted) {
+    if (ch.time <= time + 0.04) {
+      active = ch;
+    } else {
+      break;
+    }
+  }
+  return active;
+}
+
+export function rippleShiftProjectFrom(
+  project: AnimationProject,
+  fromTime: number,
+  deltaSec: number,
+): AnimationProject {
+  if (Math.abs(deltaSec) < 0.001) return project;
+
+  const anchor = Math.max(0, fromTime);
+  const minShiftedTime = anchor > 0.05 ? 0.05 : 0;
+
+  const shiftTime = (t: number): number => {
+    if (anchor <= 0.01 && t <= 0.01) {
+      // Keep base 00:00 keyframes anchored when rippling from timeline start
+      return 0;
+    }
+    if (t < anchor - 0.001) {
+      return t;
+    }
+    const raw = t + deltaSec;
+    const clamped = clamp(raw, minShiftedTime, MAX_SCENE_DURATION);
+    return Math.round(clamped * 20) / 20;
+  };
+
+  let maxTime = 0;
+  const trackMax = (t: number) => {
+    if (t > maxTime) maxTime = t;
+    return t;
+  };
+
+  const nextCameraTrack = project.cameraTrack
+    .map((k) => ({ ...k, time: trackMax(shiftTime(k.time)) }))
+    .sort((a, b) => a.time - b.time);
+
+  const nextLightingTrack = (project.lightingTrack ?? [])
+    .map((k) => ({ ...k, time: trackMax(shiftTime(k.time)) }))
+    .sort((a, b) => a.time - b.time);
+
+  const nextMapTrack = (project.mapTrack ?? [])
+    .map((k) => ({ ...k, time: trackMax(shiftTime(k.time)) }))
+    .sort((a, b) => a.time - b.time);
+
+  const nextChapters = (project.chapters ?? [])
+    .map((c) => ({ ...c, time: trackMax(shiftTime(c.time)) }))
+    .sort((a, b) => a.time - b.time);
+
+  const nextSubtitles = project.subtitles
+    .map((sub) => {
+      const nextStart = shiftTime(sub.startTime);
+      const rawEnd =
+        sub.endTime >= anchor - 0.001
+          ? clamp(sub.endTime + deltaSec, nextStart + 0.2, MAX_SCENE_DURATION)
+          : sub.endTime;
+      const nextEnd = Math.round(rawEnd * 20) / 20;
+      trackMax(nextEnd);
+      return { ...sub, startTime: nextStart, endTime: nextEnd };
+    })
+    .sort((a, b) => a.startTime - b.startTime);
+
+  const nextActors = project.actors.map((actor) => ({
+    ...actor,
+    keyframes: actor.keyframes
+      .map((kf) => ({ ...kf, time: trackMax(shiftTime(kf.time)) }))
+      .sort((a, b) => a.time - b.time),
+    ...(actor.faceKeyframes
+      ? {
+          faceKeyframes: actor.faceKeyframes
+            .map((kf) => ({ ...kf, time: trackMax(shiftTime(kf.time)) }))
+            .sort((a, b) => a.time - b.time),
+        }
+      : {}),
+    ...(actor.heldItemKeyframes
+      ? {
+          heldItemKeyframes: actor.heldItemKeyframes
+            .map((kf) => ({ ...kf, time: trackMax(shiftTime(kf.time)) }))
+            .sort((a, b) => a.time - b.time),
+        }
+      : {}),
+  }));
+
+  const targetDuration = Math.round(
+    clamp(
+      Math.max(MIN_SCENE_DURATION, maxTime, project.duration + deltaSec),
+      MIN_SCENE_DURATION,
+      MAX_SCENE_DURATION,
+    ) * 20,
+  ) / 20;
+
+  return {
+    ...project,
+    duration: targetDuration,
+    cameraTrack: nextCameraTrack,
+    lightingTrack: nextLightingTrack,
+    mapTrack: nextMapTrack,
+    chapters: nextChapters,
+    subtitles: nextSubtitles,
+    actors: nextActors,
+  };
+}
+
 export function formatTimecode(seconds: number): string {
   const safe = Math.max(0, seconds);
   const mins = Math.floor(safe / 60);
@@ -1508,6 +1809,60 @@ function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
   };
 }
 
+function sanitizeChapters(raw: unknown, duration: number): ChapterMarker[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c) => c && typeof c === 'object' && typeof (c as ChapterMarker).time === 'number')
+    .map((c, idx) => {
+      const ch = c as Partial<ChapterMarker>;
+      return {
+        id: typeof ch.id === 'string' && ch.id ? ch.id : `ch_${idx}`,
+        time: clamp(ch.time as number, 0, duration),
+        title:
+          typeof ch.title === 'string' && ch.title.trim()
+            ? ch.title.trim().slice(0, 48)
+            : `Chapter ${idx + 1}`,
+        color:
+          typeof ch.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(ch.color)
+            ? ch.color
+            : CHAPTER_COLORS[idx % CHAPTER_COLORS.length],
+      };
+    })
+    .sort((a, b) => a.time - b.time);
+}
+
+function sanitizeMapTrack(raw: unknown, duration: number): MapKeyframe[] {
+  if (!Array.isArray(raw)) return [];
+  const res: MapKeyframe[] = [];
+  raw.forEach((m, idx) => {
+    if (!m || typeof m !== 'object') return;
+    const mk = m as Partial<MapKeyframe>;
+    if (typeof mk.time !== 'number' || !Number.isFinite(mk.time)) return;
+    const customMap = mk.customMap ? sanitizeMapDefinition(mk.customMap, true) ?? undefined : undefined;
+    let env: EnvironmentId = 'crossroads';
+    if (mk.environment === 'custom' && customMap) {
+      env = 'custom';
+    } else if (isBuiltInMapId(mk.environment)) {
+      env = mk.environment;
+    }
+    res.push({
+      id: typeof mk.id === 'string' && mk.id ? mk.id : `mkf_${idx}`,
+      time: clamp(mk.time, 0, duration),
+      environment: env,
+      ...(typeof mk.mapId === 'string' ? { mapId: mk.mapId } : {}),
+      ...(customMap ? { customMap } : {}),
+      applyAtmosphere: typeof mk.applyAtmosphere === 'boolean' ? mk.applyAtmosphere : true,
+      label:
+        typeof mk.label === 'string' && mk.label.trim()
+          ? mk.label.trim().slice(0, 48)
+          : env === 'custom' && customMap
+            ? customMap.name
+            : getBuiltInMapByEnv(env === 'custom' ? 'crossroads' : env).name,
+    });
+  });
+  return res.sort((a, b) => a.time - b.time);
+}
+
 export function parseProjectJson(raw: string): AnimationProject {
   let parsed: unknown;
   try {
@@ -1530,6 +1885,7 @@ export function parseProjectJson(raw: string): AnimationProject {
     throw new Error('Project JSON is missing required fields (name, duration, actors, cameraTrack).');
   }
 
+  const duration = clamp(obj.duration, MIN_SCENE_DURATION, MAX_SCENE_DURATION);
   const customMap =
     obj.customMap ? sanitizeMapDefinition(obj.customMap, true) ?? undefined : undefined;
   let env: EnvironmentId = 'crossroads';
@@ -1546,10 +1902,13 @@ export function parseProjectJson(raw: string): AnimationProject {
       ? obj.lightingMood
       : 'noon';
 
+  const chapters = sanitizeChapters(obj.chapters, duration);
+  const mapTrack = sanitizeMapTrack(obj.mapTrack, duration);
+
   return {
     id: typeof obj.id === 'string' ? obj.id : `proj_${Date.now()}`,
     name: obj.name,
-    duration: clamp(obj.duration, 1, 120),
+    duration,
     fps: typeof obj.fps === 'number' ? clamp(obj.fps, 12, 60) : 30,
     loop: typeof obj.loop === 'boolean' ? obj.loop : true,
     environment: env,
@@ -1563,6 +1922,8 @@ export function parseProjectJson(raw: string): AnimationProject {
     sunElevation: typeof obj.sunElevation === 'number' ? obj.sunElevation : 54,
     exposure: typeof obj.exposure === 'number' ? obj.exposure : 1.06,
     lightingTrack: Array.isArray(obj.lightingTrack) ? obj.lightingTrack : [],
+    ...(mapTrack.length > 0 ? { mapTrack } : {}),
+    ...(chapters.length > 0 ? { chapters } : {}),
     stageLights: Array.isArray(obj.stageLights) ? obj.stageLights : [],
     actors: obj.actors.map((a) => sanitizeActorConfig(a)),
     cameraTrack: obj.cameraTrack,

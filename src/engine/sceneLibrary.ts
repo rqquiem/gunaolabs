@@ -1,6 +1,7 @@
 import {
   BEDROOM_SKIT_PROJECT,
   BLANK_BASEPLATE_PROJECT,
+  BRICKIA_CHRONICLES_LONG_PROJECT,
   CROSSROADS_SHOWDOWN_PROJECT,
   DOJO_DUEL_PROJECT,
   LUNAR_RESCUE_PROJECT,
@@ -31,6 +32,15 @@ export const BUILT_IN_SCENES: SceneLibraryEntry[] = [
     description:
       'Two-character Brick Battle duel with Linked Sword slash, Bloxy banter, multi-shot camera shake, and dynamic sun keyframes.',
     project: CROSSROADS_SHOWDOWN_PROJECT,
+  },
+  {
+    id: 'scene_brickia_chronicles_long',
+    name: BRICKIA_CHRONICLES_LONG_PROJECT.name,
+    category: 'showcase',
+    builtIn: true,
+    description:
+      '4-minute (240s) multi-act feature demonstrating chapter markers, timeline zoom/minimap navigation, and mid-scene map switches across 4 worlds.',
+    project: BRICKIA_CHRONICLES_LONG_PROJECT,
   },
   {
     id: 'scene_bedroom_hangout',

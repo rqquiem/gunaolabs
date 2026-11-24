@@ -5,9 +5,11 @@ import {
   applyUpperBodyLayer,
   catmullRomScalar,
   deleteActorKeyframe,
+  deleteChapterMarker,
   deleteFaceKeyframe,
   deleteItemKeyframe,
   deleteLightingKeyframe,
+  deleteMapKeyframe,
   deleteStageLight,
   evaluateActorAt,
   evaluateActorItemsAt,
@@ -15,19 +17,27 @@ import {
   evaluateLightingAt,
   evaluateProceduralClipPose,
   evaluateProjectAt,
+  evaluateStageAt,
   evaluateSubtitleAt,
   formatTimecode,
+  getChapterAtTime,
+  getChapterBounds,
   lerpAngleRad,
   moveActorKeyframeTime,
+  moveChapterMarkerTime,
   moveFaceKeyframeTime,
   moveItemKeyframeTime,
+  moveMapKeyframeTime,
   parseProjectJson,
+  rippleShiftProjectFrom,
   serializeProject,
   upsertActorKeyframe,
   upsertCameraKeyframe,
+  upsertChapterMarker,
   upsertFaceKeyframe,
   upsertItemKeyframe,
   upsertLightingKeyframe,
+  upsertMapKeyframe,
   upsertStageLight,
 } from './timeline';
 import {
@@ -53,11 +63,12 @@ import {
 } from './poseLibrary';
 import {
   BEDROOM_SKIT_PROJECT,
+  BRICKIA_CHRONICLES_LONG_PROJECT,
   CROSSROADS_SHOWDOWN_PROJECT,
   ROBLOXIAN_TOWN_PROJECT,
 } from './presets';
 import { cloneBundle, ORNAMENT_CATALOG } from './robloxCatalog';
-import { ORNAMENT_SLOTS, R6_BODY_PARTS } from './types';
+import { MAX_SCENE_DURATION, ORNAMENT_SLOTS, R6_BODY_PARTS } from './types';
 import {
   getH264CodecCandidates,
   pickMediaRecorderMp4MimeType,
@@ -159,8 +170,8 @@ test('evaluateCameraAt respects hard step cuts, Catmull-Rom splines, roll, and d
   const track = CROSSROADS_SHOWDOWN_PROJECT.cameraTrack;
   const beforeCut = evaluateCameraAt(track, 3.01);
   const afterCut = evaluateCameraAt(track, 3.05);
-  assert.deepEqual(beforeCut.position, [-2.4, 2.0, 4.2]);
-  assert.deepEqual(afterCut.position, [3.4, 1.85, 2.5]);
+  assert.deepEqual(beforeCut.position, [-4.4, 2.55, 6.4]);
+  assert.deepEqual(afterCut.position, [5.4, 2.45, 5.2]);
 
   // Shake at shot 2 (time 3.0) produces deterministic non-zero shake offset & roll
   const atShake = evaluateCameraAt(track, 3.0);
@@ -174,7 +185,7 @@ test('evaluateProjectAt tracks target actor position when trackActorId is set', 
   const knightPos = frameAtStart.actors['actor-knight'].position;
   assert.deepEqual(frameAtStart.camera.target, [
     knightPos[0],
-    knightPos[1] + 1.4,
+    knightPos[1] + 1.35,
     knightPos[2],
   ]);
 });
@@ -531,7 +542,7 @@ test('Map & Scene Library JSON roundtrip and embedded customMap preservation in 
   assert.equal(parsedProj.customMap?.name, 'Neon Arena Test');
   assert.equal(parsedProj.customMap?.modules.length, customMap.modules.length);
 
-  assert.equal(BUILT_IN_SCENES.length, 8);
+  assert.equal(BUILT_IN_SCENES.length, 9);
   const snapshot = createSceneEntryFromProject(
     projWithCustomMap,
     'Custom Arena Snapshot',
@@ -769,6 +780,118 @@ test('Robloxian Town neighborhood map, Cozy Gamer Bedroom scene, and bedroom/tow
     'suburbanHouse',
   );
 });
+
+test('All preset cutscene camera shots frame characters with generous vertical breathing room', () => {
+  for (const scene of BUILT_IN_SCENES) {
+    for (const kf of scene.project.cameraTrack) {
+      const frame = evaluateProjectAt(scene.project, kf.time);
+      const dx = frame.camera.position[0] - frame.camera.target[0];
+      const dy = frame.camera.position[1] - frame.camera.target[1];
+      const dz = frame.camera.position[2] - frame.camera.target[2];
+      const dist = Math.hypot(dx, dy, dz);
+      const visibleHeight = 2 * dist * Math.tan(((frame.camera.fov / 2) * Math.PI) / 180);
+      assert.ok(
+        visibleHeight >= 5.5,
+        `Shot ${kf.id} in ${scene.id} visibleHeight=${visibleHeight.toFixed(2)} is too zoomed in`,
+      );
+      assert.ok(
+        frame.camera.fov >= 48,
+        `Shot ${kf.id} in ${scene.id} fov=${frame.camera.fov} should be >= 48`,
+      );
+    }
+  }
+});
+
+test('Long-scene duration bounds (up to 600s), chapters, mid-scene map switches, and JSON roundtrip', () => {
+  assert.equal(MAX_SCENE_DURATION, 600);
+  assert.equal(BRICKIA_CHRONICLES_LONG_PROJECT.duration, 240);
+  assert.equal(BRICKIA_CHRONICLES_LONG_PROJECT.chapters?.length, 4);
+  assert.equal(BRICKIA_CHRONICLES_LONG_PROJECT.mapTrack?.length, 4);
+
+  // Evaluate all 4 acts across the 4-minute saga
+  const act1 = evaluateProjectAt(BRICKIA_CHRONICLES_LONG_PROJECT, 10);
+  const act2 = evaluateProjectAt(BRICKIA_CHRONICLES_LONG_PROJECT, 70);
+  const act3 = evaluateProjectAt(BRICKIA_CHRONICLES_LONG_PROJECT, 140);
+  const act4 = evaluateProjectAt(BRICKIA_CHRONICLES_LONG_PROJECT, 200);
+  assert.equal(act1.stage.environment, 'cozyBedroom');
+  assert.equal(act2.stage.environment, 'robloxianTown');
+  assert.equal(act3.stage.environment, 'crossroads');
+  assert.equal(act4.stage.environment, 'dojoCourtyard');
+
+  // When lightingTrack is cleared, mid-scene map switch applies recommended atmosphere
+  const noLightTrack = { ...BRICKIA_CHRONICLES_LONG_PROJECT, lightingTrack: [] };
+  const stageAct4 = evaluateStageAt(noLightTrack, 200);
+  const lightAct4 = evaluateLightingAt(noLightTrack, 200, stageAct4);
+  assert.equal(stageAct4.lightingMood, 'sunset');
+  assert.ok(lightAct4.sunAzimuth > 0);
+
+  // Roundtrip preserves chapters, mapTrack, and clamps >600s safely to 600s
+  const parsed = parseProjectJson(serializeProject(BRICKIA_CHRONICLES_LONG_PROJECT));
+  assert.equal(parsed.duration, 240);
+  assert.equal(parsed.chapters?.length, 4);
+  assert.equal(parsed.mapTrack?.length, 4);
+
+  const overMax = parseProjectJson(
+    serializeProject({ ...BRICKIA_CHRONICLES_LONG_PROJECT, duration: 999 }),
+  );
+  assert.equal(overMax.duration, 600);
+});
+
+test('Chapter markers, map cue CRUD, and multi-track ripple shift work cleanly', () => {
+  let proj = { ...BRICKIA_CHRONICLES_LONG_PROJECT };
+
+  // Chapter CRUD + bounds + active lookup
+  proj = upsertChapterMarker(proj, {
+    id: 'ch-epilogue',
+    time: 225,
+    title: 'Epilogue',
+    color: '#06b6d4',
+  });
+  assert.equal(proj.chapters?.length, 5);
+  assert.equal(getChapterAtTime(proj.chapters, 230)?.id, 'ch-epilogue');
+  const act2Bounds = getChapterBounds(proj.chapters, 'ch-act2', proj.duration)!;
+  assert.equal(act2Bounds.startSec, 58);
+  assert.equal(act2Bounds.endSec, 124);
+
+  proj = moveChapterMarkerTime(proj, 'ch-epilogue', 228);
+  assert.equal(proj.chapters?.find((c) => c.id === 'ch-epilogue')?.time, 228);
+  proj = deleteChapterMarker(proj, 'ch-epilogue');
+  assert.equal(proj.chapters?.length, 4);
+
+  // Map keyframe CRUD
+  proj = upsertMapKeyframe(proj, {
+    id: 'mk-bonus',
+    time: 230,
+    environment: 'lunarOutpost',
+    applyAtmosphere: true,
+    label: 'Lunar Outpost',
+  });
+  assert.equal(evaluateStageAt(proj, 232).environment, 'lunarOutpost');
+  proj = moveMapKeyframeTime(proj, 'mk-bonus', 235);
+  assert.equal(proj.mapTrack?.find((m) => m.id === 'mk-bonus')?.time, 235);
+  proj = deleteMapKeyframe(proj, 'mk-bonus');
+  assert.equal(proj.mapTrack?.some((m) => m.id === 'mk-bonus'), false);
+
+  // Ripple shift from t=58 by +10s shifts >=58s tracks and extends duration
+  const rippled = rippleShiftProjectFrom(proj, 58, 10);
+  assert.equal(rippled.duration, 250);
+  assert.equal(rippled.chapters?.find((c) => c.id === 'ch-act1')?.time, 0);
+  assert.equal(rippled.chapters?.find((c) => c.id === 'ch-act2')?.time, 68);
+  assert.equal(rippled.mapTrack?.find((m) => m.id === 'mkf-act2')?.time, 68);
+  assert.equal(rippled.mapTrack?.find((m) => m.id === 'mkf-act3')?.time, 134);
+  assert.equal(
+    rippled.cameraTrack.find((k) => k.id === 'lcam-0')?.time,
+    0,
+  );
+  assert.equal(
+    rippled.cameraTrack.find((k) => k.id === 'lcam-2')?.time,
+    68,
+  );
+  // Base t=0 actor keyframe stays anchored even when rippling from t=0
+  const rippledFromStart = rippleShiftProjectFrom(proj, 0, 5);
+  assert.equal(rippledFromStart.actors[0].keyframes[0].time, 0);
+});
+
 
 
 

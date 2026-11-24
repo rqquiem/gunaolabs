@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Play,
   Pause,
@@ -10,21 +10,39 @@ import {
   Move3d,
   Smile,
   Swords,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  ChevronLeft,
+  ChevronRight,
+  BookmarkPlus,
+  Pencil,
+  Check,
+  MapPin,
 } from 'lucide-react';
 import { formatHeldItemsSummary } from '../../engine/itemCatalog';
-import { clamp, formatTimecode } from '../../engine/timeline';
+import {
+  clamp,
+  formatTimecode,
+  getChapterAtTime,
+  getChapterBounds,
+} from '../../engine/timeline';
 import {
   AnimationProject,
   CameraMode,
+  CHAPTER_COLORS,
+  ChapterMarker,
   EASING_OPTIONS,
   EasingType,
   EXPRESSION_PRESET_LABELS,
   ItemEasingMode,
+  MapDefinition,
 } from '../../engine/types';
 
-type SelectedKeyRef =
+export type SelectedKeyRef =
   | { kind: 'camera'; keyframeId: string }
   | { kind: 'lighting'; keyframeId: string }
+  | { kind: 'map'; keyframeId: string }
   | { kind: 'actor'; actorId: string; keyframeId: string }
   | { kind: 'face'; actorId: string; keyframeId: string }
   | { kind: 'item'; actorId: string; keyframeId: string };
@@ -36,6 +54,8 @@ interface TimelinePanelProps {
   playbackSpeed: number;
   cameraMode: CameraMode;
   selectedActorId: string | null;
+  builtInMaps: MapDefinition[];
+  customMaps: MapDefinition[];
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
   onChangeSpeed: (speed: number) => void;
@@ -47,11 +67,13 @@ interface TimelinePanelProps {
   onKeyItemAtCurrentTime: () => void;
   onKeyCameraAtCurrentTime: () => void;
   onKeyLightingAtCurrentTime: () => void;
+  onKeyMapAtCurrentTime: (map: MapDefinition, applyAtmosphere: boolean) => void;
   onMoveActorKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveFaceKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveItemKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveCameraKeyframe: (keyframeId: string, newTime: number) => void;
   onMoveLightingKeyframe: (keyframeId: string, newTime: number) => void;
+  onMoveMapKeyframe: (keyframeId: string, newTime: number) => void;
   onUpdateKeyframeEasing: (ref: SelectedKeyRef, easing: EasingType) => void;
   onUpdateItemKeyframeCurve: (
     actorId: string,
@@ -63,6 +85,10 @@ interface TimelinePanelProps {
   onDeleteItemKeyframe: (actorId: string, keyframeId: string) => void;
   onDeleteCameraKeyframe: (keyframeId: string) => void;
   onDeleteLightingKeyframe: (keyframeId: string) => void;
+  onDeleteMapKeyframe: (keyframeId: string) => void;
+  onUpsertChapter: (chapter: ChapterMarker) => void;
+  onDeleteChapter: (chapterId: string) => void;
+  onRippleShiftFrom: (fromTime: number, deltaSec: number) => void;
 }
 
 export const TimelinePanel: React.FC<TimelinePanelProps> = ({
@@ -72,6 +98,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   playbackSpeed,
   cameraMode,
   selectedActorId,
+  builtInMaps,
+  customMaps,
   onTogglePlay,
   onSeek,
   onChangeSpeed,
@@ -83,11 +111,13 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onKeyItemAtCurrentTime,
   onKeyCameraAtCurrentTime,
   onKeyLightingAtCurrentTime,
+  onKeyMapAtCurrentTime,
   onMoveActorKeyframe,
   onMoveFaceKeyframe,
   onMoveItemKeyframe,
   onMoveCameraKeyframe,
   onMoveLightingKeyframe,
+  onMoveMapKeyframe,
   onUpdateKeyframeEasing,
   onUpdateItemKeyframeCurve,
   onDeleteActorKeyframe,
@@ -95,12 +125,31 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onDeleteItemKeyframe,
   onDeleteCameraKeyframe,
   onDeleteLightingKeyframe,
+  onDeleteMapKeyframe,
+  onUpsertChapter,
+  onDeleteChapter,
+  onRippleShiftFrom,
 }) => {
   const [selectedKey, setSelectedKey] = useState<SelectedKeyRef | null>(null);
   const [dragInfo, setDragInfo] = useState<{
     ref: SelectedKeyRef;
     time: number;
   } | null>(null);
+
+  const [viewWindow, setViewWindow] = useState<[number, number]>([
+    0,
+    Math.max(2, project.duration),
+  ]);
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [chapterTitleDraft, setChapterTitleDraft] = useState('');
+  const [cueMapId, setCueMapId] = useState<string>(
+    () => builtInMaps[0]?.id ?? 'map_crossroads',
+  );
+
+  const allMaps = useMemo(
+    () => [...customMaps, ...builtInMaps],
+    [customMaps, builtInMaps],
+  );
 
   const dragStateRef = useRef<{
     ref: SelectedKeyRef;
@@ -109,9 +158,137 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     didDrag: boolean;
   } | null>(null);
 
-  const pct = project.duration > 0 ? (currentTime / project.duration) * 100 : 0;
+  const minimapDragRef = useRef<{
+    mode: 'pan' | 'left' | 'right';
+    barEl: HTMLElement;
+    startX: number;
+    initStart: number;
+    initEnd: number;
+  } | null>(null);
+
+  const minWindowSpan = Math.min(project.duration, 4);
+
+  // Reset viewport window when switching scenes/projects
+  useEffect(() => {
+    setViewWindow([0, Math.max(2, project.duration)]);
+    setSelectedKey(null);
+    setEditingChapterId(null);
+  }, [project.id]);
+
+  // Keep viewport window valid when duration changes
+  useEffect(() => {
+    setViewWindow(([s, e]) => {
+      const dur = Math.max(2, project.duration);
+      const minSpan = Math.min(dur, 4);
+      const prevSpan = Math.max(minSpan, e - s);
+      if (prevSpan >= dur - 0.05) {
+        return [0, dur];
+      }
+      const nextEnd = Math.min(dur, Math.max(minSpan, e));
+      const nextStart = Math.max(0, Math.min(s, nextEnd - minSpan));
+      return [nextStart, nextEnd];
+    });
+  }, [project.duration]);
+
+  // Auto-follow playhead while playing
+  useEffect(() => {
+    if (!isPlaying) return;
+    setViewWindow(([s, e]) => {
+      const dur = Math.max(2, project.duration);
+      const span = e - s;
+      if (span >= dur - 0.05) return [0, dur];
+      if (currentTime >= s && currentTime <= e) return [s, e];
+      if (currentTime < s) {
+        const nextStart = clamp(currentTime - span * 0.1, 0, Math.max(0, dur - span));
+        return [nextStart, nextStart + span];
+      }
+      const nextStart = clamp(currentTime - span * 0.15, 0, Math.max(0, dur - span));
+      return [nextStart, nextStart + span];
+    });
+  }, [isPlaying, currentTime, project.duration]);
+
+  const [viewStart, viewEnd] = viewWindow;
+  const viewSpan = Math.max(0.1, viewEnd - viewStart);
+  const zoomFactor = project.duration > 0 ? project.duration / viewSpan : 1;
+
+  const toWindowPct = (time: number) => ((time - viewStart) / viewSpan) * 100;
+  const isInWindow = (time: number, padSec = 0.25) =>
+    time >= viewStart - padSec && time <= viewEnd + padSec;
+
+  const playheadPct = clamp(toWindowPct(currentTime), 0, 100);
+  const playheadVisible = currentTime >= viewStart - 0.05 && currentTime <= viewEnd + 0.05;
+
   const lightingTrack = project.lightingTrack ?? [];
+  const mapTrack = project.mapTrack ?? [];
+  const chapters = useMemo(
+    () => [...(project.chapters ?? [])].sort((a, b) => a.time - b.time),
+    [project.chapters],
+  );
+  const activeChapter = useMemo(
+    () => getChapterAtTime(chapters, currentTime),
+    [chapters, currentTime],
+  );
   const selectedActor = project.actors.find((a) => a.id === selectedActorId);
+
+  const applyZoom = (nextZoom: number, anchorTime = currentTime) => {
+    const dur = Math.max(2, project.duration);
+    const clampedZoom = clamp(nextZoom, 1, 32);
+    const nextSpan = clamp(dur / clampedZoom, minWindowSpan, dur);
+    const ratio = clamp((anchorTime - viewStart) / viewSpan, 0.15, 0.85);
+    const nextStart = clamp(anchorTime - ratio * nextSpan, 0, Math.max(0, dur - nextSpan));
+    setViewWindow([nextStart, nextStart + nextSpan]);
+  };
+
+  const zoomToFit = () => {
+    setViewWindow([0, Math.max(2, project.duration)]);
+  };
+
+  const ensureTimeVisible = (time: number) => {
+    if (time >= viewStart && time <= viewEnd) return;
+    const dur = Math.max(2, project.duration);
+    const nextStart = clamp(time - viewSpan * 0.2, 0, Math.max(0, dur - viewSpan));
+    setViewWindow([nextStart, nextStart + viewSpan]);
+  };
+
+  const handleJumpToChapter = (chapterId: string, focusZoom = false) => {
+    const bounds = getChapterBounds(chapters, chapterId, project.duration);
+    if (!bounds) return;
+    onSeek(bounds.startSec);
+    if (focusZoom) {
+      const pad = Math.max(1, (bounds.endSec - bounds.startSec) * 0.05);
+      const start = Math.max(0, bounds.startSec - pad);
+      const end = Math.min(project.duration, Math.max(start + minWindowSpan, bounds.endSec + pad));
+      setViewWindow([start, end]);
+    } else {
+      ensureTimeVisible(bounds.startSec);
+    }
+  };
+
+  const handlePrevNextChapter = (dir: -1 | 1) => {
+    if (chapters.length === 0) return;
+    if (dir < 0) {
+      const prev = [...chapters]
+        .reverse()
+        .find((c) => c.time < currentTime - 0.15);
+      handleJumpToChapter((prev ?? chapters[0]).id);
+    } else {
+      const next = chapters.find((c) => c.time > currentTime + 0.15);
+      handleJumpToChapter((next ?? chapters[chapters.length - 1]).id);
+    }
+  };
+
+  const handleAddChapterAtPlayhead = () => {
+    const idx = chapters.length + 1;
+    const newCh: ChapterMarker = {
+      id: `ch_${Date.now()}`,
+      time: Math.round(currentTime * 20) / 20,
+      title: `Chapter ${idx}`,
+      color: CHAPTER_COLORS[(idx - 1) % CHAPTER_COLORS.length],
+    };
+    onUpsertChapter(newCh);
+    setEditingChapterId(newCh.id);
+    setChapterTitleDraft(newCh.title);
+  };
 
   const beginKeyDrag = (
     e: React.PointerEvent<HTMLButtonElement>,
@@ -143,7 +320,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
     const rect = state.trackEl.getBoundingClientRect();
     const ratio = clamp((e.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
-    const snapped = Math.round(ratio * project.duration * 20) / 20;
+    const targetTime = clamp(viewStart + ratio * viewSpan, 0, project.duration);
+    const snapped = Math.round(targetTime * 20) / 20;
 
     setDragInfo({ ref: state.ref, time: snapped });
     if (state.ref.kind === 'actor') {
@@ -156,6 +334,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       onMoveCameraKeyframe(state.ref.keyframeId, snapped);
     } else if (state.ref.kind === 'lighting') {
       onMoveLightingKeyframe(state.ref.keyframeId, snapped);
+    } else if (state.ref.kind === 'map') {
+      onMoveMapKeyframe(state.ref.keyframeId, snapped);
     }
     onSeek(snapped);
   };
@@ -175,6 +355,80 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     setDragInfo(null);
   };
 
+  // Minimap pointer interactions (pan window or resize left/right edges)
+  const beginMinimapDrag = (
+    e: React.PointerEvent<HTMLElement>,
+    mode: 'pan' | 'left' | 'right',
+    barEl: HTMLElement | null,
+  ) => {
+    if (!barEl) return;
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    minimapDragRef.current = {
+      mode,
+      barEl,
+      startX: e.clientX,
+      initStart: viewStart,
+      initEnd: viewEnd,
+    };
+  };
+
+  const handleMinimapMove = (e: React.PointerEvent<HTMLElement>) => {
+    const st = minimapDragRef.current;
+    if (!st) return;
+    const rect = st.barEl.getBoundingClientRect();
+    const dxSec = ((e.clientX - st.startX) / Math.max(1, rect.width)) * project.duration;
+    const dur = Math.max(2, project.duration);
+
+    if (st.mode === 'pan') {
+      const span = st.initEnd - st.initStart;
+      const nextStart = clamp(st.initStart + dxSec, 0, Math.max(0, dur - span));
+      setViewWindow([nextStart, nextStart + span]);
+    } else if (st.mode === 'left') {
+      const nextStart = clamp(st.initStart + dxSec, 0, st.initEnd - minWindowSpan);
+      setViewWindow([nextStart, st.initEnd]);
+    } else {
+      const nextEnd = clamp(st.initEnd + dxSec, st.initStart + minWindowSpan, dur);
+      setViewWindow([st.initStart, nextEnd]);
+    }
+  };
+
+  const endMinimapDrag = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    minimapDragRef.current = null;
+  };
+
+  const handleMinimapBarPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = clamp((e.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    const clickTime = ratio * project.duration;
+    const dur = Math.max(2, project.duration);
+    const nextStart = clamp(clickTime - viewSpan * 0.5, 0, Math.max(0, dur - viewSpan));
+    setViewWindow([nextStart, nextStart + viewSpan]);
+    onSeek(Math.round(clickTime * 20) / 20);
+  };
+
+  // Keyframe density ticks on minimap (deduplicated to 0.5% buckets)
+  const minimapTicks = useMemo(() => {
+    const dur = Math.max(0.1, project.duration);
+    const buckets = new Set<number>();
+    const addTick = (t: number) => {
+      const pct = Math.round((clamp(t, 0, dur) / dur) * 200) / 2;
+      buckets.add(pct);
+    };
+    project.cameraTrack.forEach((k) => addTick(k.time));
+    lightingTrack.forEach((k) => addTick(k.time));
+    mapTrack.forEach((k) => addTick(k.time));
+    project.actors.forEach((a) => {
+      a.keyframes.forEach((k) => addTick(k.time));
+      a.faceKeyframes?.forEach((k) => addTick(k.time));
+      a.heldItemKeyframes?.forEach((k) => addTick(k.time));
+    });
+    return Array.from(buckets);
+  }, [project, lightingTrack, mapTrack]);
+
   // Resolve currently selected keyframe details for inline easing & delete controls
   const resolvedSelectedKey = (() => {
     if (!selectedKey) return null;
@@ -184,6 +438,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       return {
         label: `Camera · ${formatTimecode(kf.time)}`,
         easing: kf.easing,
+        mode: 'easing' as const,
         canDelete: project.cameraTrack.length > 1,
         onDelete: () => {
           onDeleteCameraKeyframe(kf.id);
@@ -197,9 +452,23 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       return {
         label: `Lighting · ${formatTimecode(kf.time)}`,
         easing: kf.easing,
+        mode: 'easing' as const,
         canDelete: true,
         onDelete: () => {
           onDeleteLightingKeyframe(kf.id);
+          setSelectedKey(null);
+        },
+      };
+    }
+    if (selectedKey.kind === 'map') {
+      const kf = mapTrack.find((k) => k.id === selectedKey.keyframeId);
+      if (!kf) return null;
+      return {
+        label: `Stage: ${kf.label} · ${formatTimecode(kf.time)}`,
+        mode: 'map' as const,
+        canDelete: true,
+        onDelete: () => {
+          onDeleteMapKeyframe(kf.id);
           setSelectedKey(null);
         },
       };
@@ -211,6 +480,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       return {
         label: `${actor.name} Pose (${kf.clip}) · ${formatTimecode(kf.time)}`,
         easing: kf.easing,
+        mode: 'easing' as const,
         canDelete: actor.keyframes.length > 1,
         onDelete: () => {
           onDeleteActorKeyframe(actor.id, kf.id);
@@ -225,7 +495,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       return {
         label: `${actor.name} Face (${EXPRESSION_PRESET_LABELS[kf.preset]}) · ${formatTimecode(kf.time)}`,
         easing: kf.easing,
-        isItem: false as const,
+        mode: 'easing' as const,
         canDelete: true,
         onDelete: () => {
           onDeleteFaceKeyframe(actor.id, kf.id);
@@ -244,7 +514,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
         itemEasing: kf.easing,
         actorId: actor.id,
         keyframeId: kf.id,
-        isItem: true as const,
+        mode: 'item' as const,
         canDelete: true,
         onDelete: () => {
           onDeleteItemKeyframe(actor.id, kf.id);
@@ -269,8 +539,18 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     return true;
   };
 
+  const selectedCueMap =
+    allMaps.find((m) => m.id === cueMapId) ?? builtInMaps[0];
+
+  const minimapBracketLeft =
+    project.duration > 0 ? (viewStart / project.duration) * 100 : 0;
+  const minimapBracketWidth =
+    project.duration > 0
+      ? Math.max(3, (viewSpan / project.duration) * 100)
+      : 100;
+
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2">
       {/* Transport & Quick Keying Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -278,7 +558,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             type="button"
             onClick={onTogglePlay}
             aria-label={isPlaying ? 'Pause Timeline' : 'Play Timeline'}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#00a2ff] text-slate-950 font-semibold text-xs hover:bg-[#33b5ff] transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#00a2ff] text-slate-950 font-semibold text-xs hover:bg-[#33b5ff] transition-colors whitespace-nowrap shrink-0"
           >
             {isPlaying ? (
               <Pause className="w-3.5 h-3.5" aria-hidden="true" />
@@ -290,7 +570,10 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
           <button
             type="button"
-            onClick={() => onSeek(0)}
+            onClick={() => {
+              onSeek(0);
+              ensureTimeVisible(0);
+            }}
             aria-label="Restart to 00:00.0"
             className="p-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-slate-200 hover:bg-[#363a43] transition-colors shrink-0"
           >
@@ -298,7 +581,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           </button>
 
           <div
-            className="px-2.5 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs font-mono-tabular text-slate-200 whitespace-nowrap"
+            className="px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs font-mono-tabular text-slate-200 whitespace-nowrap"
             aria-label="Current Timecode"
           >
             {formatTimecode(currentTime)}{' '}
@@ -309,7 +592,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             type="button"
             onClick={onToggleLoop}
             aria-pressed={project.loop}
-            className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
               project.loop
                 ? 'bg-[#2b2e35] border-[#00a2ff]/60 text-[#38bdf8]'
                 : 'bg-[#2b2e35] border-[#393d47] text-slate-400 hover:text-slate-200'
@@ -326,13 +609,50 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             id="playback-speed-select"
             value={playbackSpeed}
             onChange={(e) => onChangeSpeed(Number(e.target.value))}
-            className="px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-mono-tabular text-slate-200"
+            className="px-1.5 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-mono-tabular text-slate-200"
           >
             <option value={0.5}>0.5x</option>
             <option value={1}>1.0x</option>
             <option value={1.5}>1.5x</option>
             <option value={2}>2.0x</option>
           </select>
+
+          {/* Zoom Controls */}
+          <div className="flex items-center gap-0.5 pl-1 border-l border-[#393d47]">
+            <button
+              type="button"
+              onClick={() => applyZoom(zoomFactor / 1.6)}
+              disabled={zoomFactor <= 1.05}
+              aria-label="Zoom out timeline"
+              title="Zoom out timeline"
+              className="p-1 rounded bg-[#2b2e35] border border-[#393d47] text-slate-200 hover:bg-[#363a43] disabled:opacity-40 shrink-0"
+            >
+              <ZoomOut className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+            <span className="px-1.5 text-[11px] font-mono-tabular text-slate-300 whitespace-nowrap">
+              {zoomFactor.toFixed(1)}x
+            </span>
+            <button
+              type="button"
+              onClick={() => applyZoom(zoomFactor * 1.6)}
+              disabled={viewSpan <= minWindowSpan + 0.05}
+              aria-label="Zoom in timeline"
+              title="Zoom in around playhead"
+              className="p-1 rounded bg-[#2b2e35] border border-[#393d47] text-slate-200 hover:bg-[#363a43] disabled:opacity-40 shrink-0"
+            >
+              <ZoomIn className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={zoomToFit}
+              disabled={zoomFactor <= 1.05}
+              aria-label="Fit entire timeline"
+              title="Fit full scene duration"
+              className="p-1 rounded bg-[#2b2e35] border border-[#393d47] text-slate-300 hover:bg-[#363a43] disabled:opacity-40 shrink-0"
+            >
+              <Maximize2 className="w-3 h-3" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -367,7 +687,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             type="button"
             onClick={onKeyActorAtCurrentTime}
             disabled={!selectedActorId}
-            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
             <span>Key Pose</span>
@@ -377,7 +697,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             type="button"
             onClick={onKeyFaceAtCurrentTime}
             disabled={!selectedActor || selectedActor.kind !== 'character'}
-            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
           >
             <Smile className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
             <span>Key Face</span>
@@ -387,7 +707,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             type="button"
             onClick={onKeyItemAtCurrentTime}
             disabled={!selectedActor || selectedActor.kind !== 'character'}
-            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
           >
             <Swords className="w-3.5 h-3.5 text-cyan-400" aria-hidden="true" />
             <span>Key Item</span>
@@ -396,7 +716,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           <button
             type="button"
             onClick={onKeyCameraAtCurrentTime}
-            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5 text-[#00a2ff]" aria-hidden="true" />
             <span>Key Cam</span>
@@ -405,7 +725,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           <button
             type="button"
             onClick={onKeyLightingAtCurrentTime}
-            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5 text-violet-400" aria-hidden="true" />
             <span>Key Light</span>
@@ -413,18 +733,269 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
         </div>
       </div>
 
+      {/* Chapters Strip + Overview Minimap + Ripple Shift */}
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1 overflow-x-auto min-w-0 flex-1">
+            <button
+              type="button"
+              onClick={() => handlePrevNextChapter(-1)}
+              disabled={chapters.length === 0}
+              aria-label="Previous chapter"
+              className="p-1 rounded bg-[#14161a] border border-[#393d47] text-slate-300 hover:bg-[#2b2e35] disabled:opacity-40 shrink-0"
+            >
+              <ChevronLeft className="w-3 h-3" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePrevNextChapter(1)}
+              disabled={chapters.length === 0}
+              aria-label="Next chapter"
+              className="p-1 rounded bg-[#14161a] border border-[#393d47] text-slate-300 hover:bg-[#2b2e35] disabled:opacity-40 shrink-0"
+            >
+              <ChevronRight className="w-3 h-3" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
+              onClick={handleAddChapterAtPlayhead}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-slate-200 hover:bg-[#363a43] whitespace-nowrap shrink-0"
+            >
+              <BookmarkPlus className="w-3 h-3 text-[#00a2ff]" aria-hidden="true" />
+              <span>+ Chapter</span>
+            </button>
+
+            {chapters.length === 0 ? (
+              <span className="text-[11px] text-slate-500 px-1 whitespace-nowrap">
+                No chapters yet — add beats to jump & export sections
+              </span>
+            ) : (
+              chapters.map((ch) => {
+                const isActive = activeChapter?.id === ch.id;
+                if (editingChapterId === ch.id) {
+                  return (
+                    <form
+                      key={ch.id}
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        onUpsertChapter({
+                          ...ch,
+                          title: chapterTitleDraft.trim() || ch.title,
+                        });
+                        setEditingChapterId(null);
+                      }}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#14161a] border border-[#00a2ff] shrink-0"
+                    >
+                      <input
+                        type="text"
+                        aria-label="Chapter Title"
+                        value={chapterTitleDraft}
+                        onChange={(e) => setChapterTitleDraft(e.target.value)}
+                        className="w-28 bg-transparent text-[11px] text-slate-100 focus:outline-none"
+                        autoFocus
+                      />
+                      <button
+                        type="submit"
+                        aria-label="Save chapter title"
+                        className="text-emerald-400 hover:text-emerald-300"
+                      >
+                        <Check className="w-3 h-3" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onDeleteChapter(ch.id);
+                          setEditingChapterId(null);
+                        }}
+                        aria-label="Delete chapter"
+                        className="text-red-400 hover:text-red-300"
+                      >
+                        <Trash2 className="w-3 h-3" aria-hidden="true" />
+                      </button>
+                    </form>
+                  );
+                }
+
+                return (
+                  <div
+                    key={ch.id}
+                    className={`inline-flex items-center gap-1 rounded border text-[11px] transition-colors shrink-0 ${
+                      isActive
+                        ? 'bg-[#2b2e35] border-[#00a2ff] text-white font-medium'
+                        : 'bg-[#14161a] border-[#393d47] text-slate-300 hover:border-slate-500'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToChapter(ch.id)}
+                      onDoubleClick={() => handleJumpToChapter(ch.id, true)}
+                      title={`Jump to ${ch.title} (${formatTimecode(ch.time)}) · Double-click to zoom chapter`}
+                      className="inline-flex items-center gap-1.5 px-2 py-0.5 whitespace-nowrap"
+                    >
+                      <span
+                        className="w-2 h-2 rounded-xs shrink-0"
+                        style={{ backgroundColor: ch.color }}
+                      />
+                      <span>{ch.title}</span>
+                      <span className="font-mono-tabular text-[10px] text-slate-500">
+                        {formatTimecode(ch.time).slice(0, 5)}
+                      </span>
+                    </button>
+                    {isActive && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingChapterId(ch.id);
+                          setChapterTitleDraft(ch.title);
+                        }}
+                        aria-label={`Rename ${ch.title}`}
+                        className="pr-1.5 text-slate-400 hover:text-white"
+                      >
+                        <Pencil className="w-2.5 h-2.5" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            {activeChapter && (
+              <button
+                type="button"
+                onClick={() => handleJumpToChapter(activeChapter.id, true)}
+                className="px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-[#38bdf8] hover:bg-[#2b2e35] whitespace-nowrap shrink-0"
+              >
+                Focus Ch
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onRippleShiftFrom(currentTime, -2)}
+              title="Ripple-shift keyframes, chapters, and dialogue from playhead earlier by 2s"
+              className="px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] font-mono-tabular text-slate-300 hover:bg-[#2b2e35] whitespace-nowrap shrink-0"
+            >
+              Ripple -2s
+            </button>
+            <button
+              type="button"
+              onClick={() => onRippleShiftFrom(currentTime, 2)}
+              title="Ripple-shift keyframes, chapters, and dialogue from playhead later by 2s"
+              className="px-2 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] font-mono-tabular text-slate-300 hover:bg-[#2b2e35] whitespace-nowrap shrink-0"
+            >
+              Ripple +2s
+            </button>
+          </div>
+        </div>
+
+        {/* Full-Duration Overview Minimap */}
+        <div
+          onPointerDown={handleMinimapBarPointerDown}
+          aria-label="Timeline Overview Minimap"
+          className="relative h-5 w-full rounded bg-[#14161a] border border-[#393d47] overflow-hidden cursor-pointer select-none"
+        >
+          {/* Chapter Spans */}
+          {chapters.map((ch, idx) => {
+            const nextTime =
+              idx + 1 < chapters.length ? chapters[idx + 1].time : project.duration;
+            const left = (ch.time / Math.max(0.1, project.duration)) * 100;
+            const width = Math.max(
+              0.5,
+              ((nextTime - ch.time) / Math.max(0.1, project.duration)) * 100,
+            );
+            return (
+              <div
+                key={ch.id}
+                style={{
+                  left: `${left}%`,
+                  width: `${width}%`,
+                  backgroundColor: `${ch.color}28`,
+                  borderLeft: `2px solid ${ch.color}`,
+                }}
+                className="absolute top-0 bottom-0 pointer-events-none"
+              />
+            );
+          })}
+
+          {/* Keyframe Density Ticks */}
+          {minimapTicks.map((pctTick) => (
+            <div
+              key={pctTick}
+              style={{ left: `${pctTick}%` }}
+              className="absolute top-1 bottom-1 w-px bg-slate-400/35 pointer-events-none"
+            />
+          ))}
+
+          {/* Playhead Position */}
+          <div
+            style={{
+              left: `${(currentTime / Math.max(0.1, project.duration)) * 100}%`,
+            }}
+            className="absolute top-0 bottom-0 w-0.5 bg-[#00a2ff] pointer-events-none z-10"
+          />
+
+          {/* Draggable / Resizable Zoom Viewport Bracket */}
+          <div
+            role="slider"
+            aria-label="Zoom Viewport Window"
+            aria-valuemin={0}
+            aria-valuemax={project.duration}
+            aria-valuenow={Math.round(viewStart)}
+            onPointerDown={(e) =>
+              beginMinimapDrag(e, 'pan', e.currentTarget.parentElement)
+            }
+            onPointerMove={handleMinimapMove}
+            onPointerUp={endMinimapDrag}
+            style={{
+              left: `${minimapBracketLeft}%`,
+              width: `${minimapBracketWidth}%`,
+            }}
+            className="absolute top-0 bottom-0 bg-[#00a2ff]/16 border border-[#00a2ff] rounded-xs cursor-grab active:cursor-grabbing z-20"
+          >
+            <div
+              onPointerDown={(e) =>
+                beginMinimapDrag(
+                  e,
+                  'left',
+                  e.currentTarget.parentElement?.parentElement ?? null,
+                )
+              }
+              onPointerMove={handleMinimapMove}
+              onPointerUp={endMinimapDrag}
+              className="absolute left-0 top-0 bottom-0 w-1.5 bg-[#00a2ff]/60 hover:bg-[#00a2ff] cursor-ew-resize"
+            />
+            <div
+              onPointerDown={(e) =>
+                beginMinimapDrag(
+                  e,
+                  'right',
+                  e.currentTarget.parentElement?.parentElement ?? null,
+                )
+              }
+              onPointerMove={handleMinimapMove}
+              onPointerUp={endMinimapDrag}
+              className="absolute right-0 top-0 bottom-0 w-1.5 bg-[#00a2ff]/60 hover:bg-[#00a2ff] cursor-ew-resize"
+            />
+          </div>
+        </div>
+      </div>
+
       {/* Playhead Scrubber + Inline Selected Keyframe Inspector */}
       <div className="flex flex-wrap items-center gap-3">
-        <label htmlFor="timeline-scrubber" className="text-xs text-slate-400 w-24 shrink-0">
-          Playhead
-        </label>
+        <div className="w-24 shrink-0 flex items-center justify-between text-xs text-slate-400">
+          <label htmlFor="timeline-scrubber">Playhead</label>
+          <span className="font-mono-tabular text-[10px] text-slate-500">
+            {formatTimecode(viewStart).slice(0, 5)}
+          </span>
+        </div>
         <input
           id="timeline-scrubber"
           type="range"
-          min={0}
-          max={project.duration}
+          min={viewStart}
+          max={viewEnd}
           step={0.05}
-          value={currentTime}
+          value={clamp(currentTime, viewStart, viewEnd)}
           onChange={(e) => onSeek(Number(e.target.value))}
           className="studio-slider flex-1 min-w-[160px]"
           aria-label="Timeline Scrubber"
@@ -436,10 +1007,10 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           </span>
         ) : resolvedSelectedKey && selectedKey ? (
           <div className="flex items-center gap-2 text-xs shrink-0">
-            <span className="text-slate-300 font-mono-tabular truncate max-w-[240px]">
+            <span className="text-slate-300 font-mono-tabular truncate max-w-[230px]">
               {resolvedSelectedKey.label}
             </span>
-            {resolvedSelectedKey.isItem ? (
+            {resolvedSelectedKey.mode === 'item' ? (
               <select
                 aria-label="Selected Item Keyframe Transition"
                 value={resolvedSelectedKey.itemEasing}
@@ -455,7 +1026,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                 <option value="equipPop">Equip Pop</option>
                 <option value="step">Instant Cut</option>
               </select>
-            ) : (
+            ) : resolvedSelectedKey.mode === 'easing' ? (
               <select
                 aria-label="Selected Keyframe Easing"
                 value={resolvedSelectedKey.easing}
@@ -470,7 +1041,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   </option>
                 ))}
               </select>
-            )}
+            ) : null}
             {resolvedSelectedKey.canDelete && (
               <button
                 type="button"
@@ -483,46 +1054,50 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             )}
           </div>
         ) : (
-          <span className="text-[11px] text-slate-500 whitespace-nowrap shrink-0">
-            Drag any diamond to retime
+          <span className="text-[11px] font-mono-tabular text-slate-500 whitespace-nowrap shrink-0">
+            Window {formatTimecode(viewStart).slice(0, 5)}–{formatTimecode(viewEnd).slice(0, 5)}
           </span>
         )}
       </div>
 
       {/* Draggable Multi-Track Lanes */}
-      <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+      <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
         {/* Camera Track */}
         <div className="flex items-center gap-2">
           <span className="text-xs text-[#38bdf8] font-medium w-24 truncate shrink-0">
             Cutscene Cam
           </span>
-          <div className="relative flex-1 h-6 rounded bg-[#14161a] border border-[#393d47]">
-            <div
-              className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
-              style={{ left: `${pct}%` }}
-            />
-            {project.cameraTrack.map((kf) => {
-              const left = (kf.time / project.duration) * 100;
-              const ref: SelectedKeyRef = { kind: 'camera', keyframeId: kf.id };
-              const sel = isKeySelected(ref);
-              return (
-                <button
-                  key={kf.id}
-                  type="button"
-                  onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
-                  onPointerMove={handleKeyPointerMove}
-                  onPointerUp={(e) => endKeyDrag(e, kf.time)}
-                  title={`Drag or click · Camera at ${formatTimecode(kf.time)} (${kf.easing})`}
-                  aria-label={`Camera keyframe at ${formatTimecode(kf.time)}`}
-                  style={{ left: `${left}%` }}
-                  className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
-                    sel
-                      ? 'bg-white ring-2 ring-[#00a2ff]'
-                      : 'bg-[#00a2ff] hover:bg-sky-200'
-                  }`}
-                />
-              );
-            })}
+          <div className="relative flex-1 h-6 rounded bg-[#14161a] border border-[#393d47] overflow-hidden">
+            {playheadVisible && (
+              <div
+                className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                style={{ left: `${playheadPct}%` }}
+              />
+            )}
+            {project.cameraTrack
+              .filter((kf) => isInWindow(kf.time))
+              .map((kf) => {
+                const left = toWindowPct(kf.time);
+                const ref: SelectedKeyRef = { kind: 'camera', keyframeId: kf.id };
+                const sel = isKeySelected(ref);
+                return (
+                  <button
+                    key={kf.id}
+                    type="button"
+                    onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                    onPointerMove={handleKeyPointerMove}
+                    onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                    title={`Drag or click · Camera at ${formatTimecode(kf.time)} (${kf.easing})`}
+                    aria-label={`Camera keyframe at ${formatTimecode(kf.time)}`}
+                    style={{ left: `${left}%` }}
+                    className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                      sel
+                        ? 'bg-white ring-2 ring-[#00a2ff]'
+                        : 'bg-[#00a2ff] hover:bg-sky-200'
+                    }`}
+                  />
+                );
+              })}
           </div>
         </div>
 
@@ -531,37 +1106,105 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           <span className="text-xs text-violet-400 font-medium w-24 truncate shrink-0">
             Lighting
           </span>
-          <div className="relative flex-1 h-6 rounded bg-[#14161a] border border-[#393d47]">
-            <div
-              className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
-              style={{ left: `${pct}%` }}
-            />
-            {lightingTrack.map((kf) => {
-              const left = (kf.time / project.duration) * 100;
-              const ref: SelectedKeyRef = { kind: 'lighting', keyframeId: kf.id };
-              const sel = isKeySelected(ref);
-              return (
-                <button
-                  key={kf.id}
-                  type="button"
-                  onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
-                  onPointerMove={handleKeyPointerMove}
-                  onPointerUp={(e) => endKeyDrag(e, kf.time)}
-                  title={`Drag or click · Lighting at ${formatTimecode(kf.time)} (${kf.easing})`}
-                  aria-label={`Lighting keyframe at ${formatTimecode(kf.time)}`}
-                  style={{ left: `${left}%` }}
-                  className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
-                    sel
-                      ? 'bg-white ring-2 ring-violet-400'
-                      : 'bg-violet-400 hover:bg-violet-200'
-                  }`}
-                />
-              );
-            })}
+          <div className="relative flex-1 h-6 rounded bg-[#14161a] border border-[#393d47] overflow-hidden">
+            {playheadVisible && (
+              <div
+                className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                style={{ left: `${playheadPct}%` }}
+              />
+            )}
+            {lightingTrack
+              .filter((kf) => isInWindow(kf.time))
+              .map((kf) => {
+                const left = toWindowPct(kf.time);
+                const ref: SelectedKeyRef = { kind: 'lighting', keyframeId: kf.id };
+                const sel = isKeySelected(ref);
+                return (
+                  <button
+                    key={kf.id}
+                    type="button"
+                    onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                    onPointerMove={handleKeyPointerMove}
+                    onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                    title={`Drag or click · Lighting at ${formatTimecode(kf.time)} (${kf.easing})`}
+                    aria-label={`Lighting keyframe at ${formatTimecode(kf.time)}`}
+                    style={{ left: `${left}%` }}
+                    className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                      sel
+                        ? 'bg-white ring-2 ring-violet-400'
+                        : 'bg-violet-400 hover:bg-violet-200'
+                    }`}
+                  />
+                );
+              })}
           </div>
         </div>
 
-        {/* Actor Pose + Dedicated Face/Expression Lanes */}
+        {/* Stage / Map Switch Track */}
+        <div className="flex items-center gap-2">
+          <div className="w-24 shrink-0 flex items-center justify-between gap-1">
+            <span className="text-xs text-orange-400 font-medium truncate">
+              Stage / Map
+            </span>
+          </div>
+          <div className="relative flex-1 h-6 rounded bg-[#14161a] border border-[#393d47] overflow-hidden">
+            {playheadVisible && (
+              <div
+                className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                style={{ left: `${playheadPct}%` }}
+              />
+            )}
+            {mapTrack
+              .filter((kf) => isInWindow(kf.time))
+              .map((kf) => {
+                const left = toWindowPct(kf.time);
+                const ref: SelectedKeyRef = { kind: 'map', keyframeId: kf.id };
+                const sel = isKeySelected(ref);
+                return (
+                  <button
+                    key={kf.id}
+                    type="button"
+                    onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                    onPointerMove={handleKeyPointerMove}
+                    onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                    title={`Drag or click · Map Switch to ${kf.label} at ${formatTimecode(kf.time)}`}
+                    aria-label={`Stage map keyframe ${kf.label} at ${formatTimecode(kf.time)}`}
+                    style={{ left: `${left}%` }}
+                    className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                      sel
+                        ? 'bg-white ring-2 ring-orange-400'
+                        : 'bg-orange-400 hover:bg-orange-200'
+                    }`}
+                  />
+                );
+              })}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <select
+              aria-label="Cue Map at Playhead"
+              value={cueMapId}
+              onChange={(e) => setCueMapId(e.target.value)}
+              className="w-28 px-1.5 py-0.5 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
+            >
+              {allMaps.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => selectedCueMap && onKeyMapAtCurrentTime(selectedCueMap, true)}
+              title="Cue selected map switch at current playhead"
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] text-orange-300 hover:bg-[#363a43] whitespace-nowrap shrink-0"
+            >
+              <MapPin className="w-3 h-3" aria-hidden="true" />
+              <span>Cue</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Actor Pose + Dedicated Face/Expression + Held Items Lanes */}
         {project.actors.map((actor) => {
           const isSelected = actor.id === selectedActorId;
           const faceKfs = actor.faceKeyframes ?? [];
@@ -589,44 +1232,48 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   {actor.name}
                 </button>
                 <div
-                  className={`relative flex-1 h-6 rounded bg-[#14161a] border ${
+                  className={`relative flex-1 h-6 rounded bg-[#14161a] border overflow-hidden ${
                     isSelected ? 'border-[#00a2ff]/60' : 'border-[#393d47]'
                   }`}
                 >
-                  <div
-                    className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
-                    style={{ left: `${pct}%` }}
-                  />
-                  {actor.keyframes.map((kf) => {
-                    const left = (kf.time / project.duration) * 100;
-                    const ref: SelectedKeyRef = {
-                      kind: 'actor',
-                      actorId: actor.id,
-                      keyframeId: kf.id,
-                    };
-                    const sel = isKeySelected(ref);
-                    const layerSuffix =
-                      kf.upperBodyClip && kf.upperBodyClip !== 'none'
-                        ? ` + ${kf.upperBodyClip}`
-                        : '';
-                    return (
-                      <button
-                        key={kf.id}
-                        type="button"
-                        onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
-                        onPointerMove={handleKeyPointerMove}
-                        onPointerUp={(e) => endKeyDrag(e, kf.time)}
-                        title={`Drag or click · ${actor.name} (${kf.clip}${layerSuffix}, ${kf.easing}) at ${formatTimecode(kf.time)}`}
-                        aria-label={`${actor.name} pose keyframe at ${formatTimecode(kf.time)}`}
-                        style={{ left: `${left}%` }}
-                        className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
-                          sel
-                            ? 'bg-white ring-2 ring-amber-400'
-                            : 'bg-amber-400 hover:bg-amber-200'
-                        }`}
-                      />
-                    );
-                  })}
+                  {playheadVisible && (
+                    <div
+                      className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                      style={{ left: `${playheadPct}%` }}
+                    />
+                  )}
+                  {actor.keyframes
+                    .filter((kf) => isInWindow(kf.time))
+                    .map((kf) => {
+                      const left = toWindowPct(kf.time);
+                      const ref: SelectedKeyRef = {
+                        kind: 'actor',
+                        actorId: actor.id,
+                        keyframeId: kf.id,
+                      };
+                      const sel = isKeySelected(ref);
+                      const layerSuffix =
+                        kf.upperBodyClip && kf.upperBodyClip !== 'none'
+                          ? ` + ${kf.upperBodyClip}`
+                          : '';
+                      return (
+                        <button
+                          key={kf.id}
+                          type="button"
+                          onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                          onPointerMove={handleKeyPointerMove}
+                          onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                          title={`Drag or click · ${actor.name} (${kf.clip}${layerSuffix}, ${kf.easing}) at ${formatTimecode(kf.time)}`}
+                          aria-label={`${actor.name} pose keyframe at ${formatTimecode(kf.time)}`}
+                          style={{ left: `${left}%` }}
+                          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                            sel
+                              ? 'bg-white ring-2 ring-amber-400'
+                              : 'bg-amber-400 hover:bg-amber-200'
+                          }`}
+                        />
+                      );
+                    })}
                 </div>
               </div>
 
@@ -640,55 +1287,62 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   >
                     Face & Lip-Sync
                   </button>
-                  <div className="relative flex-1 h-5 rounded bg-[#14161a]/80 border border-[#393d47]/80">
-                    {/* Subtitle Lip-Sync Windows */}
-                    {actorSubs.map((sub) => {
-                      const sLeft = (sub.startTime / project.duration) * 100;
-                      const sWidth = Math.max(
-                        1,
-                        ((sub.endTime - sub.startTime) / project.duration) * 100,
-                      );
-                      return (
-                        <div
-                          key={sub.id}
-                          title={`Lip-Sync: "${sub.text}"`}
-                          style={{ left: `${sLeft}%`, width: `${sWidth}%` }}
-                          className="absolute top-1 bottom-1 rounded-sm bg-emerald-500/20 border border-emerald-500/40 pointer-events-none"
-                        />
-                      );
-                    })}
+                  <div className="relative flex-1 h-5 rounded bg-[#14161a]/80 border border-[#393d47]/80 overflow-hidden">
+                    {actorSubs
+                      .filter((sub) => sub.endTime >= viewStart && sub.startTime <= viewEnd)
+                      .map((sub) => {
+                        const clampedS = Math.max(viewStart, sub.startTime);
+                        const clampedE = Math.min(viewEnd, sub.endTime);
+                        const sLeft = toWindowPct(clampedS);
+                        const sWidth = Math.max(
+                          0.8,
+                          ((clampedE - clampedS) / viewSpan) * 100,
+                        );
+                        return (
+                          <div
+                            key={sub.id}
+                            title={`Lip-Sync: "${sub.text}"`}
+                            style={{ left: `${sLeft}%`, width: `${sWidth}%` }}
+                            className="absolute top-1 bottom-1 rounded-sm bg-emerald-500/20 border border-emerald-500/40 pointer-events-none"
+                          />
+                        );
+                      })}
 
-                    <div
-                      className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
-                      style={{ left: `${pct}%` }}
-                    />
+                    {playheadVisible && (
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                        style={{ left: `${playheadPct}%` }}
+                      />
+                    )}
 
-                    {faceKfs.map((kf) => {
-                      const left = (kf.time / project.duration) * 100;
-                      const ref: SelectedKeyRef = {
-                        kind: 'face',
-                        actorId: actor.id,
-                        keyframeId: kf.id,
-                      };
-                      const sel = isKeySelected(ref);
-                      return (
-                        <button
-                          key={kf.id}
-                          type="button"
-                          onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
-                          onPointerMove={handleKeyPointerMove}
-                          onPointerUp={(e) => endKeyDrag(e, kf.time)}
-                          title={`Drag or click · ${actor.name} Face (${EXPRESSION_PRESET_LABELS[kf.preset]}, ${kf.easing}) at ${formatTimecode(kf.time)}`}
-                          aria-label={`${actor.name} expression keyframe at ${formatTimecode(kf.time)}`}
-                          style={{ left: `${left}%` }}
-                          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
-                            sel
-                              ? 'bg-white ring-2 ring-emerald-400'
-                              : 'bg-emerald-400 hover:bg-emerald-200'
-                          }`}
-                        />
-                      );
-                    })}
+                    {faceKfs
+                      .filter((kf) => isInWindow(kf.time))
+                      .map((kf) => {
+                        const left = toWindowPct(kf.time);
+                        const ref: SelectedKeyRef = {
+                          kind: 'face',
+                          actorId: actor.id,
+                          keyframeId: kf.id,
+                        };
+                        const sel = isKeySelected(ref);
+                        return (
+                          <button
+                            key={kf.id}
+                            type="button"
+                            onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                            onPointerMove={handleKeyPointerMove}
+                            onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                            title={`Drag or click · ${actor.name} Face (${EXPRESSION_PRESET_LABELS[kf.preset]}, ${kf.easing}) at ${formatTimecode(kf.time)}`}
+                            aria-label={`${actor.name} expression keyframe at ${formatTimecode(kf.time)}`}
+                            style={{ left: `${left}%` }}
+                            className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                              sel
+                                ? 'bg-white ring-2 ring-emerald-400'
+                                : 'bg-emerald-400 hover:bg-emerald-200'
+                            }`}
+                          />
+                        );
+                      })}
                   </div>
                 </div>
               )}
@@ -703,42 +1357,46 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   >
                     Items & Hands
                   </button>
-                  <div className="relative flex-1 h-5 rounded bg-[#14161a]/80 border border-[#393d47]/80">
-                    <div
-                      className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
-                      style={{ left: `${pct}%` }}
-                    />
+                  <div className="relative flex-1 h-5 rounded bg-[#14161a]/80 border border-[#393d47]/80 overflow-hidden">
+                    {playheadVisible && (
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                        style={{ left: `${playheadPct}%` }}
+                      />
+                    )}
 
-                    {(actor.heldItemKeyframes ?? []).map((kf) => {
-                      const left = (kf.time / project.duration) * 100;
-                      const ref: SelectedKeyRef = {
-                        kind: 'item',
-                        actorId: actor.id,
-                        keyframeId: kf.id,
-                      };
-                      const sel = isKeySelected(ref);
-                      const summary = formatHeldItemsSummary({
-                        right: kf.right,
-                        left: kf.left,
-                      });
-                      return (
-                        <button
-                          key={kf.id}
-                          type="button"
-                          onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
-                          onPointerMove={handleKeyPointerMove}
-                          onPointerUp={(e) => endKeyDrag(e, kf.time)}
-                          title={`Drag or click · ${actor.name} Items (${summary}, ${kf.easing}) at ${formatTimecode(kf.time)}`}
-                          aria-label={`${actor.name} item keyframe at ${formatTimecode(kf.time)}`}
-                          style={{ left: `${left}%` }}
-                          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
-                            sel
-                              ? 'bg-white ring-2 ring-cyan-400'
-                              : 'bg-cyan-400 hover:bg-cyan-200'
-                          }`}
-                        />
-                      );
-                    })}
+                    {(actor.heldItemKeyframes ?? [])
+                      .filter((kf) => isInWindow(kf.time))
+                      .map((kf) => {
+                        const left = toWindowPct(kf.time);
+                        const ref: SelectedKeyRef = {
+                          kind: 'item',
+                          actorId: actor.id,
+                          keyframeId: kf.id,
+                        };
+                        const sel = isKeySelected(ref);
+                        const summary = formatHeldItemsSummary({
+                          right: kf.right,
+                          left: kf.left,
+                        });
+                        return (
+                          <button
+                            key={kf.id}
+                            type="button"
+                            onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                            onPointerMove={handleKeyPointerMove}
+                            onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                            title={`Drag or click · ${actor.name} Items (${summary}, ${kf.easing}) at ${formatTimecode(kf.time)}`}
+                            aria-label={`${actor.name} item keyframe at ${formatTimecode(kf.time)}`}
+                            style={{ left: `${left}%` }}
+                            className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                              sel
+                                ? 'bg-white ring-2 ring-cyan-400'
+                                : 'bg-cyan-400 hover:bg-cyan-200'
+                            }`}
+                          />
+                        );
+                      })}
                   </div>
                 </div>
               )}

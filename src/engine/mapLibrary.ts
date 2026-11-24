@@ -250,9 +250,9 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       },
     ],
     suggestedCamera: {
-      position: [-5.2, 3.2, 6.0],
+      position: [-6.8, 3.8, 8.2],
       target: [0, 1.3, 0],
-      fov: 45,
+      fov: 52,
     },
   },
   {
@@ -313,9 +313,9 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       },
     ],
     suggestedCamera: {
-      position: [0.4, 2.2, 5.8],
-      target: [0.1, 1.3, 0.4],
-      fov: 45,
+      position: [0.6, 2.9, 8.4],
+      target: [0.1, 1.3, 0.3],
+      fov: 52,
     },
   },
   {
@@ -436,9 +436,9 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       },
     ],
     suggestedCamera: {
-      position: [1.6, 2.7, 7.6],
-      target: [0, 1.35, -0.5],
-      fov: 45,
+      position: [2.0, 3.1, 8.8],
+      target: [0, 1.35, -0.4],
+      fov: 52,
     },
   },
   {
@@ -509,9 +509,9 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       },
     ],
     suggestedCamera: {
-      position: [4.2, 2.5, 5.2],
-      target: [-0.3, 1.2, -0.8],
-      fov: 45,
+      position: [6.2, 3.3, 7.6],
+      target: [-0.4, 1.2, -0.8],
+      fov: 52,
     },
   },
   {
@@ -582,9 +582,9 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       },
     ],
     suggestedCamera: {
-      position: [-4.6, 3.0, 6.2],
+      position: [-6.2, 3.6, 8.6],
       target: [0.5, 1.4, -1.2],
-      fov: 46,
+      fov: 52,
     },
   },
   {
@@ -655,9 +655,9 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       },
     ],
     suggestedCamera: {
-      position: [4.8, 2.5, 6.0],
-      target: [0, 1.35, -0.5],
-      fov: 44,
+      position: [6.4, 3.3, 8.6],
+      target: [0, 1.35, -0.4],
+      fov: 52,
     },
   },
   {
@@ -728,9 +728,9 @@ export const BUILT_IN_MAPS: MapDefinition[] = [
       },
     ],
     suggestedCamera: {
-      position: [0.2, 2.1, 6.2],
-      target: [0, 1.3, -0.5],
-      fov: 43,
+      position: [0.2, 2.8, 8.6],
+      target: [0, 1.3, -0.4],
+      fov: 52,
     },
   },
 ];
@@ -831,9 +831,9 @@ export function createBlankCustomMap(name = 'Untitled Brick Stage'): MapDefiniti
       createModuleInstance('spawnPad', 0),
     ],
     suggestedCamera: {
-      position: [4.2, 2.6, 5.6],
+      position: [5.6, 3.1, 7.6],
       target: [0, 1.3, 0],
-      fov: 45,
+      fov: 52,
     },
   };
 }
@@ -1071,9 +1071,9 @@ export function sanitizeMapDefinition(
     suggestedCamera:
       obj.suggestedCamera && typeof obj.suggestedCamera === 'object'
         ? {
-            position: sanitizeVec3(obj.suggestedCamera.position, [4.2, 2.6, 5.6]),
+            position: sanitizeVec3(obj.suggestedCamera.position, [5.6, 3.1, 7.6]),
             target: sanitizeVec3(obj.suggestedCamera.target, [0, 1.3, 0]),
-            fov: clampNum(obj.suggestedCamera.fov, 20, 85, 45),
+            fov: clampNum(obj.suggestedCamera.fov, 20, 90, 52),
           }
         : undefined,
   };

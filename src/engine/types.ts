@@ -422,6 +422,44 @@ export interface SubtitleCue {
   text: string;
 }
 
+export const MIN_SCENE_DURATION = 2;
+export const MAX_SCENE_DURATION = 600; // 10 minutes max
+
+export interface ChapterMarker {
+  id: string;
+  time: number;
+  title: string;
+  color: string;
+}
+
+export const CHAPTER_COLORS: string[] = [
+  '#00a2ff',
+  '#f59e0b',
+  '#10b981',
+  '#a855f7',
+  '#ef4444',
+  '#06b6d4',
+];
+
+export interface MapKeyframe {
+  id: string;
+  time: number;
+  environment: EnvironmentId;
+  mapId?: string;
+  customMap?: MapDefinition;
+  applyAtmosphere: boolean;
+  label: string;
+}
+
+export interface EvaluatedStageState {
+  environment: EnvironmentId;
+  mapId?: string;
+  customMap?: MapDefinition;
+  lightingMood: LightingMood;
+  recommendedLighting?: MapLightingPreset;
+  label: string;
+}
+
 export interface AnimationProject {
   id: string;
   name: string;
@@ -439,6 +477,8 @@ export interface AnimationProject {
   sunElevation?: number;
   exposure?: number;
   lightingTrack?: LightingKeyframe[];
+  mapTrack?: MapKeyframe[];
+  chapters?: ChapterMarker[];
   stageLights?: StageLightConfig[];
   actors: SceneActorConfig[];
   cameraTrack: CameraKeyframe[];
@@ -499,6 +539,7 @@ export interface EvaluatedFrame {
   actors: Record<string, EvaluatedActorState>;
   camera: EvaluatedCameraState;
   lighting: EvaluatedLightingState;
+  stage: EvaluatedStageState;
   subtitle: SubtitleCue | null;
 }
 
@@ -512,12 +553,23 @@ export type VideoResolution = '720p' | '1080p' | 'native';
 
 export type VideoEncoderBackend = 'webcodecs' | 'mediarecorder';
 
+export type VideoExportRangeMode = 'full' | 'chapter' | 'custom';
+
+export interface VideoExportRange {
+  mode: VideoExportRangeMode;
+  chapterId?: string;
+  startSec: number;
+  endSec: number;
+}
+
 export interface VideoExportOptions {
   resolution: VideoResolution;
   fps: 24 | 30 | 60;
   bitrateMbps: 4 | 8 | 14;
   burnSubtitles: boolean;
   burnLetterbox: boolean;
+  streamingMode?: boolean;
+  range?: VideoExportRange;
 }
 
 export interface VideoRecordingState {
@@ -528,6 +580,7 @@ export interface VideoRecordingState {
   currentFrame: number;
   totalFrames: number;
   encoderBackend: VideoEncoderBackend | null;
+  streamedBytes?: number;
   blobUrl: string | null;
   mimeType: string | null;
   fileExtension: 'mp4' | null;
