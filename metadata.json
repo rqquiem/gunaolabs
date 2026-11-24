@@ -1,0 +1,6 @@
+{
+  "name": "Stagecraft 3D",
+  "description": "A Three.js 3D animation and cutscene engine for staging scenes, posing articulated characters, keyframing timelines, and directing multi-shot cameras.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

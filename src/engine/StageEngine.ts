@@ -1,0 +1,1263 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { buildRobloxR6CharacterRig, RobloxR6CharacterRig } from './robloxCharacter';
+import { cloneBundle } from './robloxCatalog';
+import {
+  buildRobloxEnvironmentGroup,
+  buildRobloxPropGroup,
+} from './robloxEnvironments';
+import {
+  createClassicSkyboxCubeTexture,
+  createContactShadowTexture,
+  createStudTextures,
+  getRobloxLightingSpec,
+  StudTexturePair,
+} from './robloxTextures';
+import { degToRad, evaluateProjectAt } from './timeline';
+import {
+  AnimationProject,
+  CameraFramingPreset,
+  CameraMode,
+  EnvironmentId,
+  EvaluatedFrame,
+  EvaluatedPose,
+  GizmoMode,
+  LightingMood,
+  SceneActorConfig,
+  StageLightConfig,
+  Vec3Tuple,
+  WebmExportOptions,
+} from './types';
+import { WebmCutsceneRecorder, WebmRecordedResult } from './webmRecorder';
+
+export interface StageEngineCallbacks {
+  onSelectActor: (actorId: string | null) => void;
+  onActorTransformCommit: (
+    actorId: string,
+    position: Vec3Tuple,
+    rotation: Vec3Tuple,
+    scale: Vec3Tuple,
+  ) => void;
+  onTimeUpdate: (time: number, subtitleText: string | null, subtitleSpeaker: string | null) => void;
+  onPlaybackEnded: () => void;
+  onContextLost: (lost: boolean) => void;
+}
+
+interface ManagedActor {
+  config: SceneActorConfig;
+  group: THREE.Group;
+  rig?: RobloxR6CharacterRig;
+  selectionRing?: THREE.Mesh;
+}
+
+interface ManagedStageLight {
+  config: StageLightConfig;
+  light: THREE.PointLight | THREE.SpotLight;
+  targetObj?: THREE.Object3D;
+  fixtureGroup: THREE.Group;
+  helper: THREE.PointLightHelper | THREE.SpotLightHelper;
+}
+
+const _vec3A = new THREE.Vector3();
+const _raycaster = new THREE.Raycaster();
+const _pointer = new THREE.Vector2();
+
+export function detectSoftwareWebGL(): boolean {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    if (!gl) return true;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+    const gpu = String(gl.getParameter(param));
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+  } catch {
+    return true;
+  }
+}
+
+export class StageEngine {
+  private container: HTMLElement;
+  private callbacks: StageEngineCallbacks;
+  private isSoftwareGl: boolean;
+
+  private renderer: THREE.WebGLRenderer;
+  private scene: THREE.Scene;
+  private orbitCamera: THREE.PerspectiveCamera;
+  private directorCamera: THREE.PerspectiveCamera;
+  private cameraHelper: THREE.CameraHelper;
+  private cameraPathLine: THREE.Line | null = null;
+  private orbitControls: OrbitControls;
+  private transformControls: TransformControls;
+
+  private keyLight: THREE.DirectionalLight;
+  private rimLight: THREE.DirectionalLight;
+  private hemiLight: THREE.HemisphereLight;
+  private shadowTex: THREE.CanvasTexture;
+  private studTextures: StudTexturePair;
+  private skyboxTex: THREE.CubeTexture | null = null;
+  private currentSkyKey = '';
+  private envGroup: THREE.Group | null = null;
+  private currentEnvId: EnvironmentId | null = null;
+
+  private actors = new Map<string, ManagedActor>();
+  private stageLightsMap = new Map<string, ManagedStageLight>();
+  private project: AnimationProject;
+  private currentTime = 0;
+  private isPlaying = false;
+  private playbackSpeed = 1;
+  private cameraMode: CameraMode = 'orbit';
+  private showCameraRig = true;
+  private showLightHelpers = true;
+  private selectedActorId: string | null = null;
+  private poseOverride: { actorId: string; pose: EvaluatedPose } | null = null;
+  private lastEvaluatedFrame: EvaluatedFrame | null = null;
+
+  private frameId = 0;
+  private isLoopActive = false;
+  private lastTickMs = 0;
+  private renderBusy = false;
+  private renderDirty = false;
+  private disposed = false;
+
+  private pointerDownPos = { x: 0, y: 0 };
+  private isDraggingGizmo = false;
+  private webmRecorder: WebmCutsceneRecorder | null = null;
+  private isRecordingExport = false;
+  private exportCallbacks: {
+    onProgress: (elapsed: number, duration: number) => void;
+    onComplete: (result: WebmRecordedResult) => void;
+    onError: (message: string) => void;
+  } | null = null;
+
+  private resizeObserver: ResizeObserver;
+
+  constructor(
+    container: HTMLElement,
+    initialProject: AnimationProject,
+    callbacks: StageEngineCallbacks,
+  ) {
+    this.container = container;
+    this.project = initialProject;
+    this.callbacks = callbacks;
+    this.isSoftwareGl = detectSoftwareWebGL();
+
+    const width = Math.max(container.clientWidth, 320);
+    const height = Math.max(container.clientHeight, 240);
+
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: !this.isSoftwareGl,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance',
+    });
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.06;
+    this.renderer.setPixelRatio(
+      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2),
+    );
+    this.renderer.setSize(width, height);
+    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.domElement.style.display = 'block';
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
+    container.appendChild(this.renderer.domElement);
+
+    this.scene = new THREE.Scene();
+    const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmremGenerator.fromScene(
+      new RoomEnvironment(),
+      0.04,
+    ).texture;
+    pmremGenerator.dispose();
+
+    this.shadowTex = createContactShadowTexture();
+    this.studTextures = createStudTextures(
+      this.renderer.capabilities.getMaxAnisotropy(),
+    );
+
+    // Cameras
+    this.orbitCamera = new THREE.PerspectiveCamera(45, width / height, 0.1, 160);
+    this.orbitCamera.position.set(5.4, 3.4, 6.8);
+
+    this.directorCamera = new THREE.PerspectiveCamera(44, width / height, 0.25, 80);
+    this.scene.add(this.directorCamera);
+
+    this.cameraHelper = new THREE.CameraHelper(this.directorCamera);
+    this.scene.add(this.cameraHelper);
+
+    // Classic Roblox sunlit key + cool sky bounce lighting rig
+    this.hemiLight = new THREE.HemisphereLight(0xbae6fd, 0x4d6b3c, 0.95);
+    this.scene.add(this.hemiLight);
+
+    this.keyLight = new THREE.DirectionalLight(0xfff3d6, 2.4);
+    this.keyLight.position.set(8, 13, 9);
+    this.keyLight.castShadow = !this.isSoftwareGl;
+    this.keyLight.shadow.mapSize.set(1024, 1024);
+    this.keyLight.shadow.camera.near = 0.5;
+    this.keyLight.shadow.camera.far = 42;
+    const d = 14;
+    this.keyLight.shadow.camera.left = -d;
+    this.keyLight.shadow.camera.right = d;
+    this.keyLight.shadow.camera.top = d;
+    this.keyLight.shadow.camera.bottom = -d;
+    this.keyLight.shadow.bias = -0.0005;
+    this.keyLight.shadow.normalBias = 0.02;
+    this.scene.add(this.keyLight);
+
+    this.rimLight = new THREE.DirectionalLight(0x7dd3fc, 1.1);
+    this.rimLight.position.set(-7, 6, -8);
+    this.scene.add(this.rimLight);
+
+    // Controls
+    this.orbitControls = new OrbitControls(this.orbitCamera, this.renderer.domElement);
+    this.orbitControls.target.set(0, 1.2, 0);
+    this.orbitControls.enableDamping = !this.isSoftwareGl;
+    this.orbitControls.dampingFactor = 0.07;
+    this.orbitControls.maxPolarAngle = Math.PI * 0.49;
+    this.orbitControls.minDistance = 1.8;
+    this.orbitControls.maxDistance = 32;
+    this.orbitControls.addEventListener('change', () => {
+      if (!this.isPlaying && this.cameraMode === 'orbit') {
+        this.requestRender();
+      }
+    });
+
+    this.transformControls = new TransformControls(
+      this.orbitCamera,
+      this.renderer.domElement,
+    );
+    this.transformControls.setSize(0.8);
+    this.scene.add(this.transformControls.getHelper());
+    this.transformControls.addEventListener('dragging-changed', (event) => {
+      this.isDraggingGizmo = Boolean(event.value);
+      this.orbitControls.enabled = !this.isDraggingGizmo && this.cameraMode === 'orbit';
+      if (!this.isDraggingGizmo && this.selectedActorId) {
+        const managed = this.actors.get(this.selectedActorId);
+        if (managed) {
+          const p = managed.group.position;
+          const r = managed.group.rotation;
+          const s = managed.group.scale;
+          this.callbacks.onActorTransformCommit(
+            this.selectedActorId,
+            [round2(p.x), round2(p.y), round2(p.z)],
+            [round2(r.x), round2(r.y), round2(r.z)],
+            [round2(s.x), round2(s.y), round2(s.z)],
+          );
+        }
+      }
+      this.requestRender();
+    });
+    this.transformControls.addEventListener('change', () => {
+      if (!this.isPlaying) {
+        this.requestRender();
+      }
+    });
+
+    // Build initial scene
+    this.syncProject(initialProject);
+    this.evaluateAndApply(0);
+
+    if (!this.isSoftwareGl) {
+      this.renderer.compile(this.scene, this.orbitCamera);
+    }
+
+    // Events
+    this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
+    this.renderer.domElement.addEventListener('pointerup', this.handlePointerUp);
+    this.renderer.domElement.addEventListener('webglcontextlost', this.handleContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.handleContextRestored);
+
+    this.resizeObserver = new ResizeObserver(() => this.handleResize());
+    this.resizeObserver.observe(container);
+
+    this.requestRender();
+  }
+
+  private handleContextLost = (e: Event) => {
+    e.preventDefault();
+    this.setPlaying(false);
+    this.callbacks.onContextLost(true);
+  };
+
+  private handleContextRestored = () => {
+    this.callbacks.onContextLost(false);
+    this.requestRender();
+  };
+
+  private handleResize() {
+    if (this.disposed) return;
+    const width = Math.max(this.container.clientWidth, 320);
+    const height = Math.max(this.container.clientHeight, 240);
+    const aspect = width / height;
+    this.orbitCamera.aspect = aspect;
+    this.orbitCamera.fov = aspect < 0.85 ? 58 : 45;
+    this.orbitCamera.updateProjectionMatrix();
+    this.directorCamera.aspect = aspect;
+    this.directorCamera.updateProjectionMatrix();
+    this.renderer.setSize(width, height);
+    this.requestRender();
+  }
+
+  private handlePointerDown = (e: PointerEvent) => {
+    this.pointerDownPos = { x: e.clientX, y: e.clientY };
+  };
+
+  private handlePointerUp = (e: PointerEvent) => {
+    if (this.isDraggingGizmo || this.cameraMode !== 'orbit') return;
+    const dx = e.clientX - this.pointerDownPos.x;
+    const dy = e.clientY - this.pointerDownPos.y;
+    if (Math.hypot(dx, dy) > 5) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    _pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    _pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    _raycaster.setFromCamera(_pointer, this.orbitCamera);
+    const actorRoots: THREE.Object3D[] = [];
+    this.actors.forEach((m) => actorRoots.push(m.group));
+    const hits = _raycaster.intersectObjects(actorRoots, true);
+
+    if (hits.length > 0) {
+      let node: THREE.Object3D | null = hits[0].object;
+      while (node) {
+        const actorId = node.userData?.actorId as string | undefined;
+        if (actorId) {
+          this.selectActor(actorId);
+          this.callbacks.onSelectActor(actorId);
+          return;
+        }
+        node = node.parent;
+      }
+    }
+  };
+
+  public syncProject(project: AnimationProject) {
+    this.project = project;
+
+    // 1. Classic Roblox Skybox & Lighting
+    const moodSpec = getRobloxLightingSpec(project.lightingMood, project.environment);
+    const skyKey = `${project.lightingMood}:${project.environment}`;
+    if (this.currentSkyKey !== skyKey) {
+      this.skyboxTex?.dispose();
+      this.skyboxTex = createClassicSkyboxCubeTexture(
+        project.lightingMood as LightingMood,
+        project.environment,
+      );
+      this.scene.background = this.skyboxTex;
+      this.currentSkyKey = skyKey;
+    }
+    this.scene.fog = new THREE.FogExp2(moodSpec.fogColor, moodSpec.fogDensity);
+    this.renderer.toneMappingExposure = moodSpec.exposure;
+
+    this.keyLight.color.setHex(moodSpec.keyColor);
+    this.keyLight.intensity = project.keyIntensity;
+    this.rimLight.color.setHex(moodSpec.rimColor);
+    this.rimLight.intensity = project.rimIntensity;
+    this.hemiLight.color.setHex(moodSpec.hemiSky);
+    this.hemiLight.groundColor.setHex(moodSpec.hemiGround);
+    this.hemiLight.intensity = project.ambientIntensity;
+
+    // 2. Environment
+    if (this.currentEnvId !== project.environment) {
+      if (this.envGroup) {
+        this.scene.remove(this.envGroup);
+        this.disposeObject3D(this.envGroup);
+      }
+      this.envGroup = buildRobloxEnvironmentGroup(
+        project.environment,
+        this.renderer.capabilities.getMaxAnisotropy(),
+        this.studTextures,
+      );
+      this.scene.add(this.envGroup);
+      this.currentEnvId = project.environment;
+    }
+
+    // 3. Actors diff
+    const nextIds = new Set(project.actors.map((a) => a.id));
+    for (const [id, managed] of this.actors.entries()) {
+      if (!nextIds.has(id)) {
+        if (this.selectedActorId === id) {
+          this.transformControls.detach();
+          this.selectedActorId = null;
+        }
+        this.scene.remove(managed.group);
+        this.disposeObject3D(managed.group);
+        this.actors.delete(id);
+      }
+    }
+
+    const fallbackBundle = cloneBundle('noob');
+
+    for (const cfg of project.actors) {
+      const existing = this.actors.get(cfg.id);
+      const isPropColorChanged =
+        existing &&
+        cfg.kind === 'prop' &&
+        (existing.config.primaryColor !== cfg.primaryColor ||
+          existing.config.accentColor !== cfg.accentColor);
+      const needsRebuild =
+        !existing ||
+        existing.config.kind !== cfg.kind ||
+        existing.config.propKind !== cfg.propKind ||
+        Boolean(isPropColorChanged);
+
+      if (needsRebuild) {
+        if (existing) {
+          if (this.selectedActorId === cfg.id) {
+            this.transformControls.detach();
+          }
+          this.scene.remove(existing.group);
+          this.disposeObject3D(existing.group);
+        }
+
+        if (cfg.kind === 'character') {
+          const colors = cfg.bodyColors ?? fallbackBundle.bodyColors;
+          const ornaments = cfg.ornaments ?? fallbackBundle.ornaments;
+          const rig = buildRobloxR6CharacterRig(
+            colors,
+            ornaments,
+            this.studTextures,
+            this.shadowTex,
+          );
+          rig.root.userData.actorId = cfg.id;
+          this.actors.set(cfg.id, {
+            config: cfg,
+            group: rig.root,
+            rig,
+            selectionRing: rig.selectionRing,
+          });
+          this.scene.add(rig.root);
+        } else {
+          const group = buildRobloxPropGroup(
+            cfg.propKind ?? 'spawnpad',
+            cfg.primaryColor,
+            cfg.accentColor,
+            this.studTextures,
+            this.shadowTex,
+            this.renderer.capabilities.getMaxAnisotropy(),
+          );
+          group.userData.actorId = cfg.id;
+          const ring = new THREE.Mesh(
+            new THREE.RingGeometry(0.75, 0.87, 36),
+            new THREE.MeshBasicMaterial({
+              color: 0x00a2ff,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.92,
+              depthWrite: false,
+            }),
+          );
+          ring.rotation.x = -Math.PI / 2;
+          ring.position.y = 0.025;
+          ring.visible = false;
+          group.add(ring);
+          this.actors.set(cfg.id, {
+            config: cfg,
+            group,
+            selectionRing: ring,
+          });
+          this.scene.add(group);
+        }
+      } else if (existing) {
+        existing.config = cfg;
+        if (existing.rig) {
+          existing.rig.setBodyColors(cfg.bodyColors ?? fallbackBundle.bodyColors);
+          existing.rig.setOrnaments(cfg.ornaments ?? fallbackBundle.ornaments);
+        }
+      }
+    }
+
+    // 4. Dynamic Stage Lights diff (Point / Spot)
+    const nextLightIds = new Set((project.stageLights ?? []).map((l) => l.id));
+    for (const [id, managed] of this.stageLightsMap.entries()) {
+      if (!nextLightIds.has(id)) {
+        this.scene.remove(managed.light);
+        if (managed.targetObj) this.scene.remove(managed.targetObj);
+        this.scene.remove(managed.fixtureGroup);
+        this.scene.remove(managed.helper);
+        managed.helper.dispose();
+        this.disposeObject3D(managed.fixtureGroup);
+        managed.light.dispose();
+        this.stageLightsMap.delete(id);
+      }
+    }
+
+    let shadowSpotCount = 0;
+    for (const lCfg of project.stageLights ?? []) {
+      const existing = this.stageLightsMap.get(lCfg.id);
+      const needsRebuild = !existing || existing.config.type !== lCfg.type;
+
+      if (needsRebuild) {
+        if (existing) {
+          this.scene.remove(existing.light);
+          if (existing.targetObj) this.scene.remove(existing.targetObj);
+          this.scene.remove(existing.fixtureGroup);
+          this.scene.remove(existing.helper);
+          existing.helper.dispose();
+          this.disposeObject3D(existing.fixtureGroup);
+          existing.light.dispose();
+        }
+
+        const allowShadow = !this.isSoftwareGl && lCfg.castShadow && shadowSpotCount < 1;
+        if (allowShadow && lCfg.type === 'spot') {
+          shadowSpotCount++;
+        }
+
+        if (lCfg.type === 'spot') {
+          const spot = new THREE.SpotLight(
+            lCfg.color,
+            lCfg.enabled ? lCfg.intensity : 0,
+            lCfg.distance,
+            degToRad(lCfg.angleDeg),
+            lCfg.penumbra,
+            2,
+          );
+          spot.position.set(lCfg.position[0], lCfg.position[1], lCfg.position[2]);
+          spot.castShadow = allowShadow;
+          if (allowShadow) {
+            spot.shadow.mapSize.set(512, 512);
+            spot.shadow.bias = -0.0006;
+          }
+          const targetObj = new THREE.Object3D();
+          targetObj.position.set(lCfg.target[0], lCfg.target[1], lCfg.target[2]);
+          this.scene.add(targetObj);
+          spot.target = targetObj;
+          this.scene.add(spot);
+
+          const fixtureGroup = buildStageLightFixture('spot', lCfg.color, lCfg.enabled);
+          fixtureGroup.position.copy(spot.position);
+          fixtureGroup.lookAt(targetObj.position);
+          this.scene.add(fixtureGroup);
+
+          const helper = new THREE.SpotLightHelper(spot);
+          this.scene.add(helper);
+
+          this.stageLightsMap.set(lCfg.id, {
+            config: lCfg,
+            light: spot,
+            targetObj,
+            fixtureGroup,
+            helper,
+          });
+        } else {
+          const point = new THREE.PointLight(
+            lCfg.color,
+            lCfg.enabled ? lCfg.intensity : 0,
+            lCfg.distance,
+            2,
+          );
+          point.position.set(lCfg.position[0], lCfg.position[1], lCfg.position[2]);
+          this.scene.add(point);
+
+          const fixtureGroup = buildStageLightFixture('point', lCfg.color, lCfg.enabled);
+          fixtureGroup.position.copy(point.position);
+          this.scene.add(fixtureGroup);
+
+          const helper = new THREE.PointLightHelper(point, 0.35);
+          this.scene.add(helper);
+
+          this.stageLightsMap.set(lCfg.id, {
+            config: lCfg,
+            light: point,
+            fixtureGroup,
+            helper,
+          });
+        }
+      } else if (existing) {
+        existing.config = lCfg;
+        existing.light.color.set(lCfg.color);
+        existing.light.intensity = lCfg.enabled ? lCfg.intensity : 0;
+        existing.light.distance = lCfg.distance;
+        existing.light.position.set(
+          lCfg.position[0],
+          lCfg.position[1],
+          lCfg.position[2],
+        );
+
+        if (existing.light instanceof THREE.SpotLight && existing.targetObj) {
+          existing.light.angle = degToRad(lCfg.angleDeg);
+          existing.light.penumbra = lCfg.penumbra;
+          existing.targetObj.position.set(
+            lCfg.target[0],
+            lCfg.target[1],
+            lCfg.target[2],
+          );
+          existing.targetObj.updateMatrixWorld();
+          const allowShadow =
+            !this.isSoftwareGl && lCfg.castShadow && shadowSpotCount < 1;
+          if (allowShadow) shadowSpotCount++;
+          existing.light.castShadow = allowShadow;
+          existing.fixtureGroup.lookAt(existing.targetObj.position);
+        }
+
+        existing.fixtureGroup.position.copy(existing.light.position);
+        updateStageLightFixtureColor(existing.fixtureGroup, lCfg.color, lCfg.enabled);
+        existing.light.updateMatrixWorld();
+        existing.helper.update();
+      }
+    }
+
+    // 5. Cutscene camera trajectory curve
+    this.rebuildCameraPathLine();
+
+    // 6. Re-attach selection if still present
+    if (this.selectedActorId && this.actors.has(this.selectedActorId)) {
+      this.selectActor(this.selectedActorId);
+    }
+
+    this.updateCameraRigVisibility();
+    this.evaluateAndApply(this.currentTime);
+    this.requestRender();
+  }
+
+  private rebuildCameraPathLine() {
+    if (this.cameraPathLine) {
+      this.scene.remove(this.cameraPathLine);
+      this.cameraPathLine.geometry.dispose();
+      (this.cameraPathLine.material as THREE.Material).dispose();
+      this.cameraPathLine = null;
+    }
+
+    const samples: THREE.Vector3[] = [];
+    const steps = 80;
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * this.project.duration;
+      const frame = evaluateProjectAt(this.project, t);
+      samples.push(
+        new THREE.Vector3(
+          frame.camera.position[0],
+          frame.camera.position[1],
+          frame.camera.position[2],
+        ),
+      );
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(samples);
+    const mat = new THREE.LineDashedMaterial({
+      color: 0xf59e0b,
+      dashSize: 0.25,
+      gapSize: 0.14,
+      transparent: true,
+      opacity: 0.78,
+    });
+    const line = new THREE.Line(geo, mat);
+    line.computeLineDistances();
+    line.visible =
+      this.cameraMode === 'orbit' && this.showCameraRig && !this.isRecordingExport;
+    this.scene.add(line);
+    this.cameraPathLine = line;
+  }
+
+  public selectActor(actorId: string | null) {
+    this.selectedActorId = actorId;
+    this.actors.forEach((managed, id) => {
+      const isSelected = id === actorId && this.cameraMode === 'orbit';
+      if (managed.selectionRing) {
+        managed.selectionRing.visible = isSelected;
+      }
+    });
+
+    if (actorId && this.cameraMode === 'orbit' && !this.isPlaying) {
+      const target = this.actors.get(actorId);
+      if (target) {
+        this.transformControls.attach(target.group);
+      } else {
+        this.transformControls.detach();
+      }
+    } else {
+      this.transformControls.detach();
+    }
+    this.requestRender();
+  }
+
+  public setGizmoMode(mode: GizmoMode) {
+    this.transformControls.setMode(mode);
+    this.requestRender();
+  }
+
+  public setCameraMode(mode: CameraMode) {
+    this.cameraMode = mode;
+    this.orbitControls.enabled = mode === 'orbit';
+    this.updateCameraRigVisibility();
+    this.selectActor(this.selectedActorId);
+    this.requestRender();
+  }
+
+  public setShowCameraRig(visible: boolean) {
+    this.showCameraRig = visible;
+    this.updateCameraRigVisibility();
+    this.requestRender();
+  }
+
+  public setShowLightHelpers(visible: boolean) {
+    this.showLightHelpers = visible;
+    this.updateCameraRigVisibility();
+    this.requestRender();
+  }
+
+  private updateCameraRigVisibility() {
+    const showCam =
+      this.cameraMode === 'orbit' && this.showCameraRig && !this.isRecordingExport;
+    this.cameraHelper.visible = showCam;
+    if (this.cameraPathLine) {
+      this.cameraPathLine.visible = showCam;
+    }
+
+    const showLights =
+      this.cameraMode === 'orbit' &&
+      this.showLightHelpers &&
+      !this.isRecordingExport;
+    this.stageLightsMap.forEach((managed) => {
+      managed.helper.visible = showLights && managed.config.enabled;
+      managed.fixtureGroup.visible = showLights;
+    });
+  }
+
+  public setPoseOverride(actorId: string | null, pose: EvaluatedPose | null) {
+    if (actorId && pose) {
+      this.poseOverride = { actorId, pose };
+    } else {
+      this.poseOverride = null;
+    }
+    this.evaluateAndApply(this.currentTime);
+    this.requestRender();
+  }
+
+  public setTime(time: number) {
+    this.currentTime = Math.max(0, Math.min(this.project.duration, time));
+    this.evaluateAndApply(this.currentTime);
+    this.requestRender();
+  }
+
+  public getTime(): number {
+    return this.currentTime;
+  }
+
+  public setPlaybackSpeed(speed: number) {
+    this.playbackSpeed = speed;
+  }
+
+  public setPlaying(playing: boolean) {
+    if (this.isPlaying === playing) return;
+    this.isPlaying = playing;
+
+    if (playing) {
+      this.poseOverride = null;
+      this.transformControls.detach();
+      this.lastTickMs = performance.now();
+      this.startLoop();
+    } else {
+      this.selectActor(this.selectedActorId);
+      this.requestRender();
+    }
+  }
+
+  public snapOrbitToDirectorCamera() {
+    const frame = evaluateProjectAt(this.project, this.currentTime);
+    this.orbitCamera.position.set(
+      frame.camera.position[0] + frame.camera.shakeOffset[0],
+      frame.camera.position[1] + frame.camera.shakeOffset[1],
+      frame.camera.position[2] + frame.camera.shakeOffset[2],
+    );
+    this.orbitControls.target.set(
+      frame.camera.target[0],
+      frame.camera.target[1],
+      frame.camera.target[2],
+    );
+    this.orbitControls.update();
+    this.requestRender();
+  }
+
+  public applyShotFramingPreset(
+    preset: CameraFramingPreset,
+    actorId: string | null,
+  ): { position: Vec3Tuple; target: Vec3Tuple; fov: number } {
+    const frame = evaluateProjectAt(this.project, this.currentTime);
+    const chars = this.project.actors.filter((a) => a.kind === 'character');
+    const primaryId = actorId ?? chars[0]?.id ?? this.project.actors[0]?.id ?? null;
+    const primaryPos: Vec3Tuple =
+      primaryId && frame.actors[primaryId]
+        ? frame.actors[primaryId].position
+        : [0, 0, 0];
+
+    let position: Vec3Tuple;
+    let target: Vec3Tuple;
+    let fov = 45;
+
+    switch (preset) {
+      case 'closeUp': {
+        position = [
+          round2(primaryPos[0] + 0.65),
+          round2(primaryPos[1] + 1.65),
+          round2(primaryPos[2] + 2.05),
+        ];
+        target = [
+          round2(primaryPos[0]),
+          round2(primaryPos[1] + 1.48),
+          round2(primaryPos[2]),
+        ];
+        fov = 36;
+        break;
+      }
+      case 'lowAngle': {
+        position = [
+          round2(primaryPos[0] - 1.35),
+          round2(primaryPos[1] + 0.48),
+          round2(primaryPos[2] + 2.35),
+        ];
+        target = [
+          round2(primaryPos[0]),
+          round2(primaryPos[1] + 1.42),
+          round2(primaryPos[2]),
+        ];
+        fov = 48;
+        break;
+      }
+      case 'twoShot': {
+        const secondPos: Vec3Tuple =
+          chars[1] && frame.actors[chars[1].id]
+            ? frame.actors[chars[1].id].position
+            : primaryPos;
+        const cx = (primaryPos[0] + secondPos[0]) * 0.5;
+        const cy = (primaryPos[1] + secondPos[1]) * 0.5;
+        const cz = (primaryPos[2] + secondPos[2]) * 0.5;
+        position = [round2(cx + 0.4), round2(cy + 2.0), round2(cz + 4.4)];
+        target = [round2(cx), round2(cy + 1.35), round2(cz)];
+        fov = 44;
+        break;
+      }
+      case 'wide':
+      default: {
+        position = [0, 3.6, 8.2];
+        target = [0, 1.3, 0];
+        fov = 46;
+        break;
+      }
+    }
+
+    this.orbitCamera.position.set(position[0], position[1], position[2]);
+    this.orbitControls.target.set(target[0], target[1], target[2]);
+    this.orbitControls.update();
+    this.requestRender();
+    return { position, target, fov };
+  }
+
+  public getOrbitCameraPose(): { position: Vec3Tuple; target: Vec3Tuple; fov: number } {
+    const p = this.orbitCamera.position;
+    const t = this.orbitControls.target;
+    return {
+      position: [round2(p.x), round2(p.y), round2(p.z)],
+      target: [round2(t.x), round2(t.y), round2(t.z)],
+      fov: Math.round(this.orbitCamera.fov),
+    };
+  }
+
+  private evaluateAndApply(time: number) {
+    const frame = evaluateProjectAt(this.project, time);
+    this.lastEvaluatedFrame = frame;
+
+    for (const [id, actorState] of Object.entries(frame.actors)) {
+      const managed = this.actors.get(id);
+      if (!managed) continue;
+
+      if (!this.isDraggingGizmo || this.selectedActorId !== id) {
+        managed.group.position.set(
+          actorState.position[0],
+          actorState.position[1],
+          actorState.position[2],
+        );
+        managed.group.rotation.set(
+          actorState.rotation[0],
+          actorState.rotation[1],
+          actorState.rotation[2],
+        );
+        managed.group.scale.set(
+          actorState.scale[0],
+          actorState.scale[1],
+          actorState.scale[2],
+        );
+      }
+
+      if (managed.rig) {
+        if (this.poseOverride && this.poseOverride.actorId === id && !this.isPlaying) {
+          managed.rig.applyPose(this.poseOverride.pose);
+        } else {
+          managed.rig.applyPose(actorState.pose);
+        }
+      } else if (managed.config.propKind === 'speeder') {
+        managed.group.position.y += Math.sin(time * 2.8) * 0.06;
+      }
+    }
+
+    // Apply keyframeable global lighting & sun orbit
+    const moodSpec = getRobloxLightingSpec(
+      this.project.lightingMood,
+      this.project.environment,
+    );
+    const az = degToRad(frame.lighting.sunAzimuth);
+    const el = degToRad(Math.max(5, Math.min(89, frame.lighting.sunElevation)));
+    const radius = 16;
+    const cosEl = Math.cos(el);
+    this.keyLight.position.set(
+      radius * cosEl * Math.sin(az),
+      radius * Math.sin(el),
+      radius * cosEl * Math.cos(az),
+    );
+    if (frame.lighting.keyColor) {
+      this.keyLight.color.set(frame.lighting.keyColor);
+    } else {
+      this.keyLight.color.setHex(moodSpec.keyColor);
+    }
+    this.keyLight.intensity = frame.lighting.keyIntensity;
+    this.rimLight.intensity = frame.lighting.rimIntensity;
+    this.hemiLight.intensity = frame.lighting.ambientIntensity;
+    this.renderer.toneMappingExposure = frame.lighting.exposure;
+
+    // Update director camera (position + procedural shake + lookAt + Dutch roll)
+    this.directorCamera.position.set(
+      frame.camera.position[0] + frame.camera.shakeOffset[0],
+      frame.camera.position[1] + frame.camera.shakeOffset[1],
+      frame.camera.position[2] + frame.camera.shakeOffset[2],
+    );
+    _vec3A.set(frame.camera.target[0], frame.camera.target[1], frame.camera.target[2]);
+    this.directorCamera.lookAt(_vec3A);
+    if (frame.camera.rollRad !== 0) {
+      this.directorCamera.rotateZ(frame.camera.rollRad);
+    }
+    const targetFov =
+      this.directorCamera.aspect < 0.85
+        ? Math.min(78, frame.camera.fov * 1.32)
+        : frame.camera.fov;
+    if (Math.abs(this.directorCamera.fov - targetFov) > 0.05) {
+      this.directorCamera.fov = targetFov;
+      this.directorCamera.updateProjectionMatrix();
+    }
+    this.directorCamera.updateMatrixWorld();
+    this.cameraHelper.update();
+
+    this.callbacks.onTimeUpdate(
+      frame.time,
+      frame.subtitle ? frame.subtitle.text : null,
+      frame.subtitle ? frame.subtitle.speaker : null,
+    );
+  }
+
+  private afterDraw(cb: () => void) {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    if (typeof gl.fenceSync === 'function') {
+      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      gl.flush();
+      const start = performance.now();
+      const poll = () => {
+        if (this.disposed) return;
+        const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
+        if (state === gl.UNSIGNALED && performance.now() - start < 110) {
+          this.frameId = window.setTimeout(poll, 5);
+        } else {
+          if (sync) gl.deleteSync(sync);
+          this.frameId = window.setTimeout(cb, 80);
+        }
+      };
+      this.frameId = window.setTimeout(poll, 5);
+    } else {
+      this.frameId = window.setTimeout(cb, 80);
+    }
+  }
+
+  private startLoop() {
+    if (this.isLoopActive || this.disposed) return;
+    this.isLoopActive = true;
+    const tick = () => {
+      if (this.disposed || !this.isPlaying) {
+        this.isLoopActive = false;
+        return;
+      }
+      const now = performance.now();
+      const dt = Math.min(0.4, (now - this.lastTickMs) / 1000);
+      this.lastTickMs = now;
+
+      let nextTime = this.currentTime + dt * this.playbackSpeed;
+      if (nextTime >= this.project.duration) {
+        if (this.project.loop && !this.isRecordingExport) {
+          nextTime = nextTime % this.project.duration;
+        } else {
+          nextTime = this.project.duration;
+          this.isPlaying = false;
+          this.isLoopActive = false;
+          this.currentTime = nextTime;
+          this.evaluateAndApply(nextTime);
+          this.renderCurrentCamera();
+          if (this.isRecordingExport && this.webmRecorder) {
+            this.compositeExportFrame();
+            this.stopWebmExport();
+          }
+          this.callbacks.onPlaybackEnded();
+          return;
+        }
+      }
+      this.currentTime = nextTime;
+      this.evaluateAndApply(nextTime);
+
+      if (this.cameraMode === 'orbit') {
+        this.orbitControls.update();
+      }
+      this.renderCurrentCamera();
+      if (this.isRecordingExport && this.webmRecorder) {
+        this.compositeExportFrame();
+      }
+
+      if (this.isSoftwareGl) {
+        this.afterDraw(tick);
+      } else {
+        this.frameId = requestAnimationFrame(tick);
+      }
+    };
+
+    if (this.isSoftwareGl) {
+      this.afterDraw(tick);
+    } else {
+      this.frameId = requestAnimationFrame(tick);
+    }
+  }
+
+  public requestRender() {
+    if (this.disposed || this.isPlaying) return;
+    if (this.renderBusy) {
+      this.renderDirty = true;
+      return;
+    }
+    this.renderBusy = true;
+    this.frameId = requestAnimationFrame(() => {
+      if (this.disposed) return;
+      this.renderDirty = false;
+      if (this.cameraMode === 'orbit') {
+        this.orbitControls.update();
+      }
+      this.renderCurrentCamera();
+      const done = () => {
+        this.renderBusy = false;
+        if (this.renderDirty && !this.disposed) {
+          this.requestRender();
+        }
+      };
+      if (this.isSoftwareGl) {
+        this.afterDraw(done);
+      } else {
+        done();
+      }
+    });
+  }
+
+  private renderCurrentCamera() {
+    const activeCam =
+      this.cameraMode === 'director' ? this.directorCamera : this.orbitCamera;
+    this.renderer.render(this.scene, activeCam);
+  }
+
+  public capturePngDataUrl(): string {
+    this.renderCurrentCamera();
+    return this.renderer.domElement.toDataURL('image/png');
+  }
+
+  public startWebmExport(
+    options: WebmExportOptions,
+    callbacks: {
+      onProgress: (elapsed: number, duration: number) => void;
+      onComplete: (result: WebmRecordedResult) => void;
+      onError: (message: string) => void;
+    },
+  ): boolean {
+    if (this.isRecordingExport) return false;
+    try {
+      this.isRecordingExport = true;
+      this.exportCallbacks = callbacks;
+      this.transformControls.detach();
+      this.updateCameraRigVisibility();
+
+      this.webmRecorder = new WebmCutsceneRecorder(
+        this.renderer.domElement,
+        options,
+        (result) => {
+          this.isRecordingExport = false;
+          this.webmRecorder = null;
+          this.updateCameraRigVisibility();
+          this.selectActor(this.selectedActorId);
+          this.exportCallbacks?.onComplete(result);
+        },
+        (err) => {
+          this.isRecordingExport = false;
+          this.webmRecorder = null;
+          this.updateCameraRigVisibility();
+          this.selectActor(this.selectedActorId);
+          this.exportCallbacks?.onError(err);
+        },
+      );
+
+      this.setPlaying(false);
+      this.currentTime = 0;
+      this.evaluateAndApply(0);
+      this.renderCurrentCamera();
+      this.webmRecorder.start();
+      this.compositeExportFrame();
+      this.setPlaying(true);
+      return true;
+    } catch (err) {
+      this.isRecordingExport = false;
+      this.webmRecorder = null;
+      this.updateCameraRigVisibility();
+      callbacks.onError(
+        err instanceof Error ? err.message : 'Unable to start WebM recording.',
+      );
+      return false;
+    }
+  }
+
+  private compositeExportFrame() {
+    if (!this.webmRecorder) return;
+    const sub = this.lastEvaluatedFrame?.subtitle;
+    this.webmRecorder.compositeFrame(
+      this.renderer.domElement,
+      sub ? { speaker: sub.speaker, text: sub.text } : null,
+    );
+    this.exportCallbacks?.onProgress(this.currentTime, this.project.duration);
+  }
+
+  public stopWebmExport() {
+    this.isRecordingExport = false;
+    this.setPlaying(false);
+    if (this.webmRecorder) {
+      const rec = this.webmRecorder;
+      this.webmRecorder = null;
+      rec.stop();
+    }
+    this.updateCameraRigVisibility();
+  }
+
+  public cancelWebmExport() {
+    this.isRecordingExport = false;
+    this.setPlaying(false);
+    if (this.webmRecorder) {
+      const rec = this.webmRecorder;
+      this.webmRecorder = null;
+      rec.cancel();
+    }
+    this.updateCameraRigVisibility();
+    this.selectActor(this.selectedActorId);
+    this.requestRender();
+  }
+
+  private disposeObject3D(root: THREE.Object3D) {
+    root.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mesh = obj as THREE.Mesh;
+        mesh.geometry?.dispose();
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mats.forEach((m) => {
+          if (!m) return;
+          const std = m as THREE.MeshStandardMaterial;
+          std.map?.dispose();
+          std.bumpMap?.dispose();
+          m.dispose();
+        });
+      }
+    });
+  }
+
+  public dispose() {
+    this.disposed = true;
+    cancelAnimationFrame(this.frameId);
+    clearTimeout(this.frameId);
+    if (this.webmRecorder) {
+      this.webmRecorder.cancel();
+      this.webmRecorder = null;
+    }
+    this.resizeObserver.disconnect();
+    this.renderer.domElement.removeEventListener('pointerdown', this.handlePointerDown);
+    this.renderer.domElement.removeEventListener('pointerup', this.handlePointerUp);
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.handleContextLost);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestored);
+    this.orbitControls.dispose();
+    this.transformControls.dispose();
+    this.shadowTex.dispose();
+    this.studTextures.albedo.dispose();
+    this.studTextures.bump.dispose();
+    this.skyboxTex?.dispose();
+    this.actors.forEach((m) => this.disposeObject3D(m.group));
+    this.stageLightsMap.forEach((l) => {
+      l.helper.dispose();
+      this.disposeObject3D(l.fixtureGroup);
+      l.light.dispose();
+    });
+    if (this.envGroup) this.disposeObject3D(this.envGroup);
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentNode === this.container) {
+      this.container.removeChild(this.renderer.domElement);
+    }
+  }
+}
+
+function buildStageLightFixture(
+  type: 'point' | 'spot',
+  color: string,
+  enabled: boolean,
+): THREE.Group {
+  const group = new THREE.Group();
+  const housingMat = new THREE.MeshStandardMaterial({
+    color: '#1e2024',
+    roughness: 0.45,
+    metalness: 0.35,
+  });
+  const bulbMat = new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: enabled ? 1.2 : 0.1,
+    roughness: 0.25,
+    metalness: 0.05,
+  });
+
+  if (type === 'spot') {
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.16, 0.26, 8),
+      housingMat,
+    );
+    body.rotation.x = Math.PI / 2;
+    group.add(body);
+
+    const lens = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.13, 0.13, 0.04, 8),
+      bulbMat,
+    );
+    lens.rotation.x = Math.PI / 2;
+    lens.position.z = 0.13;
+    lens.userData.isBulb = true;
+    group.add(lens);
+  } else {
+    const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.22), bulbMat);
+    bulb.userData.isBulb = true;
+    group.add(bulb);
+  }
+  return group;
+}
+
+function updateStageLightFixtureColor(
+  group: THREE.Group,
+  color: string,
+  enabled: boolean,
+) {
+  group.traverse((obj) => {
+    if ((obj as THREE.Mesh).isMesh && obj.userData.isBulb) {
+      const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial;
+      mat.color.set(color);
+      mat.emissive.set(color);
+      mat.emissiveIntensity = enabled ? 1.2 : 0.1;
+    }
+  });
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
