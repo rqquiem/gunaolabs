@@ -11,12 +11,13 @@ import {
   Focus,
   RotateCcw,
   Layers,
-  Sparkles,
+  Shirt,
   PersonStanding,
   Swords,
 } from 'lucide-react';
 import { ItemHandlingPanel } from './ItemHandlingPanel';
 import { PoseLibraryPanel } from './PoseLibraryPanel';
+import { WardrobePanel } from './WardrobePanel';
 import {
   FACE_BROW_STYLES,
   FACE_CHEEK_STYLES,
@@ -32,14 +33,16 @@ import {
   PROP_CATEGORY_LABELS,
 } from '../../engine/itemCatalog';
 import {
-  CLASSIC_BRICK_COLORS,
   cloneBundle,
-  ORNAMENT_CATALOG,
+  OutfitPreset,
+  resolveActorClothing,
+  resolveActorHair,
   ROBLOX_AVATAR_BUNDLES,
 } from '../../engine/robloxCatalog';
 import {
   AnimationProject,
   CharacterHeldItems,
+  ClothingConfig,
   EASING_OPTIONS,
   EasingType,
   EvaluatedActorState,
@@ -49,9 +52,9 @@ import {
   ExpressionPresetId,
   FaceRigConfig,
   GizmoMode,
+  HairConfig,
   ItemEasingMode,
   ItemId,
-  ORNAMENT_SLOT_LABELS,
   OrnamentSlot,
   POSE_CLIP_LABELS,
   PoseCategory,
@@ -89,13 +92,17 @@ interface CharacterPanelProps {
   onDeleteActor: (actorId: string) => void;
   onSetGizmoMode: (mode: GizmoMode) => void;
   onApplyBundle: (actorId: string, bundleId: string) => void;
+  onApplyOutfitPreset: (actorId: string, preset: OutfitPreset) => void;
   onUpdateBodyPartColor: (actorId: string, part: R6BodyPartId, hex: string) => void;
   onUpdateOrnament: (
     actorId: string,
     slot: OrnamentSlot,
     id: string,
     color: string,
+    accentColor?: string,
   ) => void;
+  onUpdateHair: (actorId: string, patch: Partial<HairConfig>) => void;
+  onUpdateClothing: (actorId: string, patch: Partial<ClothingConfig>) => void;
   onUpdatePropColors: (actorId: string, primary: string, accent: string) => void;
   onUpdatePropConfig: (
     actorId: string,
@@ -174,17 +181,6 @@ const CLIP_OPTIONS: PoseClipId[] = [
   'custom',
 ];
 
-const BODY_ORNAMENT_SLOTS: OrnamentSlot[] = ['head', 'hat', 'arm', 'back', 'legs'];
-
-const SHORT_PART_LABELS: Record<R6BodyPartId, string> = {
-  head: 'Head',
-  torso: 'Torso',
-  leftArm: 'L Arm',
-  rightArm: 'R Arm',
-  leftLeg: 'L Leg',
-  rightLeg: 'R Leg',
-};
-
 const EXPRESSION_SLIDER_SPECS: {
   key: keyof ExpressionParams;
   label: string;
@@ -219,8 +215,11 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   onDeleteActor,
   onSetGizmoMode,
   onApplyBundle,
+  onApplyOutfitPreset,
   onUpdateBodyPartColor,
   onUpdateOrnament,
+  onUpdateHair,
+  onUpdateClothing,
   onUpdatePropColors,
   onUpdatePropConfig,
   onUpdateFaceConfig,
@@ -257,7 +256,6 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
 }) => {
   const [subTab, setSubTab] = useState<CharacterSubTab>('face');
   const [selectedJoint, setSelectedJoint] = useState<R6BodyPartId | 'hipTilt'>('rightArm');
-  const [colorPart, setColorPart] = useState<R6BodyPartId>('torso');
   const [spawnMenuOpen, setSpawnMenuOpen] = useState(false);
 
   const selectedActor: SceneActorConfig | undefined = project.actors.find(
@@ -267,6 +265,8 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   const fallbackBundle = cloneBundle('noob');
   const activeBodyColors = selectedActor?.bodyColors ?? fallbackBundle.bodyColors;
   const activeOrnaments = selectedActor?.ornaments ?? fallbackBundle.ornaments;
+  const activeHair = resolveActorHair(selectedActor);
+  const activeClothing = resolveActorClothing(selectedActor);
   const activeFaceConfig: FaceRigConfig = selectedActor
     ? resolveActorFaceConfig(selectedActor)
     : fallbackBundle.faceConfig;
@@ -340,7 +340,7 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
                   { id: 'poses', label: 'Pose Library', icon: PersonStanding },
                   { id: 'items', label: 'Items & Hands', icon: Swords },
                   { id: 'animation', label: 'Animation & Rig', icon: Layers },
-                  { id: 'appearance', label: 'Appearance', icon: Sparkles },
+                  { id: 'appearance', label: 'Wardrobe', icon: Shirt },
                 ] as const
               ).map((tab) => {
                 const Icon = tab.icon;
@@ -1032,146 +1032,21 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
               </div>
             )}
 
-            {/* SUB-TAB 3: APPEARANCE (Bundle, BrickColors, Ornaments) */}
+            {/* SUB-TAB 3: WARDROBE (Bundles, Hair Framework, Clothing, Hats, Dual-Color Gear) */}
             {subTab === 'appearance' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-[#393d47]">
-                {/* Column 1: Avatar Bundle & 6-Part BrickColors */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <label
-                      htmlFor="avatar-bundle-select"
-                      className="text-xs font-medium text-slate-400 shrink-0"
-                    >
-                      Avatar Bundle
-                    </label>
-                    <select
-                      id="avatar-bundle-select"
-                      value={selectedActor.bundleId ?? 'noob'}
-                      onChange={(e) => onApplyBundle(selectedActor.id, e.target.value)}
-                      className="flex-1 min-w-0 px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-xs text-slate-100"
-                    >
-                      {ROBLOX_AVATAR_BUNDLES.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <span className="block text-[11px] font-medium text-slate-400 mb-1">
-                      R6 Body Part Colors ({R6_BODY_PART_LABELS[colorPart]})
-                    </span>
-                    <div className="grid grid-cols-6 gap-1 mb-1.5">
-                      {R6_BODY_PARTS.map((part) => (
-                        <button
-                          key={part}
-                          type="button"
-                          onClick={() => setColorPart(part)}
-                          className={`px-1 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate ${
-                            colorPart === part
-                              ? 'bg-[#00a2ff] border-[#00a2ff] text-slate-950 font-semibold'
-                              : 'bg-[#2b2e35] border-[#393d47] text-slate-300 hover:bg-[#363a43]'
-                          }`}
-                        >
-                          {SHORT_PART_LABELS[part]}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {CLASSIC_BRICK_COLORS.slice(0, 10).map((swatch) => (
-                        <button
-                          key={swatch.name}
-                          type="button"
-                          title={swatch.name}
-                          aria-label={`Set ${R6_BODY_PART_LABELS[colorPart]} to ${swatch.name}`}
-                          onClick={() =>
-                            onUpdateBodyPartColor(selectedActor.id, colorPart, swatch.hex)
-                          }
-                          style={{ backgroundColor: swatch.hex }}
-                          className={`w-5 h-5 rounded border ${
-                            activeBodyColors[colorPart].toLowerCase() ===
-                            swatch.hex.toLowerCase()
-                              ? 'border-white ring-1 ring-[#00a2ff]'
-                              : 'border-[#393d47]'
-                          }`}
-                        />
-                      ))}
-                      <input
-                        type="color"
-                        aria-label={`${R6_BODY_PART_LABELS[colorPart]} custom color`}
-                        value={activeBodyColors[colorPart]}
-                        onChange={(e) =>
-                          onUpdateBodyPartColor(
-                            selectedActor.id,
-                            colorPart,
-                            e.target.value,
-                          )
-                        }
-                        className="w-6 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer ml-auto"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Column 2: 5 Body Ornament Sockets */}
-                <div className="space-y-1.5">
-                  <span className="block text-xs font-medium text-slate-400">
-                    3D Gear & Ornaments
-                  </span>
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
-                    {BODY_ORNAMENT_SLOTS.map((slot) => {
-                      const sel = activeOrnaments[slot];
-                      const items = ORNAMENT_CATALOG[slot];
-                      return (
-                        <div key={slot} className="flex items-center gap-1 min-w-0">
-                          <label
-                            htmlFor={`ornament-${slot}`}
-                            className="text-[11px] text-slate-400 w-9 shrink-0"
-                          >
-                            {ORNAMENT_SLOT_LABELS[slot]}
-                          </label>
-                          <select
-                            id={`ornament-${slot}`}
-                            value={sel.id}
-                            onChange={(e) => {
-                              const found = items.find((i) => i.id === e.target.value);
-                              onUpdateOrnament(
-                                selectedActor.id,
-                                slot,
-                                e.target.value,
-                                found?.defaultColor ?? sel.color,
-                              );
-                            }}
-                            className="flex-1 min-w-0 px-1.5 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200"
-                          >
-                            {items.map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.label}
-                              </option>
-                            ))}
-                          </select>
-                          <input
-                            type="color"
-                            aria-label={`${ORNAMENT_SLOT_LABELS[slot]} ornament color`}
-                            value={sel.color}
-                            onChange={(e) =>
-                              onUpdateOrnament(
-                                selectedActor.id,
-                                slot,
-                                sel.id,
-                                e.target.value,
-                              )
-                            }
-                            className="w-4 h-5 rounded bg-transparent border border-[#393d47] cursor-pointer shrink-0"
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              <WardrobePanel
+                actor={selectedActor}
+                bodyColors={activeBodyColors}
+                ornaments={activeOrnaments}
+                hair={activeHair}
+                clothing={activeClothing}
+                onApplyBundle={onApplyBundle}
+                onApplyOutfitPreset={onApplyOutfitPreset}
+                onUpdateBodyPartColor={onUpdateBodyPartColor}
+                onUpdateOrnament={onUpdateOrnament}
+                onUpdateHair={onUpdateHair}
+                onUpdateClothing={onUpdateClothing}
+              />
             )}
 
             {subTab === 'poses' && (

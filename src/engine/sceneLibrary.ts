@@ -9,6 +9,7 @@ import {
   ROBLOXIAN_TOWN_PROJECT,
   TOWN_PLAZA_SKIT_PROJECT,
 } from './presets';
+import { THE_IDIOM_TOWN_PROJECT } from './idiomEpisode';
 import { parseProjectJson } from './timeline';
 import {
   AnimationProject,
@@ -24,6 +25,15 @@ export function cloneProject(project: AnimationProject): AnimationProject {
 }
 
 export const BUILT_IN_SCENES: SceneLibraryEntry[] = [
+  {
+    id: 'scene_idiom_town',
+    name: THE_IDIOM_TOWN_PROJECT.name,
+    category: 'comedy',
+    builtIn: true,
+    description:
+      'Full 90s 7-scene comedy episode ("Welcome to Verbatim") with literal idioms, bespoke sets, 3D animals, Web Audio SFX, voiceover, and smash-cut punchline.',
+    project: THE_IDIOM_TOWN_PROJECT,
+  },
   {
     id: 'scene_crossroads_showdown',
     name: CROSSROADS_SHOWDOWN_PROJECT.name,

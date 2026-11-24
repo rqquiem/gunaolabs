@@ -581,13 +581,20 @@ export class Mp4CutsceneRecorder {
 
   private compositeToCanvas(
     webglCanvas: HTMLCanvasElement,
-    subtitle: { speaker: string | null; text: string } | null,
+    subtitle: { speaker: string | null; text: string; role?: 'dialogue' | 'voiceover' } | null,
+    screenBlackout = 0,
   ) {
     const w = this.width;
     const h = this.height;
     const ctx = this.ctx;
 
     this.drawSource(webglCanvas);
+
+    // Optional smash-cut or fade to black overlay underneath letterbox & subtitles
+    if (screenBlackout > 0.001) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${Math.max(0, Math.min(1, screenBlackout))})`;
+      ctx.fillRect(0, 0, w, h);
+    }
 
     // Optional cinema letterbox bars
     const barH = this.options.burnLetterbox ? Math.round(h * 0.055) : 0;
@@ -599,8 +606,9 @@ export class Mp4CutsceneRecorder {
 
     // Optional burned-in cutscene subtitles
     if (this.options.burnSubtitles && subtitle && subtitle.text) {
+      const isVoiceover = subtitle.role === 'voiceover';
       const fontSize = Math.max(16, Math.round(h * 0.026));
-      ctx.font = `600 ${fontSize}px "Plus Jakarta Sans", system-ui, sans-serif`;
+      ctx.font = `${isVoiceover ? 'italic ' : ''}600 ${fontSize}px "Plus Jakarta Sans", system-ui, sans-serif`;
       const speakerPrefix = subtitle.speaker ? `${subtitle.speaker}: ` : '';
       const fullText = `${speakerPrefix}${subtitle.text}`;
 
@@ -619,7 +627,7 @@ export class Mp4CutsceneRecorder {
       roundRect(ctx, boxX, boxY, boxW, boxH, 10);
       ctx.fill();
 
-      ctx.strokeStyle = 'rgba(57, 61, 71, 0.95)';
+      ctx.strokeStyle = isVoiceover ? 'rgba(251, 191, 36, 0.45)' : 'rgba(57, 61, 71, 0.95)';
       ctx.lineWidth = 1.5;
       roundRect(ctx, boxX, boxY, boxW, boxH, 10);
       ctx.stroke();
@@ -637,13 +645,13 @@ export class Mp4CutsceneRecorder {
           const startX = w / 2 - totalW / 2;
 
           ctx.textAlign = 'left';
-          ctx.fillStyle = '#00a2ff';
+          ctx.fillStyle = isVoiceover ? '#fbbf24' : '#00a2ff';
           ctx.fillText(speakerPrefix, startX, cy);
-          ctx.fillStyle = '#f1f5f9';
+          ctx.fillStyle = isVoiceover ? '#fef3c7' : '#f1f5f9';
           ctx.fillText(rest, startX + prefixW, cy);
           ctx.textAlign = 'center';
         } else {
-          ctx.fillStyle = '#f1f5f9';
+          ctx.fillStyle = isVoiceover ? '#fef3c7' : '#f1f5f9';
           ctx.fillText(line, w / 2, cy);
         }
       });
@@ -652,14 +660,15 @@ export class Mp4CutsceneRecorder {
 
   public async addFrame(
     webglCanvas: HTMLCanvasElement,
-    subtitle: { speaker: string | null; text: string } | null,
+    subtitle: { speaker: string | null; text: string; role?: 'dialogue' | 'voiceover' } | null,
     timestampSec: number,
     frameDurationSec: number,
     isKeyFrame: boolean,
+    screenBlackout = 0,
   ): Promise<void> {
     if (this.disposed) return;
 
-    this.compositeToCanvas(webglCanvas, subtitle);
+    this.compositeToCanvas(webglCanvas, subtitle, screenBlackout);
     this.submittedFrames++;
 
     if (this.backend === 'webcodecs' && this.canvasSource) {

@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import {
   Clapperboard,
   Download,
+  Play,
   Save,
   Search,
   Trash2,
@@ -22,6 +23,7 @@ interface SceneLibraryViewProps {
   builtInScenes: SceneLibraryEntry[];
   customScenes: SceneLibraryEntry[];
   onLoadScene: (sceneProject: AnimationProject) => void;
+  onWatchEpisode?: (sceneProject: AnimationProject) => void;
   onSaveCurrentScene: (name: string, category: SceneCategory) => void;
   onDeleteCustomScene: (sceneId: string) => void;
   onExportScenes: () => void;
@@ -34,6 +36,7 @@ export const SceneLibraryView: React.FC<SceneLibraryViewProps> = ({
   builtInScenes,
   customScenes,
   onLoadScene,
+  onWatchEpisode,
   onSaveCurrentScene,
   onDeleteCustomScene,
   onExportScenes,
@@ -154,6 +157,65 @@ export const SceneLibraryView: React.FC<SceneLibraryViewProps> = ({
           </div>
         </div>
 
+        {(() => {
+          const featured = filteredScenes.find((s) => s.id === 'scene_idiom_town');
+          if (!featured || !onWatchEpisode) return null;
+          const isCurrentFeatured = project.id === featured.project.id;
+          return (
+            <div
+              className={`flex flex-wrap items-center justify-between gap-2 p-2.5 rounded border ${
+                isCurrentFeatured
+                  ? 'bg-[#2b2e35] border-[#00a2ff]'
+                  : 'bg-[#14161a] border-[#393d47]'
+              }`}
+            >
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 whitespace-nowrap shrink-0">
+                    Featured Episode
+                  </span>
+                  <span className="text-xs font-semibold text-white truncate">
+                    {featured.name}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400 truncate">
+                  Comedy · 01:30 · 7 Chapters · Literal idioms, voiceover & SFX
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onWatchEpisode(featured.project);
+                    setFeedback({
+                      type: 'ok',
+                      text: `Playing "${featured.name}" in Director Camera.`,
+                    });
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#00a2ff] border border-[#00a2ff] text-slate-950 text-[11px] font-semibold hover:bg-[#33b5ff] transition-colors whitespace-nowrap shrink-0"
+                >
+                  <Play className="w-3 h-3" aria-hidden="true" />
+                  <span>Watch Episode</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onLoadScene(featured.project);
+                    setFeedback({
+                      type: 'ok',
+                      text: `Loaded "${featured.name}" into Studio.`,
+                    });
+                  }}
+                  className="px-2 py-1 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
+                >
+                  Load in Studio
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
         {filteredScenes.length === 0 ? (
           <div className="py-6 px-4 rounded bg-[#14161a] border border-[#393d47] text-center">
             <p className="text-xs text-slate-400">
@@ -163,7 +225,7 @@ export const SceneLibraryView: React.FC<SceneLibraryViewProps> = ({
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-40 overflow-y-auto pr-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-36 overflow-y-auto pr-1">
             {filteredScenes.map((scene) => {
               const isCurrent = project.id === scene.project.id;
               const mapLabel = getActiveMapLabel(scene.project);

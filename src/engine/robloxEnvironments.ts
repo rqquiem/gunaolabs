@@ -23,6 +23,12 @@ import {
   buildSuburbanHouseGroup,
 } from './robloxFurniture';
 import {
+  buildIdiomMapModuleGroup,
+  buildIdiomPropGroup,
+  IdiomMapModuleKind,
+  IdiomPropKind,
+} from './idiomAssets';
+import {
   EnvironmentId,
   ItemId,
   MapDefinition,
@@ -280,7 +286,7 @@ export function buildMapModuleGroup(
     }
 
     case 'pcDesk': {
-      group.add(buildPcDeskGroup(primaryColor, accentColor, studTextures));
+      group.add(buildPcDeskGroup(primaryColor, accentColor, studTextures, maxAnisotropy));
       break;
     }
 
@@ -306,6 +312,25 @@ export function buildMapModuleGroup(
 
     case 'streetLamp': {
       group.add(buildStreetLampGroup(primaryColor, accentColor, studTextures));
+      break;
+    }
+
+    case 'verbatimSign':
+    case 'cafeCounter':
+    case 'boardroomSuite':
+    case 'weddingAltar':
+    case 'theaterWings':
+    case 'retroDiner':
+    case 'mainStreetSet': {
+      group.add(
+        buildIdiomMapModuleGroup(
+          kind as IdiomMapModuleKind,
+          primaryColor,
+          accentColor,
+          studTextures,
+          maxAnisotropy,
+        ),
+      );
       break;
     }
 
@@ -363,6 +388,7 @@ function buildBaseplateAndPaths(
   root: THREE.Group,
   mapDef: MapDefinition,
   studTextures: StudTexturePair,
+  maxAnisotropy: number,
 ) {
   const { size, groundColor, trimColor, pathStyle, studDensity, perimeter } =
     mapDef.baseplate;
@@ -483,7 +509,7 @@ function buildBaseplateAndPaths(
     root.add(buildBlockyRobloxTree(-edge * 0.82, edge * 0.78, 0.95, studTextures));
     root.add(buildBlockyRobloxTree(edge * 0.85, edge * 0.76, 1.05, studTextures));
   } else if (perimeter === 'bedroomCorner') {
-    root.add(buildBedroomCornerShellGroup(size, size, studTextures));
+    root.add(buildBedroomCornerShellGroup(size, size, studTextures, maxAnisotropy));
   } else if (perimeter === 'rocks') {
     const rockMat = createPlasticBrickMaterial('#475569', { roughness: 0.86 });
     const ringPoints: [number, number, number][] = [
@@ -527,7 +553,7 @@ export function buildCustomMapEnvironment(
   selectedModuleId?: string | null,
 ): THREE.Group {
   const root = new THREE.Group();
-  buildBaseplateAndPaths(root, mapDef, studTextures);
+  buildBaseplateAndPaths(root, mapDef, studTextures, maxAnisotropy);
 
   for (const mod of mapDef.modules) {
     root.add(buildModuleInstanceNode(mod, studTextures, maxAnisotropy, selectedModuleId));
@@ -814,34 +840,93 @@ function buildCozyBedroomEnvironment(
   const mapDef = getBuiltInMapByEnv('cozyBedroom');
   const root = buildCustomMapEnvironment(mapDef, maxAnisotropy, studTextures);
 
-  // Cozy Nightstand & Warm Lamp between bed and window
-  addBrick(root, 0.88, 0.72, 0.78, -2.05, 0.36, -4.15, '#5c3a21', studTextures, 1.4);
-  const lampBase = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.14, 0.18, 0.2, 12),
-    createPlasticBrickMaterial('#e2e8f0', { roughness: 0.4 }),
+  // Full-scale R6 Nightstand between Bed and Night Skyline Window (-4.2, 0, -8.25)
+  const nsX = -4.2;
+  const nsZ = -8.25;
+  addBrick(root, 1.05, 0.94, 0.92, nsX, 0.47, nsZ, '#5c3a21', studTextures, 1.4);
+  addBrick(root, 1.12, 0.08, 0.98, nsX, 0.96, nsZ, '#6b4226', studTextures, 1.4);
+  const drawer = new THREE.Mesh(
+    new THREE.BoxGeometry(0.84, 0.3, 0.06),
+    createPlasticBrickMaterial('#4a2e1a', { roughness: 0.6 }),
   );
-  lampBase.position.set(-2.05, 0.82, -4.15);
+  drawer.position.set(nsX, 0.66, nsZ + 0.46);
+  const knob = new THREE.Mesh(
+    new THREE.SphereGeometry(0.045, 8, 8),
+    createPlasticBrickMaterial('#f5cd30', { roughness: 0.25, metalness: 0.7 }),
+  );
+  knob.position.set(nsX, 0.66, nsZ + 0.51);
+  root.add(drawer, knob);
+
+  // Warm Glowing Bedside Lamp (y = 1.0..1.72)
+  const lampX = nsX - 0.24;
+  const lampZ = nsZ - 0.12;
+  const lampBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.16, 0.2, 0.24, 14),
+    createPlasticBrickMaterial('#e2e8f0', { roughness: 0.35, metalness: 0.25 }),
+  );
+  lampBase.position.set(lampX, 1.12, lampZ);
+  lampBase.castShadow = true;
+  const lampNeck = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.04, 0.04, 0.16, 10),
+    createPlasticBrickMaterial('#f5cd30', { roughness: 0.3, metalness: 0.65 }),
+  );
+  lampNeck.position.set(lampX, 1.3, lampZ);
   const lampShade = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.16, 0.26, 0.3, 12),
+    new THREE.CylinderGeometry(0.2, 0.32, 0.36, 14),
     new THREE.MeshStandardMaterial({
       color: '#fde68a',
       emissive: '#f59e0b',
       emissiveIntensity: 0.95,
-      roughness: 0.3,
+      roughness: 0.32,
     }),
   );
-  lampShade.position.set(-2.05, 1.07, -4.15);
-  root.add(lampBase, lampShade);
+  lampShade.position.set(lampX, 1.54, lampZ);
+  lampShade.castShadow = true;
+  root.add(lampBase, lampNeck, lampShade);
 
-  // Gaming Beanbag / Pouf beside the rug
-  const pouf = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.56, 0.68, 0.44, 14),
-    createPlasticBrickMaterial('#7c3aed', { roughness: 0.78 }),
+  // Bedside Snack Tray (plate + slice + coaster & cocoa mug)
+  const trayX = nsX + 0.24;
+  const trayZ = nsZ + 0.16;
+  const tray = new THREE.Mesh(
+    new THREE.BoxGeometry(0.46, 0.03, 0.38),
+    createPlasticBrickMaterial('#334155', { roughness: 0.4, metalness: 0.2 }),
   );
-  pouf.position.set(-2.4, 0.22, 2.3);
-  pouf.castShadow = true;
-  pouf.receiveShadow = true;
-  root.add(pouf);
+  tray.position.set(trayX, 1.015, trayZ);
+  const snackSlice = new THREE.Mesh(
+    new THREE.ConeGeometry(0.11, 0.2, 3),
+    createPlasticBrickMaterial('#f59e0b', { roughness: 0.6 }),
+  );
+  snackSlice.rotation.x = Math.PI / 2;
+  snackSlice.rotation.z = 0.4;
+  snackSlice.scale.set(1, 1, 0.25);
+  snackSlice.position.set(trayX - 0.09, 1.055, trayZ);
+  const snackMug = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.075, 0.07, 0.14, 12),
+    createPlasticBrickMaterial('#ef4444', { roughness: 0.36 }),
+  );
+  snackMug.position.set(trayX + 0.11, 1.1, trayZ - 0.05);
+  root.add(tray, snackSlice, snackMug);
+
+  // Multi-part Sculpted Gaming Beanbag / Pouf beside Bookshelf & TV Corner (-5.5, 0, 3.9)
+  const beanbag = new THREE.Group();
+  beanbag.position.set(-5.5, 0, 3.9);
+  const beanMat = createPlasticBrickMaterial('#7c3aed', { roughness: 0.82 });
+  const beanAccentMat = createPlasticBrickMaterial('#5b21b6', { roughness: 0.78 });
+  const bbBase = new THREE.Mesh(new THREE.CylinderGeometry(0.68, 0.72, 0.26, 18), beanAccentMat);
+  bbBase.position.y = 0.13;
+  const bbCushion = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.69, 0.32, 18), beanMat);
+  bbCushion.position.y = 0.42;
+  const bbTop = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.56, 0.12, 18), beanMat);
+  bbTop.position.y = 0.62;
+  const bbBack = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.42, 0.28), beanAccentMat);
+  bbBack.position.set(-0.22, 0.64, 0.32);
+  bbBack.rotation.set(-0.22, 0.45, 0);
+  for (const part of [bbBase, bbCushion, bbTop, bbBack]) {
+    part.castShadow = true;
+    part.receiveShadow = true;
+    beanbag.add(part);
+  }
+  root.add(beanbag);
 
   return root;
 }
@@ -978,7 +1063,7 @@ export function buildRobloxPropGroup(
       break;
     }
     case 'pcDesk': {
-      root.add(buildPcDeskGroup(primaryColor, accentColor, studTextures));
+      root.add(buildPcDeskGroup(primaryColor, accentColor, studTextures, maxAnisotropy));
       break;
     }
     case 'areaRug': {
@@ -1013,6 +1098,38 @@ export function buildRobloxPropGroup(
         studTextures,
       );
       root.add(itemGroup);
+      break;
+    }
+    case 'rainingCatsDogs':
+    case 'steelUmbrella':
+    case 'beanWaterfall':
+    case 'africanElephant':
+    case 'iceFeet':
+    case 'plasterCast':
+    case 'stretcher':
+    case 'clydesdalePlatter':
+    case 'flyingPigs':
+    case 'grocerySpill':
+    case 'parkedSedan':
+    case 'sightseeingBus': {
+      if (propKind === 'rainingCatsDogs' || propKind === 'flyingPigs') {
+        shadowDisc.visible = false;
+      } else if (
+        propKind === 'africanElephant' ||
+        propKind === 'clydesdalePlatter' ||
+        propKind === 'parkedSedan' ||
+        propKind === 'sightseeingBus'
+      ) {
+        shadowDisc.scale.set(2.2, 2.2, 1);
+      }
+      root.add(
+        buildIdiomPropGroup(
+          propKind as IdiomPropKind,
+          primaryColor,
+          accentColor,
+          studTextures,
+        ),
+      );
       break;
     }
     case 'crate':

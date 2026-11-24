@@ -4,11 +4,12 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { resolveActorFaceConfig } from './faceExpressions';
 import { buildRobloxR6CharacterRig, RobloxR6CharacterRig } from './robloxCharacter';
-import { cloneBundle } from './robloxCatalog';
+import { cloneBundle, resolveActorClothing, resolveActorHair } from './robloxCatalog';
 import {
   buildRobloxEnvironmentGroup,
   buildRobloxPropGroup,
 } from './robloxEnvironments';
+import { animateIdiomProp } from './idiomAssets';
 import {
   createClassicSkyboxCubeTexture,
   createContactShadowTexture,
@@ -32,6 +33,7 @@ import {
   MapDefinition,
   SceneActorConfig,
   StageLightConfig,
+  SubtitleRole,
   Vec3Tuple,
   VideoEncoderBackend,
   VideoExportOptions,
@@ -50,7 +52,13 @@ export interface StageEngineCallbacks {
     rotation: Vec3Tuple,
     scale: Vec3Tuple,
   ) => void;
-  onTimeUpdate: (time: number, subtitleText: string | null, subtitleSpeaker: string | null) => void;
+  onTimeUpdate: (
+    time: number,
+    subtitleText: string | null,
+    subtitleSpeaker: string | null,
+    subtitleRole?: SubtitleRole,
+    screenBlackout?: number,
+  ) => void;
   onPlaybackEnded: () => void;
   onContextLost: (lost: boolean) => void;
 }
@@ -421,8 +429,8 @@ export class StageEngine {
           this.getVisibleMapModuleId(),
         );
         this.envCache.set(nextEnvSignature, targetGroup);
-        // Evict oldest cached environments if cache exceeds 6 stages
-        while (this.envCache.size > 6) {
+        // Evict oldest cached environments if cache exceeds 10 stages
+        while (this.envCache.size > 10) {
           const oldestKey = this.envCache.keys().next().value;
           if (!oldestKey || oldestKey === nextEnvSignature) break;
           const evicted = this.envCache.get(oldestKey);
@@ -513,6 +521,8 @@ export class StageEngine {
         if (cfg.kind === 'character') {
           const colors = cfg.bodyColors ?? fallbackBundle.bodyColors;
           const ornaments = cfg.ornaments ?? fallbackBundle.ornaments;
+          const hair = resolveActorHair(cfg);
+          const clothing = resolveActorClothing(cfg);
           const faceConfig = resolveActorFaceConfig(cfg);
           const rig = buildRobloxR6CharacterRig(
             colors,
@@ -520,6 +530,9 @@ export class StageEngine {
             faceConfig,
             this.studTextures,
             this.shadowTex,
+            hair,
+            clothing,
+            this.renderer.capabilities.getMaxAnisotropy(),
           );
           rig.root.userData.actorId = cfg.id;
           this.actors.set(cfg.id, {
@@ -566,6 +579,8 @@ export class StageEngine {
         if (existing.rig) {
           existing.rig.setBodyColors(cfg.bodyColors ?? fallbackBundle.bodyColors);
           existing.rig.setOrnaments(cfg.ornaments ?? fallbackBundle.ornaments);
+          existing.rig.setHair(resolveActorHair(cfg));
+          existing.rig.setClothing(resolveActorClothing(cfg));
           existing.rig.setFaceConfig(resolveActorFaceConfig(cfg));
         }
       }
@@ -1101,6 +1116,18 @@ export class StageEngine {
         );
       }
 
+      const isVisible =
+        Math.max(
+          Math.abs(managed.group.scale.x),
+          Math.abs(managed.group.scale.y),
+          Math.abs(managed.group.scale.z),
+        ) > 0.001;
+      managed.group.visible = isVisible;
+
+      if (!isVisible) {
+        continue;
+      }
+
       if (managed.rig) {
         if (this.poseOverride && this.poseOverride.actorId === id && !this.isPlaying) {
           managed.rig.applyPose(this.poseOverride.pose);
@@ -1126,6 +1153,8 @@ export class StageEngine {
             obj.scale.set(sxz, sy, sxz);
           }
         });
+      } else if (managed.config.propKind) {
+        animateIdiomProp(managed.group, managed.config.propKind, time);
       }
       managed.group.updateMatrixWorld(true);
     }
@@ -1158,7 +1187,7 @@ export class StageEngine {
 
     for (const [id, actorState] of Object.entries(frame.actors)) {
       const managed = this.actors.get(id);
-      if (!managed || !managed.rig) continue;
+      if (!managed || !managed.rig || !managed.group.visible) continue;
 
       const cfg = managed.config;
       const faceCfg = resolveActorFaceConfig(cfg);
@@ -1252,6 +1281,8 @@ export class StageEngine {
       frame.time,
       frame.subtitle ? frame.subtitle.text : null,
       frame.subtitle ? frame.subtitle.speaker : null,
+      frame.subtitle?.role ?? 'dialogue',
+      frame.screenBlackout,
     );
   }
 
@@ -1485,10 +1516,11 @@ export class StageEngine {
         const sub = this.lastEvaluatedFrame?.subtitle ?? null;
         await recorder.addFrame(
           this.renderer.domElement,
-          sub ? { speaker: sub.speaker, text: sub.text } : null,
+          sub ? { speaker: sub.speaker, text: sub.text, role: sub.role } : null,
           outTimestampSec,
           frameDurationSec,
           frameIdx % keyIntervalFrames === 0,
+          this.lastEvaluatedFrame?.screenBlackout ?? 0,
         );
 
         callbacks.onProgress({

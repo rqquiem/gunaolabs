@@ -578,3 +578,623 @@ function drawStars(
     ctx.fillRect(x, y, s, s);
   }
 }
+
+function finalizeSrgbCanvasTexture(
+  canvas: HTMLCanvasElement,
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(8, maxAnisotropy);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+export function createBedroomMainMonitorTexture(
+  accentColor: string,
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 512;
+  const h = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  // Wallpaper gradient
+  const bg = ctx.createLinearGradient(0, 0, w, h);
+  bg.addColorStop(0, '#0f172a');
+  bg.addColorStop(0.55, '#1e1b4b');
+  bg.addColorStop(1, '#312e81');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+
+  // Stylized glowing sun + perspective grid horizon inside center viewport
+  ctx.fillStyle = '#090d1a';
+  ctx.fillRect(14, 14, w - 28, h - 46);
+  ctx.strokeStyle = accentColor;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(14, 14, w - 28, h - 46);
+
+  // Viewport header bar
+  ctx.fillStyle = '#141a2b';
+  ctx.fillRect(14, 14, w - 28, 22);
+  ctx.fillStyle = '#38bdf8';
+  ctx.fillRect(24, 21, 56, 8);
+  ctx.fillStyle = accentColor;
+  ctx.fillRect(88, 21, 40, 8);
+  ctx.fillStyle = '#f59e0b';
+  ctx.fillRect(w - 72, 20, 44, 10);
+
+  // Left scene outliner panel
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+  ctx.fillRect(18, 40, 96, 174);
+  for (let i = 0; i < 7; i++) {
+    ctx.fillStyle = i === 2 ? '#00a2ff' : '#475569';
+    ctx.fillRect(26, 50 + i * 21, i === 2 ? 78 : 54 + ((i * 11) % 24), 10);
+  }
+
+  // Center 3D game world preview
+  const vpX = 120;
+  const vpY = 40;
+  const vpW = 266;
+  const vpH = 140;
+  const sky = ctx.createLinearGradient(vpX, vpY, vpX, vpY + vpH);
+  sky.addColorStop(0, '#1e1b4b');
+  sky.addColorStop(0.65, '#7c3aed');
+  sky.addColorStop(1, '#f97316');
+  ctx.fillStyle = sky;
+  ctx.fillRect(vpX, vpY, vpW, vpH);
+
+  // Synth sun & blocky mountains
+  ctx.fillStyle = '#fde047';
+  ctx.beginPath();
+  ctx.arc(vpX + vpW * 0.5, vpY + vpH * 0.56, 30, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#1e1b4b';
+  ctx.fillRect(vpX, vpY + vpH * 0.68, vpW, vpH * 0.32);
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 1.5;
+  for (let gx = 0; gx <= 6; gx++) {
+    ctx.beginPath();
+    ctx.moveTo(vpX + (gx / 6) * vpW, vpY + vpH * 0.68);
+    ctx.lineTo(vpX + (gx / 6 - 0.5) * vpW * 1.6 + vpW * 0.5, vpY + vpH);
+    ctx.stroke();
+  }
+
+  // Blocky hero silhouette on viewport floor
+  ctx.fillStyle = '#f5cd30';
+  ctx.fillRect(vpX + 124, vpY + 84, 18, 18);
+  ctx.fillStyle = '#0d69ac';
+  ctx.fillRect(vpX + 120, vpY + 102, 26, 20);
+
+  // Bottom mini timeline strip
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(120, 184, 266, 30);
+  ctx.fillStyle = '#38bdf8';
+  ctx.fillRect(128, 192, 6, 14);
+  ctx.fillStyle = '#f59e0b';
+  for (let k = 0; k < 5; k++) {
+    ctx.fillRect(156 + k * 42, 195, 8, 8);
+  }
+
+  // Right inspector panel
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+  ctx.fillRect(392, 40, 102, 174);
+  for (let r = 0; r < 6; r++) {
+    ctx.fillStyle = '#334155';
+    ctx.fillRect(400, 50 + r * 24, 86, 14);
+    ctx.fillStyle = r % 2 === 0 ? accentColor : '#38bdf8';
+    ctx.fillRect(402, 52 + r * 24, 34 + ((r * 17) % 44), 10);
+  }
+
+  // Desktop taskbar
+  ctx.fillStyle = '#090d16';
+  ctx.fillRect(0, h - 26, w, 26);
+  const dockColors = ['#38bdf8', '#a855f7', '#22c55e', '#f59e0b', '#ef4444'];
+  dockColors.forEach((col, i) => {
+    ctx.fillStyle = col;
+    ctx.fillRect(w * 0.5 - 56 + i * 24, h - 20, 16, 14);
+  });
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createBedroomSideMonitorTexture(
+  accentColor: string,
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 256;
+  const h = 384;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#0b1120';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#334155';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(4, 4, w - 8, h - 8);
+
+  // Header bar
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(12, 12, w - 24, 32);
+  ctx.fillStyle = accentColor;
+  ctx.fillRect(22, 22, 12, 12);
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillRect(42, 24, 112, 8);
+
+  // Chat messages stack
+  const chatColors = ['#38bdf8', '#a855f7', '#22c55e', '#f59e0b', '#ec4899'];
+  for (let i = 0; i < 6; i++) {
+    const cy = 58 + i * 34;
+    ctx.fillStyle = '#172033';
+    ctx.fillRect(14, cy, w - 28, 26);
+    ctx.fillStyle = chatColors[i % chatColors.length];
+    ctx.fillRect(22, cy + 7, 12, 12);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillRect(42, cy + 9, 108 + ((i * 23) % 70), 8);
+  }
+
+  // Audio Spectrum / EQ Bars panel
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(14, 272, w - 28, 96);
+  const bars = 12;
+  for (let b = 0; b < bars; b++) {
+    const bh = 18 + Math.round(Math.abs(Math.sin(b * 0.85)) * 56);
+    ctx.fillStyle = b % 2 === 0 ? '#38bdf8' : accentColor;
+    ctx.fillRect(24 + b * 18, 356 - bh, 12, bh);
+  }
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createBedroomConsoleTvTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 512;
+  const h = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#0f172a');
+  grad.addColorStop(0.6, '#1e3a8a');
+  grad.addColorStop(1, '#312e81');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Pixel stars
+  ctx.fillStyle = '#e2e8f0';
+  for (let i = 0; i < 28; i++) {
+    const sx = ((i * 73) % 480) + 16;
+    const sy = ((i * 41) % 140) + 12;
+    ctx.fillRect(sx, sy, 3, 3);
+  }
+
+  // Title banner
+  ctx.fillStyle = '#f59e0b';
+  ctx.fillRect(88, 34, 336, 44);
+  ctx.fillStyle = '#1e1b4b';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('BRICK QUEST CO-OP', w / 2, 64);
+
+  // Two blocky co-op avatars
+  ctx.fillStyle = '#38bdf8';
+  ctx.fillRect(154, 114, 44, 52);
+  ctx.fillStyle = '#f5cd30';
+  ctx.fillRect(162, 88, 28, 26);
+
+  ctx.fillStyle = '#ef4444';
+  ctx.fillRect(314, 114, 44, 52);
+  ctx.fillStyle = '#eab892';
+  ctx.fillRect(322, 88, 28, 26);
+
+  // Press Start pill bar
+  ctx.fillStyle = '#22c55e';
+  ctx.fillRect(176, 194, 160, 28);
+  ctx.fillStyle = '#052e16';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText('PLAYER 1 + 2 READY', w / 2, 213);
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createBedroomPosterTexture(
+  variant: 0 | 1 | 2,
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 256;
+  const h = 320;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  if (variant === 0) {
+    // Brick Battle Championship poster
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, '#0284c7');
+    bg.addColorStop(1, '#1e1b4b');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.arc(w / 2, 138, 68, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Sword silhouette
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(120, 62, 16, 128);
+    ctx.fillRect(96, 162, 64, 14);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('CROSSROADS', w / 2, 254);
+    ctx.fillStyle = '#bae6fd';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText('CHAMPIONSHIP', w / 2, 280);
+  } else if (variant === 1) {
+    // Synthwave Neon Sunset poster
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, '#3b0764');
+    bg.addColorStop(0.55, '#db2777');
+    bg.addColorStop(1, '#0f172a');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = '#fde047';
+    ctx.beginPath();
+    ctx.arc(w / 2, 148, 64, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Horizon scanlines
+    ctx.fillStyle = '#db2777';
+    for (let y = 148; y < 210; y += 14) {
+      ctx.fillRect(54, y, 148, 5);
+    }
+
+    ctx.fillStyle = '#090d1a';
+    ctx.fillRect(0, 210, w, 110);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    for (let i = 0; i <= 6; i++) {
+      ctx.beginPath();
+      ctx.moveTo((i / 6) * w, 210);
+      ctx.lineTo((i / 6 - 0.5) * w * 1.8 + w * 0.5, h);
+      ctx.stroke();
+    }
+  } else {
+    // Retro Pixel Cartridge / Arcade poster
+    ctx.fillStyle = '#18181b';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#ef4444';
+    ctx.fillRect(28, 28, w - 56, 180);
+    ctx.fillStyle = '#fde047';
+    ctx.fillRect(54, 62, w - 108, 96);
+    ctx.fillStyle = '#18181b';
+    ctx.fillRect(76, 84, 34, 34);
+    ctx.fillRect(146, 84, 34, 34);
+    ctx.fillRect(96, 128, 64, 16);
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('BLOX ARCADE', w / 2, 256);
+    ctx.fillStyle = '#f87171';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText('EDITION 64', w / 2, 282);
+  }
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createBedroomSkylineTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 512;
+  const h = 384;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, '#070b1e');
+  sky.addColorStop(0.55, '#172554');
+  sky.addColorStop(1, '#312e81');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  // Twinkling starfield
+  for (let i = 0; i < 42; i++) {
+    const sx = ((i * 97 + 19) % (w - 20)) + 10;
+    const sy = ((i * 53 + 11) % (h * 0.56)) + 10;
+    ctx.fillStyle = i % 5 === 0 ? '#bae6fd' : '#f8fafc';
+    const sz = i % 6 === 0 ? 3 : 2;
+    ctx.fillRect(sx, sy, sz, sz);
+  }
+
+  // Crescent Moon
+  ctx.fillStyle = '#fef3c7';
+  ctx.beginPath();
+  ctx.arc(388, 86, 32, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#0e183b';
+  ctx.beginPath();
+  ctx.arc(400, 78, 28, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Distant purple city towers
+  const backTowers = [
+    [16, 150, 62],
+    [82, 185, 56],
+    [142, 130, 70],
+    [218, 175, 64],
+    [288, 140, 68],
+    [362, 165, 58],
+    [426, 128, 72],
+  ];
+  backTowers.forEach(([bx, by, bw]) => {
+    ctx.fillStyle = '#111834';
+    ctx.fillRect(bx, by, bw, h - by);
+  });
+
+  // Foreground dark buildings with warm amber & cyan lit windows
+  const frontTowers = [
+    [0, 210, 86],
+    [94, 176, 78],
+    [184, 224, 92],
+    [286, 188, 82],
+    [382, 206, 130],
+  ];
+  frontTowers.forEach(([fx, fy, fw], idx) => {
+    ctx.fillStyle = '#090e21';
+    ctx.fillRect(fx, fy, fw, h - fy);
+    for (let wy = fy + 14; wy < h - 20; wy += 22) {
+      for (let wx = fx + 12; wx < fx + fw - 16; wx += 18) {
+        if (((wx + wy + idx * 7) % 5) === 0) continue;
+        ctx.fillStyle = ((wx + wy) % 3 === 0) ? '#38bdf8' : '#fde68a';
+        ctx.fillRect(wx, wy, 9, 11);
+      }
+    }
+  });
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+// =========================================================================
+// Idiom Town ("Welcome to Verbatim") Procedural Scene Textures
+// =========================================================================
+
+export function createVerbatimSignTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 512;
+  const h = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#7c4a26';
+  ctx.fillRect(0, 0, w, h);
+
+  // Wood plank grain lines
+  ctx.strokeStyle = '#5a3216';
+  ctx.lineWidth = 4;
+  for (let y = 32; y < h; y += 38) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+
+  // Painted cream border
+  ctx.strokeStyle = '#fef3c7';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(16, 16, w - 32, h - 32);
+
+  ctx.fillStyle = '#fef3c7';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('WELCOME TO', w / 2, 82);
+
+  ctx.fillStyle = '#fde047';
+  ctx.font = 'bold 54px sans-serif';
+  ctx.fillText('VERBATIM.', w / 2, 148);
+
+  ctx.fillStyle = '#fcd34d';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillText('WHERE EVERY IDIOM IS 100% LITERAL', w / 2, 204);
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createCafeMenuTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 512;
+  const h = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#1b2420';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#a16207';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(10, 10, w - 20, h - 20);
+
+  ctx.fillStyle = '#fde68a';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('VERBATIM ROASTERY', w / 2, 54);
+
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillText('OAT LATTE ..................... $4.50', 48, 110);
+  ctx.fillText('ESPRESSO SHOT .............. $3.00', 48, 146);
+  ctx.fillStyle = '#fca5a5';
+  ctx.fillText('GOSSIP ZONE (PINTO) ...... FREE', 48, 182);
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = 'italic 16px sans-serif';
+  ctx.fillText('* Shovel cleanup fee may apply', 48, 220);
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createBoardroomLaptopTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 256;
+  const h = 160;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(10, 10, w - 20, 22);
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.fillText('Q4 SYNERGY METRICS (DO NOT LOOK UP)', 18, 25);
+
+  const bars = [48, 72, 38, 94, 64, 88];
+  bars.forEach((bh, i) => {
+    ctx.fillStyle = i % 2 === 0 ? '#38bdf8' : '#22c55e';
+    ctx.fillRect(24 + i * 36, 136 - bh, 22, bh);
+  });
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createStainedGlassTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 256;
+  const h = 384;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(0, 0, w, h);
+
+  const colors = ['#fef08a', '#bae6fd', '#fbcfe8', '#fde68a', '#a5f3fc'];
+  for (let row = 0; row < 6; row++) {
+    for (let col = 0; col < 4; col++) {
+      ctx.fillStyle = colors[(row + col) % colors.length];
+      ctx.fillRect(14 + col * 58, 16 + row * 60, 50, 52);
+    }
+  }
+  ctx.fillStyle = '#fffbeb';
+  ctx.beginPath();
+  ctx.arc(w / 2, 110, 44, 0, Math.PI * 2);
+  ctx.fill();
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createTheaterPlaybillTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 256;
+  const h = 384;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#450a0a';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#facc15';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(14, 14, w - 28, h - 28);
+
+  ctx.fillStyle = '#fef3c7';
+  ctx.font = 'bold 26px serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('VERBATIM', w / 2, 72);
+  ctx.fillText('PLAYHOUSE', w / 2, 106);
+
+  ctx.fillStyle = '#facc15';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillText('TONIGHT: HAMLET', w / 2, 174);
+
+  ctx.fillStyle = '#fca5a5';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.fillText('DO NOT WISH LUCK', w / 2, 246);
+  ctx.fillText('14 LAWSUITS & COUNTING', w / 2, 276);
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillText('AMBULANCE ON STANDBY', w / 2, 326);
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createDinerNeonSignTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 512;
+  const h = 192;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#18181b';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#ef4444';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(12, 12, w - 24, h - 24);
+
+  ctx.fillStyle = '#fef08a';
+  ctx.font = 'bold 46px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('VERBATIM DINER', w / 2, 86);
+
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillText('PLAIN FACTS ONLY  ·  OPEN 24 HRS', w / 2, 140);
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+export function createTourBusBannerTexture(
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const w = 512;
+  const h = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 88, w, 40);
+
+  ctx.font = 'bold 34px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('VERBATIM SIGHTSEEING', w / 2, 54);
+  ctx.fillStyle = '#fde047';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillText('WATCH YOUR PHRASING · NO REFUNDS', w / 2, 114);
+
+  return finalizeSrgbCanvasTexture(canvas, maxAnisotropy);
+}
+
+

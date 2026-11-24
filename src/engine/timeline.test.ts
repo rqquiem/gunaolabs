@@ -67,7 +67,21 @@ import {
   CROSSROADS_SHOWDOWN_PROJECT,
   ROBLOXIAN_TOWN_PROJECT,
 } from './presets';
-import { cloneBundle, ORNAMENT_CATALOG } from './robloxCatalog';
+import { THE_IDIOM_TOWN_PROJECT } from './idiomEpisode';
+import {
+  cloneBundle,
+  FOOTWEAR_CATALOG,
+  getHatTuckProfile,
+  HAIR_HIGHLIGHT_PATTERNS,
+  HAIR_STYLE_CATALOG,
+  ORNAMENT_CATALOG,
+  OUTFIT_PRESETS,
+  PANT_CATALOG,
+  resolveActorClothing,
+  resolveActorHair,
+  ROBLOX_AVATAR_BUNDLES,
+  SHIRT_CATALOG,
+} from './robloxCatalog';
 import { MAX_SCENE_DURATION, ORNAMENT_SLOTS, R6_BODY_PARTS } from './types';
 import {
   getH264CodecCandidates,
@@ -489,7 +503,7 @@ test('MP4 recorder dimension alignment, Constrained Baseline H.264 priority, and
 
 test('Map Library catalog, hot-swap preservation, and custom map builder helpers', () => {
   assert.equal(BUILT_IN_MAPS.length, 7);
-  assert.equal(MAP_MODULE_CATALOG.length, 19);
+  assert.equal(MAP_MODULE_CATALOG.length, 26);
 
   const lunar = BUILT_IN_MAPS.find((m) => m.builtInSourceId === 'lunarOutpost')!;
   const swappedKeepMood = applyMapToProject(CROSSROADS_SHOWDOWN_PROJECT, lunar, false);
@@ -542,7 +556,7 @@ test('Map & Scene Library JSON roundtrip and embedded customMap preservation in 
   assert.equal(parsedProj.customMap?.name, 'Neon Arena Test');
   assert.equal(parsedProj.customMap?.modules.length, customMap.modules.length);
 
-  assert.equal(BUILT_IN_SCENES.length, 9);
+  assert.equal(BUILT_IN_SCENES.length, 10);
   const snapshot = createSceneEntryFromProject(
     projWithCustomMap,
     'Custom Arena Snapshot',
@@ -557,8 +571,8 @@ test('Map & Scene Library JSON roundtrip and embedded customMap preservation in 
 });
 
 test('Item & Prop catalog completeness, dual-wield grip presets, and summary formatting', () => {
-  assert.equal(BUILT_IN_ITEMS.length, 12);
-  assert.equal(BUILT_IN_PROPS.length, 20);
+  assert.equal(BUILT_IN_ITEMS.length, 17);
+  assert.equal(BUILT_IN_PROPS.length, 32);
   assert.equal(DUAL_WIELD_COMBOS.length, 6);
 
   const shieldR = createDefaultHandStateForItem('heaterShield', 'right');
@@ -892,8 +906,180 @@ test('Chapter markers, map cue CRUD, and multi-track ripple shift work cleanly',
   assert.equal(rippledFromStart.actors[0].keyframes[0].time, 0);
 });
 
+test('Wardrobe catalogs, hat-tuck profiles, dual-color ornaments, and outfit presets are complete', () => {
+  assert.ok(HAIR_STYLE_CATALOG.length >= 11);
+  assert.equal(HAIR_HIGHLIGHT_PATTERNS.length, 4);
+  assert.ok(SHIRT_CATALOG.length >= 11);
+  assert.ok(PANT_CATALOG.length >= 8);
+  assert.equal(FOOTWEAR_CATALOG.length, 5);
+  assert.equal(OUTFIT_PRESETS.length, ROBLOX_AVATAR_BUNDLES.length);
 
+  assert.equal(getHatTuckProfile('none'), 'none');
+  assert.equal(getHatTuckProfile('cap'), 'brim');
+  assert.equal(getHatTuckProfile('beanie'), 'crown');
+  assert.equal(getHatTuckProfile('knightHelm'), 'fullCover');
+  assert.equal(getHatTuckProfile('halo'), 'none');
 
+  for (const slot of ORNAMENT_SLOTS) {
+    for (const entry of ORNAMENT_CATALOG[slot]) {
+      assert.ok(entry.defaultColor.startsWith('#'));
+      assert.ok(entry.defaultAccentColor.startsWith('#'));
+    }
+  }
+});
 
+test('Hair framework, layered clothing, legacy spiky-hat migration, and hair secondary physics roundtrip cleanly', () => {
+  // Legacy project where ornaments.hat.id === 'spiky' should migrate automatically to hair.styleId = 'spiky'
+  const legacyProj = {
+    ...CROSSROADS_SHOWDOWN_PROJECT,
+    actors: [
+      {
+        ...CROSSROADS_SHOWDOWN_PROJECT.actors[0],
+        hair: undefined,
+        clothing: undefined,
+        ornaments: {
+          ...CROSSROADS_SHOWDOWN_PROJECT.actors[0].ornaments!,
+          hat: { id: 'spiky', color: '#8f3622', accentColor: '#f59e0b' },
+        },
+      },
+    ],
+  };
+
+  const resolvedLegacyHair = resolveActorHair(legacyProj.actors[0]);
+  assert.equal(resolvedLegacyHair.styleId, 'spiky');
+  assert.equal(resolvedLegacyHair.primaryColor, '#8f3622');
+
+  const parsedLegacy = parseProjectJson(serializeProject(legacyProj));
+  const migratedActor = parsedLegacy.actors[0];
+  assert.equal(migratedActor.hair?.styleId, 'spiky');
+  assert.equal(migratedActor.ornaments?.hat.id, 'none');
+
+  // Custom hair, clothing, and dual-color ornaments survive JSON serialization & clamp volume
+  const styledActor = {
+    ...CROSSROADS_SHOWDOWN_PROJECT.actors[0],
+    hair: {
+      styleId: 'twinTails' as const,
+      primaryColor: '#ec4899',
+      highlightColor: '#38bdf8',
+      highlightPattern: 'ombre' as const,
+      volume: 1.8, // should clamp to <= 1.25
+    },
+    clothing: {
+      shirtId: 'hoodie' as const,
+      shirtColor: '#312e81',
+      shirtAccent: '#38bdf8',
+      sleeveMode: 'short' as const,
+      pantsId: 'cargo' as const,
+      pantsColor: '#334155',
+      pantsAccent: '#f59e0b',
+      footwearId: 'boots' as const,
+    },
+    ornaments: {
+      ...CROSSROADS_SHOWDOWN_PROJECT.actors[0].ornaments!,
+      hat: { id: 'beanie', color: '#c4281c', accentColor: '#f2f3f3' },
+      back: { id: 'wings', color: '#f2f3f3', accentColor: '#38bdf8' },
+    },
+  };
+
+  const parsedStyled = parseProjectJson(
+    serializeProject({
+      ...CROSSROADS_SHOWDOWN_PROJECT,
+      actors: [styledActor],
+    }),
+  );
+  const roundtrip = parsedStyled.actors[0];
+  assert.equal(roundtrip.hair?.styleId, 'twinTails');
+  assert.equal(roundtrip.hair?.highlightPattern, 'ombre');
+  assert.equal(roundtrip.hair?.volume, 1.25);
+  assert.equal(roundtrip.clothing?.shirtId, 'hoodie');
+  assert.equal(roundtrip.clothing?.sleeveMode, 'short');
+  assert.equal(roundtrip.clothing?.footwearId, 'boots');
+  assert.equal(roundtrip.ornaments?.back.accentColor, '#38bdf8');
+  assert.equal(resolveActorClothing(roundtrip).pantsId, 'cargo');
+
+  // Secondary motion includes deterministic hairPitch and hairRoll during motion and zeroes when disabled
+  const knight = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
+  const movingMotion = evaluateActorAt(knight, 1.4, CROSSROADS_SHOWDOWN_PROJECT.subtitles);
+  assert.ok(Math.abs(movingMotion.secondaryMotion.hairPitch) > 0.01);
+
+  const staticMotion = evaluateActorAt(
+    { ...knight, secondaryMotion: false },
+    1.4,
+    CROSSROADS_SHOWDOWN_PROJECT.subtitles,
+  );
+  assert.equal(staticMotion.secondaryMotion.hairPitch, 0);
+  assert.equal(staticMotion.secondaryMotion.hairRoll, 0);
+});
+
+test('Cozy Gamer Bedroom uses 18x18 R6 proportions and BEDROOM_SKIT_PROJECT opens seated at the PC desk', () => {
+  const bedroomMap = BUILT_IN_MAPS.find((m) => m.builtInSourceId === 'cozyBedroom')!;
+  assert.equal(bedroomMap.baseplate.size, 18);
+
+  const deskMod = bedroomMap.modules.find((m) => m.id === 'br_desk')!;
+  const bedMod = bedroomMap.modules.find((m) => m.id === 'br_bed')!;
+  assert.ok(deskMod && bedMod);
+  assert.deepEqual(deskMod.position, [3.6, 0, -7.8]);
+  assert.deepEqual(bedMod.position, [-6.9, 0, -5.6]);
+
+  const t0 = evaluateProjectAt(BEDROOM_SKIT_PROJECT, 0);
+  const alexT0 = t0.actors['actor-bedroom-gamer'];
+  assert.ok(alexT0);
+  assert.equal(alexT0.clip, 'sit');
+  assert.ok(Math.abs(alexT0.position[0] - 3.38) < 0.01);
+  assert.ok(Math.abs(alexT0.position[2] - -6.42) < 0.01);
+});
+
+test('The Idiom Town 90s episode features 7 scenes, voiceover/dialogue roles, SFX track, smash-cut blackout, and serialization roundtrip', () => {
+  assert.equal(BUILT_IN_SCENES[0].id, 'scene_idiom_town');
+  assert.equal(THE_IDIOM_TOWN_PROJECT.duration, 90);
+  assert.equal(THE_IDIOM_TOWN_PROJECT.chapters?.length, 7);
+  assert.equal(THE_IDIOM_TOWN_PROJECT.mapTrack?.length, 7);
+  assert.ok((THE_IDIOM_TOWN_PROJECT.sfxTrack?.length ?? 0) >= 16);
+  assert.ok(
+    THE_IDIOM_TOWN_PROJECT.subtitles.some((s) => s.role === 'voiceover') &&
+      THE_IDIOM_TOWN_PROJECT.subtitles.some((s) => s.role === 'dialogue'),
+  );
+
+  // Spot-check scene switches, prop visibility isolation, and smash-cut blackout
+  const s1 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 4.5);
+  assert.equal(s1.stage.customMap?.id, 'idiom_map_s1_verbatim');
+  assert.equal(s1.actors['prop-cats-dogs'].scale[0], 1);
+  assert.equal(s1.actors['prop-elephant'].scale[0], 0);
+  assert.equal(s1.screenBlackout, 0);
+
+  const s3 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 31);
+  assert.equal(s3.stage.customMap?.id, 'idiom_map_s3_boardroom');
+  assert.equal(s3.actors['prop-elephant'].scale[0], 1.05);
+  assert.equal(s3.actors['prop-cats-dogs'].scale[0], 0);
+  assert.equal(s3.subtitle?.role, 'voiceover');
+
+  const s6 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 74);
+  assert.equal(s6.stage.customMap?.id, 'idiom_map_s6_diner');
+  assert.equal(s6.actors['prop-horse-platter'].scale[0], 1);
+
+  const smashPre = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 86.2);
+  assert.equal(smashPre.screenBlackout, 0);
+  const smashBlack = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 88.0);
+  assert.equal(smashBlack.screenBlackout, 1);
+  assert.equal(smashBlack.subtitle?.role, 'voiceover');
+
+  // Roundtrip JSON & ripple shift preserve sfxTrack, screenEffects, and subtitle roles
+  const parsed = parseProjectJson(serializeProject(THE_IDIOM_TOWN_PROJECT));
+  assert.equal(parsed.duration, 90);
+  assert.equal(parsed.sfxTrack?.length, THE_IDIOM_TOWN_PROJECT.sfxTrack?.length);
+  assert.equal(parsed.screenEffects?.length, THE_IDIOM_TOWN_PROJECT.screenEffects?.length);
+  assert.equal(parsed.subtitles.find((s) => s.id === 'sub-1b')?.role, 'voiceover');
+
+  const shifted = rippleShiftProjectFrom(parsed, 50, 5);
+  assert.equal(shifted.duration, 95);
+  assert.equal(
+    shifted.sfxTrack?.find((s) => s.id === 'sfx-7-smash')?.time,
+    91.5,
+  );
+  assert.equal(
+    shifted.screenEffects?.find((e) => e.id === 'se-cut')?.time,
+    91.5,
+  );
+});
 
 

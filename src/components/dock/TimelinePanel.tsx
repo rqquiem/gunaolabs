@@ -19,6 +19,8 @@ import {
   Pencil,
   Check,
   MapPin,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { formatHeldItemsSummary } from '../../engine/itemCatalog';
 import {
@@ -51,12 +53,14 @@ interface TimelinePanelProps {
   project: AnimationProject;
   currentTime: number;
   isPlaying: boolean;
+  audioMuted?: boolean;
   playbackSpeed: number;
   cameraMode: CameraMode;
   selectedActorId: string | null;
   builtInMaps: MapDefinition[];
   customMaps: MapDefinition[];
   onTogglePlay: () => void;
+  onToggleAudio?: () => void;
   onSeek: (time: number) => void;
   onChangeSpeed: (speed: number) => void;
   onToggleLoop: () => void;
@@ -95,12 +99,14 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   project,
   currentTime,
   isPlaying,
+  audioMuted = false,
   playbackSpeed,
   cameraMode,
   selectedActorId,
   builtInMaps,
   customMaps,
   onTogglePlay,
+  onToggleAudio,
   onSeek,
   onChangeSpeed,
   onToggleLoop,
@@ -616,6 +622,27 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             <option value={1.5}>1.5x</option>
             <option value={2}>2.0x</option>
           </select>
+
+          {onToggleAudio && (
+            <button
+              type="button"
+              onClick={onToggleAudio}
+              aria-pressed={!audioMuted}
+              aria-label={audioMuted ? 'Unmute Episode Audio' : 'Mute Episode Audio'}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
+                !audioMuted
+                  ? 'bg-[#2b2e35] border-[#393d47] text-slate-200 hover:bg-[#363a43]'
+                  : 'bg-[#14161a] border-[#393d47] text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              {audioMuted ? (
+                <VolumeX className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
+              ) : (
+                <Volume2 className="w-3.5 h-3.5 text-[#38bdf8]" aria-hidden="true" />
+              )}
+              <span>{audioMuted ? 'Muted' : 'Audio'}</span>
+            </button>
+          )}
 
           {/* Zoom Controls */}
           <div className="flex items-center gap-0.5 pl-1 border-l border-[#393d47]">

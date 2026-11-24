@@ -7,8 +7,15 @@ import { CharacterPanel } from './components/dock/CharacterPanel';
 import { CutscenePanel } from './components/dock/CutscenePanel';
 import { ExportPanel } from './components/dock/ExportPanel';
 import { CROSSROADS_SHOWDOWN_PROJECT } from './engine/presets';
-import { cloneBundle, ROBLOX_AVATAR_BUNDLES } from './engine/robloxCatalog';
+import {
+  cloneBundle,
+  OutfitPreset,
+  resolveActorClothing,
+  resolveActorHair,
+  ROBLOX_AVATAR_BUNDLES,
+} from './engine/robloxCatalog';
 import { StageEngine } from './engine/StageEngine';
+import { EpisodeAudioEngine } from './engine/episodeAudio';
 import { resolveActorFaceConfig, resolveExpressionParams } from './engine/faceExpressions';
 import {
   BUILT_IN_POSES,
@@ -90,12 +97,14 @@ import {
   CameraMode,
   ChapterMarker,
   CharacterHeldItems,
+  ClothingConfig,
   DockTab,
   EasingType,
   ExpressionParams,
   ExpressionPresetId,
   FaceRigConfig,
   GizmoMode,
+  HairConfig,
   ItemEasingMode,
   ItemId,
   MapDefinition,
@@ -110,6 +119,7 @@ import {
   SceneLibraryEntry,
   StageLightConfig,
   SubtitleCue,
+  SubtitleRole,
   UpperBodyClipId,
   Vec3Tuple,
   VideoExportOptions,
@@ -168,7 +178,10 @@ export default function App() {
   const [activeSubtitle, setActiveSubtitle] = useState<{
     speaker: string | null;
     text: string;
+    role?: SubtitleRole;
   } | null>(null);
+  const [screenBlackout, setScreenBlackout] = useState(0);
+  const [audioMuted, setAudioMuted] = useState(false);
   const [exportOptions, setExportOptions] = useState<VideoExportOptions>({
     resolution: '720p',
     fps: 30,
@@ -194,14 +207,21 @@ export default function App() {
 
   const canvasMountRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<StageEngine | null>(null);
+  const audioEngineRef = useRef<EpisodeAudioEngine | null>(null);
   const projectRef = useRef(project);
   const currentTimeRef = useRef(currentTime);
+  const isPlayingRef = useRef(isPlaying);
+  const playbackSpeedRef = useRef(playbackSpeed);
   projectRef.current = project;
   currentTimeRef.current = currentTime;
+  isPlayingRef.current = isPlaying;
+  playbackSpeedRef.current = playbackSpeed;
 
   useEffect(() => {
     const mount = canvasMountRef.current;
     if (!mount) return;
+    const audioEngine = new EpisodeAudioEngine();
+    audioEngineRef.current = audioEngine;
 
     const engine = new StageEngine(mount, projectRef.current, {
       onSelectActor: (actorId) => {
@@ -238,16 +258,34 @@ export default function App() {
           }),
         );
       },
-      onTimeUpdate: (time, subtitleText, subtitleSpeaker) => {
+      onTimeUpdate: (time, subtitleText, subtitleSpeaker, subtitleRole, blackout) => {
         setCurrentTime(time);
+        setScreenBlackout(blackout ?? 0);
+        audioEngineRef.current?.sync(
+          projectRef.current,
+          time,
+          isPlayingRef.current,
+          playbackSpeedRef.current,
+        );
         if (subtitleText) {
-          setActiveSubtitle({ speaker: subtitleSpeaker, text: subtitleText });
+          setActiveSubtitle({
+            speaker: subtitleSpeaker,
+            text: subtitleText,
+            role: subtitleRole,
+          });
         } else {
           setActiveSubtitle(null);
         }
       },
       onPlaybackEnded: () => {
+        isPlayingRef.current = false;
         setIsPlaying(false);
+        audioEngineRef.current?.sync(
+          projectRef.current,
+          projectRef.current.duration,
+          false,
+          playbackSpeedRef.current,
+        );
       },
       onContextLost: (lost) => {
         setContextLost(lost);
@@ -263,11 +301,14 @@ export default function App() {
     if (params.get('autostart') === '1') {
       engine.setCameraMode('director');
       setCameraMode('director');
+      isPlayingRef.current = true;
       engine.setPlaying(true);
       setIsPlaying(true);
     }
 
     return () => {
+      audioEngine.dispose();
+      audioEngineRef.current = null;
       engine.dispose();
       engineRef.current = null;
     };
@@ -298,7 +339,9 @@ export default function App() {
   const handleTogglePlay = useCallback(() => {
     setIsPlaying((prev) => {
       const next = !prev;
+      isPlayingRef.current = next;
       if (next) {
+        audioEngineRef.current?.unlock();
         setJointDraft({});
         setHipTiltDraft(null);
         setFaceDraft(null);
@@ -306,7 +349,22 @@ export default function App() {
         setActivePosePreviewId(null);
         setPoseMirrored(false);
       }
+      audioEngineRef.current?.sync(
+        projectRef.current,
+        currentTimeRef.current,
+        next,
+        playbackSpeedRef.current,
+      );
       engineRef.current?.setPlaying(next);
+      return next;
+    });
+  }, []);
+
+  const handleToggleAudio = useCallback(() => {
+    audioEngineRef.current?.unlock();
+    setAudioMuted((prev) => {
+      const next = !prev;
+      audioEngineRef.current?.setMuted(next);
       return next;
     });
   }, []);
@@ -318,6 +376,7 @@ export default function App() {
     setItemDraft(null);
     setActivePosePreviewId(null);
     setPoseMirrored(false);
+    audioEngineRef.current?.resetPlayback(time);
     engineRef.current?.setPoseOverride(null, null);
     engineRef.current?.setFaceOverride(null, null);
     engineRef.current?.setItemOverride(null, null);
@@ -596,6 +655,8 @@ export default function App() {
         bundleId: bundlePreset.id,
         bodyColors: cloned.bodyColors,
         ornaments: cloned.ornaments,
+        hair: cloned.hair,
+        clothing: cloned.clothing,
         faceConfig: cloned.faceConfig,
         heldItems: cloned.heldItems,
         lookAtTarget: 'camera',
@@ -767,6 +828,8 @@ export default function App() {
               bundleId,
               bodyColors: cloned.bodyColors,
               ornaments: cloned.ornaments,
+              hair: cloned.hair,
+              clothing: cloned.clothing,
               faceConfig: cloned.faceConfig,
               primaryColor: cloned.bodyColors.torso,
               accentColor: cloned.ornaments.hat.color,
@@ -775,6 +838,67 @@ export default function App() {
       ),
     }));
   }, []);
+
+  const handleApplyOutfitPreset = useCallback(
+    (actorId: string, preset: OutfitPreset) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) => {
+          if (a.id !== actorId) return a;
+          const baseOrnaments = a.ornaments ?? cloneBundle('noob').ornaments;
+          return {
+            ...a,
+            hair: { ...preset.hair },
+            clothing: { ...preset.clothing },
+            ornaments: {
+              ...baseOrnaments,
+              hat: { ...preset.hat },
+              head: { ...preset.head },
+              back: { ...preset.back },
+              arm: { ...preset.arm },
+              legs: { ...preset.legs },
+            },
+            accentColor: preset.hat.color,
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const handleUpdateHair = useCallback(
+    (actorId: string, patch: Partial<HairConfig>) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) => {
+          if (a.id !== actorId) return a;
+          const baseHair = resolveActorHair(a);
+          return {
+            ...a,
+            hair: { ...baseHair, ...patch },
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const handleUpdateClothing = useCallback(
+    (actorId: string, patch: Partial<ClothingConfig>) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) => {
+          if (a.id !== actorId) return a;
+          const baseClothing = resolveActorClothing(a);
+          return {
+            ...a,
+            clothing: { ...baseClothing, ...patch },
+          };
+        }),
+      }));
+    },
+    [],
+  );
 
   const handleUpdateBodyPartColor = useCallback(
     (actorId: string, part: R6BodyPartId, hex: string) => {
@@ -796,17 +920,32 @@ export default function App() {
   );
 
   const handleUpdateOrnament = useCallback(
-    (actorId: string, slot: OrnamentSlot, id: string, color: string) => {
+    (
+      actorId: string,
+      slot: OrnamentSlot,
+      id: string,
+      color: string,
+      accentColor?: string,
+    ) => {
       setProject((prev) => ({
         ...prev,
         actors: prev.actors.map((a) => {
           if (a.id !== actorId) return a;
           const baseOrnaments = a.ornaments ?? cloneBundle('noob').ornaments;
+          const resolvedAccent =
+            accentColor ??
+            (baseOrnaments[slot].id === id
+              ? baseOrnaments[slot].accentColor
+              : undefined);
           return {
             ...a,
             ornaments: {
               ...baseOrnaments,
-              [slot]: { id, color },
+              [slot]: {
+                id,
+                color,
+                ...(resolvedAccent ? { accentColor: resolvedAccent } : {}),
+              },
             },
           };
         }),
@@ -1354,7 +1493,10 @@ export default function App() {
 
   const handleLoadPreset = useCallback((preset: AnimationProject) => {
     const cloned = cloneProject(preset);
+    isPlayingRef.current = false;
     setIsPlaying(false);
+    setScreenBlackout(0);
+    audioEngineRef.current?.resetPlayback(0);
     engineRef.current?.setPlaying(false);
     setProject(cloned);
     setCurrentTime(0);
@@ -1374,6 +1516,20 @@ export default function App() {
     engineRef.current?.setFaceOverride(null, null);
     engineRef.current?.setItemOverride(null, null);
   }, []);
+
+  const handleWatchEpisode = useCallback(
+    (preset: AnimationProject) => {
+      handleLoadPreset(preset);
+      handleSetCameraMode('director');
+      audioEngineRef.current?.unlock();
+      audioEngineRef.current?.setMuted(false);
+      setAudioMuted(false);
+      isPlayingRef.current = true;
+      setIsPlaying(true);
+      engineRef.current?.setPlaying(true);
+    },
+    [handleLoadPreset, handleSetCameraMode],
+  );
 
   const handleApplyMap = useCallback(
     (map: MapDefinition, applyAtmosphere: boolean) => {
@@ -1782,21 +1938,45 @@ export default function App() {
           </>
         )}
 
+        {screenBlackout > 0.001 && (
+          <div
+            data-testid="screen-blackout"
+            className="pointer-events-none absolute inset-0 bg-black z-20"
+            style={{ opacity: screenBlackout }}
+          />
+        )}
+
         {activeSubtitle && (
           <div
             data-testid="cutscene-subtitle"
-            className={`pointer-events-none fixed left-1/2 -translate-x-1/2 z-15 max-w-2xl w-[min(640px,92vw)] px-5 py-2.5 rounded-lg bg-[#14161a]/92 border border-[#393d47] text-center transition-all ${
+            className={`pointer-events-none fixed left-1/2 -translate-x-1/2 z-25 max-w-2xl w-[min(640px,92vw)] px-5 py-2.5 rounded-lg bg-[#14161a]/92 border text-center transition-all ${
+              activeSubtitle.role === 'voiceover'
+                ? 'border-amber-500/45'
+                : 'border-[#393d47]'
+            } ${
               isDockCollapsed
                 ? 'bottom-14'
                 : 'top-20 md:top-auto md:bottom-[296px]'
             }`}
           >
             {activeSubtitle.speaker && (
-              <span className="text-xs font-semibold text-[#00a2ff] mr-2">
+              <span
+                className={`text-xs font-semibold mr-2 ${
+                  activeSubtitle.role === 'voiceover'
+                    ? 'text-amber-400'
+                    : 'text-[#00a2ff]'
+                }`}
+              >
                 {activeSubtitle.speaker}:
               </span>
             )}
-            <span className="text-sm font-medium text-slate-100">
+            <span
+              className={`text-sm font-medium ${
+                activeSubtitle.role === 'voiceover'
+                  ? 'italic text-amber-100'
+                  : 'text-slate-100'
+              }`}
+            >
               {activeSubtitle.text}
             </span>
           </div>
@@ -1828,12 +2008,14 @@ export default function App() {
             project={project}
             currentTime={currentTime}
             isPlaying={isPlaying}
+            audioMuted={audioMuted}
             playbackSpeed={playbackSpeed}
             cameraMode={cameraMode}
             selectedActorId={selectedActorId}
             builtInMaps={BUILT_IN_MAPS}
             customMaps={customMaps}
             onTogglePlay={handleTogglePlay}
+            onToggleAudio={handleToggleAudio}
             onSeek={handleSeek}
             onChangeSpeed={(spd) => {
               setPlaybackSpeed(spd);
@@ -1908,6 +2090,7 @@ export default function App() {
             selectedMapModuleId={selectedMapModuleId}
             onUpdateProject={(updater) => setProject(updater)}
             onLoadPreset={handleLoadPreset}
+            onWatchEpisode={handleWatchEpisode}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
             onKeyMapAtCurrentTime={handleKeyMapAtCurrentTime}
             onToggleLightHelpers={() => {
@@ -1956,8 +2139,11 @@ export default function App() {
             onDeleteActor={handleDeleteActor}
             onSetGizmoMode={handleSetGizmoMode}
             onApplyBundle={handleApplyBundle}
+            onApplyOutfitPreset={handleApplyOutfitPreset}
             onUpdateBodyPartColor={handleUpdateBodyPartColor}
             onUpdateOrnament={handleUpdateOrnament}
+            onUpdateHair={handleUpdateHair}
+            onUpdateClothing={handleUpdateClothing}
             onUpdatePropColors={(actorId, primaryColor, accentColor) =>
               setProject((prev) => ({
                 ...prev,

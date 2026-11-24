@@ -60,11 +60,79 @@ export const ORNAMENT_SLOT_LABELS: Record<OrnamentSlot, string> = {
 export interface OrnamentSelection {
   id: string;
   color: string;
+  accentColor?: string;
 }
 
 export type R6Ornaments = Record<OrnamentSlot, OrnamentSelection>;
 
 export type R6BodyColors = Record<R6BodyPartId, string>;
+
+// =========================================================================
+// Hair Framework & Layered Clothing Types
+// =========================================================================
+
+export type HairStyleId =
+  | 'none'
+  | 'spiky'
+  | 'swept'
+  | 'bob'
+  | 'ponytail'
+  | 'curly'
+  | 'mohawk'
+  | 'twinTails'
+  | 'sidePart'
+  | 'undercut'
+  | 'braids';
+
+export type HairHighlightPattern = 'none' | 'tips' | 'streaks' | 'ombre';
+
+export type HatTuckProfile = 'none' | 'brim' | 'crown' | 'fullCover';
+
+export interface HairConfig {
+  styleId: HairStyleId;
+  primaryColor: string;
+  highlightColor: string;
+  highlightPattern: HairHighlightPattern;
+  volume: number; // 0.8 .. 1.25
+}
+
+export type ShirtStyleId =
+  | 'none'
+  | 'tshirt'
+  | 'hoodie'
+  | 'jacket'
+  | 'vest'
+  | 'knightTunic'
+  | 'tracksuit'
+  | 'suitCoat'
+  | 'wizardRobe'
+  | 'varsity'
+  | 'cyberSuit';
+
+export type SleeveMode = 'auto' | 'short' | 'long' | 'sleeveless';
+
+export type PantsStyleId =
+  | 'none'
+  | 'jeans'
+  | 'cargo'
+  | 'slacks'
+  | 'shorts'
+  | 'knightGreaves'
+  | 'trackPants'
+  | 'cyberLeggings';
+
+export type FootwearId = 'none' | 'sneakers' | 'boots' | 'armoredBoots' | 'loafers';
+
+export interface ClothingConfig {
+  shirtId: ShirtStyleId;
+  shirtColor: string;
+  shirtAccent: string;
+  sleeveMode: SleeveMode;
+  pantsId: PantsStyleId;
+  pantsColor: string;
+  pantsAccent: string;
+  footwearId: FootwearId;
+}
 
 export type PropKind =
   | 'spawnpad'
@@ -87,6 +155,18 @@ export type PropKind =
   | 'picketFence'
   | 'streetLamp'
   | 'mailbox'
+  | 'rainingCatsDogs'
+  | 'steelUmbrella'
+  | 'beanWaterfall'
+  | 'africanElephant'
+  | 'iceFeet'
+  | 'plasterCast'
+  | 'stretcher'
+  | 'clydesdalePlatter'
+  | 'flyingPigs'
+  | 'grocerySpill'
+  | 'parkedSedan'
+  | 'sightseeingBus'
   | 'heldItem';
 
 export type PropCategory = 'bedroom' | 'town' | 'furniture' | 'battle' | 'classic';
@@ -105,7 +185,12 @@ export type ItemId =
   | 'glowLantern'
   | 'energyBlade'
   | 'holoScanner'
-  | 'teamFlag';
+  | 'teamFlag'
+  | 'camera'
+  | 'hairdryer'
+  | 'bouquet'
+  | 'snowShovel'
+  | 'stapler';
 
 export type HandSlot = 'right' | 'left';
 export type HandTargetMode = 'right' | 'left' | 'dual';
@@ -354,6 +439,8 @@ export interface SceneActorConfig {
   bundleId?: string;
   bodyColors?: R6BodyColors;
   ornaments?: R6Ornaments;
+  hair?: HairConfig;
+  clothing?: ClothingConfig;
   faceConfig?: FaceRigConfig;
   faceKeyframes?: FaceKeyframe[];
   heldItems?: CharacterHeldItems;
@@ -413,6 +500,8 @@ export interface LightingKeyframe {
   easing: EasingType;
 }
 
+export type SubtitleRole = 'dialogue' | 'voiceover';
+
 export interface SubtitleCue {
   id: string;
   startTime: number;
@@ -420,6 +509,41 @@ export interface SubtitleCue {
   speaker: string;
   actorId?: string | null;
   text: string;
+  role?: SubtitleRole;
+}
+
+export type SfxKind =
+  | 'thunder'
+  | 'catsDogsRain'
+  | 'umbrellaClang'
+  | 'cafeChatter'
+  | 'beanCascade'
+  | 'officeSilence'
+  | 'staplerCrunch'
+  | 'elephantTrumpet'
+  | 'weddingOrganScratch'
+  | 'iceCrackWhir'
+  | 'legSnap'
+  | 'ambulanceSiren'
+  | 'dinerClatter'
+  | 'horseCartNeigh'
+  | 'crowdPanicScreech'
+  | 'smashCutSilence';
+
+export interface SfxCue {
+  id: string;
+  time: number;
+  kind: SfxKind;
+  label?: string;
+  duration?: number;
+  volume?: number;
+}
+
+export interface ScreenEffectKeyframe {
+  id: string;
+  time: number;
+  blackout: number; // 0..1
+  easing: EasingType;
 }
 
 export const MIN_SCENE_DURATION = 2;
@@ -478,6 +602,8 @@ export interface AnimationProject {
   exposure?: number;
   lightingTrack?: LightingKeyframe[];
   mapTrack?: MapKeyframe[];
+  sfxTrack?: SfxCue[];
+  screenEffects?: ScreenEffectKeyframe[];
   chapters?: ChapterMarker[];
   stageLights?: StageLightConfig[];
   actors: SceneActorConfig[];
@@ -499,6 +625,8 @@ export interface SecondaryMotionState {
   wingSpread: number;
   hatLagX: number;
   hatLagZ: number;
+  hairPitch: number;
+  hairRoll: number;
   propSwing: number;
 }
 
@@ -541,6 +669,7 @@ export interface EvaluatedFrame {
   lighting: EvaluatedLightingState;
   stage: EvaluatedStageState;
   subtitle: SubtitleCue | null;
+  screenBlackout: number;
 }
 
 export type CameraMode = 'orbit' | 'director';
@@ -682,7 +811,14 @@ export type MapModuleKind =
   | 'bookshelf'
   | 'suburbanHouse'
   | 'picketFence'
-  | 'streetLamp';
+  | 'streetLamp'
+  | 'verbatimSign'
+  | 'cafeCounter'
+  | 'boardroomSuite'
+  | 'weddingAltar'
+  | 'theaterWings'
+  | 'retroDiner'
+  | 'mainStreetSet';
 
 export interface MapBaseplateConfig {
   size: number;

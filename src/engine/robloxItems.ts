@@ -650,6 +650,136 @@ export function buildItemModelGroup(
       root.add(pole, finial, bannerA, bannerB);
       break;
     }
+
+    case 'camera': {
+      const bodyMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.42, metalness: 0.25 });
+      const metalMat = createPlasticBrickMaterial(accentColor, { roughness: 0.22, metalness: 0.78 });
+      const glassMat = new THREE.MeshStandardMaterial({
+        color: '#0f172a',
+        roughness: 0.08,
+        metalness: 0.85,
+      });
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.76 * S, 0.52 * S, 0.34 * S), bodyMat);
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.2 * S, 0.5 * S, 0.38 * S), bodyMat);
+      grip.position.set(0.32 * S, -0.01 * S, 0.04 * S);
+      const prism = new THREE.Mesh(new THREE.BoxGeometry(0.36 * S, 0.16 * S, 0.28 * S), metalMat);
+      prism.position.set(0, 0.32 * S, 0);
+      const shutter = new THREE.Mesh(new THREE.CylinderGeometry(0.06 * S, 0.06 * S, 0.06 * S, 10), metalMat);
+      shutter.position.set(0.26 * S, 0.28 * S, 0.05 * S);
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.2 * S, 0.22 * S, 0.42 * S, 16), bodyMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(-0.04 * S, 0, 0.34 * S);
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.21 * S, 0.21 * S, 0.08 * S, 16), metalMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(-0.04 * S, 0, 0.48 * S);
+      const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.16 * S, 0.16 * S, 0.05 * S, 16), glassMat);
+      lens.rotation.x = Math.PI / 2;
+      lens.position.set(-0.04 * S, 0, 0.55 * S);
+
+      root.add(body, grip, prism, shutter, barrel, ring, lens);
+      break;
+    }
+
+    case 'hairdryer': {
+      const shellMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.35, metalness: 0.18 });
+      const chromeMat = createPlasticBrickMaterial(accentColor, { roughness: 0.18, metalness: 0.85 });
+      const darkMat = createPlasticBrickMaterial('#1e293b', { roughness: 0.72 });
+
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.1 * S, 0.09 * S, 0.75 * S, 10), shellMat);
+      handle.position.set(0, -0.1 * S, 0.04 * S);
+      handle.rotation.x = 0.22;
+
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.17 * S, 0.19 * S, 0.92 * S, 14), shellMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(0, 0.28 * S, 0.22 * S);
+
+      const nozzle = new THREE.Mesh(new THREE.BoxGeometry(0.18 * S, 0.32 * S, 0.28 * S), chromeMat);
+      nozzle.position.set(0, 0.28 * S, 0.78 * S);
+
+      const intake = new THREE.Mesh(new THREE.CylinderGeometry(0.16 * S, 0.16 * S, 0.08 * S, 12), darkMat);
+      intake.rotation.x = Math.PI / 2;
+      intake.position.set(0, 0.28 * S, -0.25 * S);
+
+      const switchBtn = new THREE.Mesh(new THREE.BoxGeometry(0.06 * S, 0.14 * S, 0.08 * S), darkMat);
+      switchBtn.position.set(0, -0.02 * S, 0.14 * S);
+
+      root.add(handle, barrel, nozzle, intake, switchBtn);
+      break;
+    }
+
+    case 'bouquet': {
+      const wrapMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.65 });
+      const bloomMat = createPlasticBrickMaterial(accentColor, { roughness: 0.5 });
+      const leafMat = createPlasticBrickMaterial('#22c55e', { roughness: 0.68 });
+      const ribbonMat = createPlasticBrickMaterial('#f43f5e', { roughness: 0.45 });
+
+      const cone = new THREE.Mesh(new THREE.CylinderGeometry(0.32 * S, 0.1 * S, 0.85 * S, 12), wrapMat);
+      cone.position.y = 0.18 * S;
+      const bow = new THREE.Mesh(new THREE.BoxGeometry(0.24 * S, 0.12 * S, 0.24 * S), ribbonMat);
+      bow.position.y = -0.08 * S;
+
+      root.add(cone, bow);
+      const bloomOffsets: [number, number, number, boolean][] = [
+        [0, 0.72, 0, true],
+        [-0.22, 0.65, 0.16, false],
+        [0.22, 0.64, 0.16, true],
+        [-0.18, 0.62, -0.2, true],
+        [0.2, 0.66, -0.18, false],
+        [0, 0.6, 0.26, false],
+      ];
+      bloomOffsets.forEach(([bx, by, bz, alt]) => {
+        const rose = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(0.16 * S, 0),
+          alt ? wrapMat : bloomMat,
+        );
+        rose.position.set(bx * S, by * S, bz * S);
+        const leaf = new THREE.Mesh(new THREE.BoxGeometry(0.22 * S, 0.05 * S, 0.14 * S), leafMat);
+        leaf.position.set(bx * 1.15 * S, (by - 0.1) * S, bz * 1.15 * S);
+        leaf.rotation.z = bx * 0.8;
+        root.add(rose, leaf);
+      });
+      break;
+    }
+
+    case 'snowShovel': {
+      const scoopMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.42, metalness: 0.15 });
+      const shaftMat = createPlasticBrickMaterial(accentColor, { roughness: 0.28, metalness: 0.72 });
+      const gripMat = createPlasticBrickMaterial('#1e293b', { roughness: 0.75 });
+
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.06 * S, 0.06 * S, 2.35 * S, 10), shaftMat);
+      shaft.position.set(0, 0.55 * S, 0);
+
+      const dGrip = new THREE.Mesh(new THREE.BoxGeometry(0.36 * S, 0.09 * S, 0.12 * S), gripMat);
+      dGrip.position.set(0, -0.62 * S, 0);
+
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(1.05 * S, 0.85 * S, 0.1 * S), scoopMat);
+      blade.position.set(0, 1.85 * S, 0.08 * S);
+      blade.rotation.x = -0.18;
+
+      const edge = new THREE.Mesh(new THREE.BoxGeometry(1.08 * S, 0.1 * S, 0.12 * S), shaftMat);
+      edge.position.set(0, 2.26 * S, 0.16 * S);
+      edge.rotation.x = -0.18;
+
+      root.add(shaft, dGrip, blade, edge);
+      break;
+    }
+
+    case 'stapler': {
+      const topMat = createPlasticBrickMaterial(primaryColor, { roughness: 0.35, metalness: 0.2 });
+      const metalMat = createPlasticBrickMaterial(accentColor, { roughness: 0.24, metalness: 0.82 });
+      const baseMat = createPlasticBrickMaterial('#1e293b', { roughness: 0.72 });
+
+      const base = new THREE.Mesh(new THREE.BoxGeometry(0.24 * S, 0.09 * S, 0.72 * S), baseMat);
+      const anvil = new THREE.Mesh(new THREE.BoxGeometry(0.2 * S, 0.07 * S, 0.66 * S), metalMat);
+      anvil.position.y = 0.07 * S;
+      const topArm = new THREE.Mesh(new THREE.BoxGeometry(0.22 * S, 0.14 * S, 0.7 * S), topMat);
+      topArm.position.set(0, 0.22 * S, -0.02 * S);
+      topArm.rotation.x = -0.16;
+
+      root.add(base, anvil, topArm);
+      break;
+    }
   }
 
   setShadows(root, true, true);

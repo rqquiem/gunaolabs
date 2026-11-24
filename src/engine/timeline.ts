@@ -14,6 +14,14 @@ import {
   sanitizeMapDefinition,
 } from './mapLibrary';
 import {
+  FOOTWEAR_CATALOG,
+  HAIR_HIGHLIGHT_PATTERNS,
+  HAIR_STYLE_CATALOG,
+  PANT_CATALOG,
+  SHIRT_CATALOG,
+  SLEEVE_MODE_OPTIONS,
+} from './robloxCatalog';
+import {
   ActorKeyframe,
   AnimationProject,
   CHAPTER_COLORS,
@@ -41,7 +49,9 @@ import {
   R6_BODY_PARTS,
   R6BodyPartId,
   SceneActorConfig,
+  ScreenEffectKeyframe,
   SecondaryMotionState,
+  SfxCue,
   StageLightConfig,
   SubtitleCue,
   UpperBodyClipId,
@@ -560,6 +570,8 @@ function evaluateSecondaryMotion(
       wingSpread: 0,
       hatLagX: 0,
       hatLagZ: 0,
+      hairPitch: 0,
+      hairRoll: 0,
       propSwing: 0,
     };
   }
@@ -592,6 +604,13 @@ function evaluateSecondaryMotion(
   const hatLagX = clamp(-speed * 0.04 - Math.max(0, vy) * 0.05, -0.18, 0.18);
   const hatLagZ = clamp(angularVelY * 0.035, -0.16, 0.16);
 
+  const hairPitch = clamp(
+    speed * 0.09 + (clip === 'run' ? 0.16 : clip === 'jump' ? 0.2 : 0) + Math.max(0, -vy) * 0.09 + breeze * 0.7,
+    -0.14,
+    0.45,
+  );
+  const hairRoll = clamp(-angularVelY * 0.06 + Math.sin(time * 2.1) * 0.025, -0.25, 0.25);
+
   const isSwinging = clip === 'swordSwing' || upperClip === 'swordSwing';
   const propSwing = isSwinging ? Math.cos(time * 2.2) * 0.14 : Math.sin(time * 3.1) * 0.025;
 
@@ -601,6 +620,8 @@ function evaluateSecondaryMotion(
     wingSpread: clamp(wingFlap, -0.25, 0.55),
     hatLagX,
     hatLagZ,
+    hairPitch,
+    hairRoll,
     propSwing,
   };
 }
@@ -1099,6 +1120,36 @@ export function evaluateSubtitleAt(
   return null;
 }
 
+export function evaluateScreenBlackoutAt(
+  screenEffects: ScreenEffectKeyframe[] | undefined,
+  time: number,
+): number {
+  if (!screenEffects || screenEffects.length === 0) return 0;
+  const sorted = sortByTime(screenEffects);
+  if (time <= sorted[0].time) {
+    return clamp(sorted[0].blackout, 0, 1);
+  }
+  const last = sorted[sorted.length - 1];
+  if (time >= last.time) {
+    return clamp(last.blackout, 0, 1);
+  }
+  let prev = sorted[0];
+  let next = sorted[1];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (time >= sorted[i].time && time <= sorted[i + 1].time) {
+      prev = sorted[i];
+      next = sorted[i + 1];
+      break;
+    }
+  }
+  if (prev.easing === 'step') {
+    return time >= next.time - 0.0005 ? clamp(next.blackout, 0, 1) : clamp(prev.blackout, 0, 1);
+  }
+  const span = Math.max(0.0001, next.time - prev.time);
+  const easedT = clamp(applyEasing((time - prev.time) / span, prev.easing), 0, 1);
+  return clamp(lerp(prev.blackout, next.blackout, easedT), 0, 1);
+}
+
 export function evaluateProjectAt(
   project: AnimationProject,
   time: number,
@@ -1116,6 +1167,7 @@ export function evaluateProjectAt(
     lighting: evaluateLightingAt(project, clampedTime, stage),
     stage,
     subtitle: evaluateSubtitleAt(project.subtitles, clampedTime),
+    screenBlackout: evaluateScreenBlackoutAt(project.screenEffects, clampedTime),
   };
 }
 
@@ -1672,6 +1724,18 @@ export function rippleShiftProjectFrom(
     .map((c) => ({ ...c, time: trackMax(shiftTime(c.time)) }))
     .sort((a, b) => a.time - b.time);
 
+  const nextSfxTrack = project.sfxTrack
+    ? project.sfxTrack
+        .map((s) => ({ ...s, time: trackMax(shiftTime(s.time)) }))
+        .sort((a, b) => a.time - b.time)
+    : undefined;
+
+  const nextScreenEffects = project.screenEffects
+    ? project.screenEffects
+        .map((e) => ({ ...e, time: trackMax(shiftTime(e.time)) }))
+        .sort((a, b) => a.time - b.time)
+    : undefined;
+
   const nextSubtitles = project.subtitles
     .map((sub) => {
       const nextStart = shiftTime(sub.startTime);
@@ -1720,6 +1784,8 @@ export function rippleShiftProjectFrom(
     cameraTrack: nextCameraTrack,
     lightingTrack: nextLightingTrack,
     mapTrack: nextMapTrack,
+    ...(nextSfxTrack ? { sfxTrack: nextSfxTrack } : {}),
+    ...(nextScreenEffects ? { screenEffects: nextScreenEffects } : {}),
     chapters: nextChapters,
     subtitles: nextSubtitles,
     actors: nextActors,
@@ -1800,8 +1866,68 @@ function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
         .sort((a, b) => a.time - b.time)
     : undefined;
 
+  // Legacy migration: hat === 'spiky' becomes dedicated hair.styleId === 'spiky'
+  let ornaments = actor.ornaments;
+  let hair = actor.hair;
+  if (ornaments?.hat?.id === 'spiky') {
+    if (!hair) {
+      hair = {
+        styleId: 'spiky',
+        primaryColor: ornaments.hat.color || '#4b2e1e',
+        highlightColor: ornaments.hat.accentColor || '#f59e0b',
+        highlightPattern: 'none',
+        volume: 1,
+      };
+    }
+    ornaments = {
+      ...ornaments,
+      hat: {
+        id: 'none',
+        color: ornaments.hat.color || '#c4281c',
+        accentColor: ornaments.hat.accentColor,
+      },
+    };
+  }
+
+  const validHairIds = new Set<string>(HAIR_STYLE_CATALOG.map((h) => h.id));
+  const validHiPatterns = new Set<string>(HAIR_HIGHLIGHT_PATTERNS.map((p) => p.id));
+  const sanitizedHair =
+    hair && typeof hair === 'object'
+      ? {
+          styleId: validHairIds.has(hair.styleId) ? hair.styleId : ('none' as const),
+          primaryColor: typeof hair.primaryColor === 'string' ? hair.primaryColor : '#3b2416',
+          highlightColor: typeof hair.highlightColor === 'string' ? hair.highlightColor : '#f59e0b',
+          highlightPattern: validHiPatterns.has(hair.highlightPattern)
+            ? hair.highlightPattern
+            : ('none' as const),
+          volume: typeof hair.volume === 'number' ? clamp(hair.volume, 0.8, 1.25) : 1,
+        }
+      : undefined;
+
+  const validShirtIds = new Set<string>(SHIRT_CATALOG.map((s) => s.id));
+  const validSleeveModes = new Set<string>(SLEEVE_MODE_OPTIONS.map((s) => s.id));
+  const validPantsIds = new Set<string>(PANT_CATALOG.map((p) => p.id));
+  const validFootwearIds = new Set<string>(FOOTWEAR_CATALOG.map((f) => f.id));
+  const c = actor.clothing;
+  const sanitizedClothing =
+    c && typeof c === 'object'
+      ? {
+          shirtId: validShirtIds.has(c.shirtId) ? c.shirtId : ('none' as const),
+          shirtColor: typeof c.shirtColor === 'string' ? c.shirtColor : '#0d69ac',
+          shirtAccent: typeof c.shirtAccent === 'string' ? c.shirtAccent : '#f5cd30',
+          sleeveMode: validSleeveModes.has(c.sleeveMode) ? c.sleeveMode : ('auto' as const),
+          pantsId: validPantsIds.has(c.pantsId) ? c.pantsId : ('none' as const),
+          pantsColor: typeof c.pantsColor === 'string' ? c.pantsColor : '#1d4ed8',
+          pantsAccent: typeof c.pantsAccent === 'string' ? c.pantsAccent : '#f2f3f3',
+          footwearId: validFootwearIds.has(c.footwearId) ? c.footwearId : ('none' as const),
+        }
+      : undefined;
+
   return {
     ...actor,
+    ...(ornaments ? { ornaments } : {}),
+    ...(sanitizedHair ? { hair: sanitizedHair } : {}),
+    ...(sanitizedClothing ? { clothing: sanitizedClothing } : {}),
     ...(propKind ? { propKind } : {}),
     ...(propItemId ? { propItemId } : {}),
     ...(heldItems ? { heldItems } : {}),
@@ -1904,6 +2030,29 @@ export function parseProjectJson(raw: string): AnimationProject {
 
   const chapters = sanitizeChapters(obj.chapters, duration);
   const mapTrack = sanitizeMapTrack(obj.mapTrack, duration);
+  const sfxTrack: SfxCue[] = Array.isArray(obj.sfxTrack)
+    ? obj.sfxTrack
+        .filter((s) => s && typeof s === 'object' && typeof s.time === 'number' && typeof s.kind === 'string')
+        .map((s, idx) => ({
+          id: typeof s.id === 'string' && s.id ? s.id : `sfx_${idx}`,
+          time: clamp(s.time, 0, duration),
+          kind: s.kind,
+          ...(typeof s.label === 'string' ? { label: s.label } : {}),
+          ...(typeof s.duration === 'number' ? { duration: s.duration } : {}),
+        }))
+        .sort((a, b) => a.time - b.time)
+    : [];
+  const screenEffects: ScreenEffectKeyframe[] = Array.isArray(obj.screenEffects)
+    ? obj.screenEffects
+        .filter((e) => e && typeof e === 'object' && typeof e.time === 'number')
+        .map((e, idx) => ({
+          id: typeof e.id === 'string' && e.id ? e.id : `se_${idx}`,
+          time: clamp(e.time, 0, duration),
+          blackout: typeof e.blackout === 'number' ? clamp(e.blackout, 0, 1) : 0,
+          easing: e.easing ?? 'step',
+        }))
+        .sort((a, b) => a.time - b.time)
+    : [];
 
   return {
     id: typeof obj.id === 'string' ? obj.id : `proj_${Date.now()}`,
@@ -1923,6 +2072,8 @@ export function parseProjectJson(raw: string): AnimationProject {
     exposure: typeof obj.exposure === 'number' ? obj.exposure : 1.06,
     lightingTrack: Array.isArray(obj.lightingTrack) ? obj.lightingTrack : [],
     ...(mapTrack.length > 0 ? { mapTrack } : {}),
+    ...(sfxTrack.length > 0 ? { sfxTrack } : {}),
+    ...(screenEffects.length > 0 ? { screenEffects } : {}),
     ...(chapters.length > 0 ? { chapters } : {}),
     stageLights: Array.isArray(obj.stageLights) ? obj.stageLights : [],
     actors: obj.actors.map((a) => sanitizeActorConfig(a)),

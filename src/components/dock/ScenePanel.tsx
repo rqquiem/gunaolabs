@@ -40,6 +40,7 @@ interface ScenePanelProps {
   selectedMapModuleId: string | null;
   onUpdateProject: (updater: (prev: AnimationProject) => AnimationProject) => void;
   onLoadPreset: (preset: AnimationProject) => void;
+  onWatchEpisode?: (preset: AnimationProject) => void;
   onKeyLightingAtCurrentTime: () => void;
   onKeyMapAtCurrentTime?: (map: MapDefinition, applyAtmosphere: boolean) => void;
   onToggleLightHelpers: () => void;
@@ -88,6 +89,7 @@ export const ScenePanel: React.FC<ScenePanelProps> = ({
   selectedMapModuleId,
   onUpdateProject,
   onLoadPreset,
+  onWatchEpisode,
   onKeyLightingAtCurrentTime,
   onKeyMapAtCurrentTime,
   onToggleLightHelpers,
@@ -318,6 +320,7 @@ export const ScenePanel: React.FC<ScenePanelProps> = ({
           builtInScenes={builtInScenes}
           customScenes={customScenes}
           onLoadScene={onLoadPreset}
+          onWatchEpisode={onWatchEpisode}
           onSaveCurrentScene={onSaveCurrentScene}
           onDeleteCustomScene={onDeleteCustomScene}
           onExportScenes={onExportScenes}
