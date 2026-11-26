@@ -6,6 +6,8 @@ import {
   catmullRomScalar,
   deleteActorKeyframe,
   deleteChapterMarker,
+  deleteCharacterActionKeyframe,
+  deleteCharacterStateKeyframe,
   deleteFaceKeyframe,
   deleteItemKeyframe,
   deleteLightingKeyframe,
@@ -25,6 +27,8 @@ import {
   lerpAngleRad,
   moveActorKeyframeTime,
   moveChapterMarkerTime,
+  moveCharacterActionKeyframeTime,
+  moveCharacterStateKeyframeTime,
   moveFaceKeyframeTime,
   moveItemKeyframeTime,
   moveMapKeyframeTime,
@@ -34,12 +38,62 @@ import {
   upsertActorKeyframe,
   upsertCameraKeyframe,
   upsertChapterMarker,
+  upsertCharacterActionKeyframe,
+  upsertCharacterStateKeyframe,
   upsertFaceKeyframe,
   upsertItemKeyframe,
   upsertLightingKeyframe,
   upsertMapKeyframe,
   upsertStageLight,
 } from './timeline';
+import {
+  CHARACTER_STATE_CATALOG,
+  evaluateCharacterStateAt,
+} from './characterStates';
+import {
+  CHARACTER_ACTION_CATALOG,
+  CHARACTER_MODEL_BUILD_CATALOG,
+  computeBuildRigLayout,
+  evaluateCharacterActionAt,
+  getActionFaceSyncOverlay,
+} from './characterActions';
+import {
+  buildTimedCaptionWords,
+  evaluateWordPopCaption,
+  parseCaptionWords,
+  resolveCaptionSettings,
+  resolveNarratorSettings,
+  stripCaptionMarkup,
+} from './captionEngine';
+import {
+  countVoiceCuesInRange,
+  resolveCueVoice,
+} from './episodeAudio';
+import {
+  applyCinematicPreset,
+  captureCinematicSnapshot,
+  CINEMATIC_PRESETS,
+  restoreCinematicSnapshot,
+} from './cinematicPresets';
+import {
+  buildNarrationTranscript,
+  detectVocalActivityIntervals,
+  formatTranscriptDocument,
+} from './narrationTranscript';
+import {
+  appendVoiceoverAssetToTrack,
+  computeTrackDuckIntervals,
+  deleteVoiceoverClip,
+  evaluateClipFadeGain,
+  getClipDuration,
+  getClipEndTime,
+  moveVoiceoverClip,
+  sliceClipWaveformPeaks,
+  splitVoiceoverClipAtTime,
+  splitVoiceoverTrackAtPlayhead,
+  trimVoiceoverClip,
+  updateVoiceoverClipSettings,
+} from './voiceoverCutter';
 import {
   applyGripPresetToHandState,
   BUILT_IN_ITEMS,
@@ -93,10 +147,14 @@ import {
 } from './robloxCatalog';
 import { MAX_SCENE_DURATION, ORNAMENT_SLOTS, R6_BODY_PARTS } from './types';
 import {
+  computeVerticalFovForAspect,
   getH264CodecCandidates,
+  pickMediaRecorderMimeType,
   pickMediaRecorderMp4MimeType,
   resolveExportDimensions,
+  VIDEO_FORMAT_CATALOG,
 } from './mp4Recorder';
+import { countSfxCuesInRange } from './episodeAudio';
 import {
   BUILT_IN_MAPS,
   MAP_MODULE_CATALOG,
@@ -584,7 +642,7 @@ test('Map & Scene Library JSON roundtrip and embedded customMap preservation in 
 
 test('Item & Prop catalog completeness, dual-wield grip presets, and summary formatting', () => {
   assert.equal(BUILT_IN_ITEMS.length, 30);
-  assert.equal(BUILT_IN_PROPS.length, 32);
+  assert.equal(BUILT_IN_PROPS.length, 33);
   assert.equal(DUAL_WIELD_COMBOS.length, 9);
 
   const shieldR = createDefaultHandStateForItem('heaterShield', 'right');
@@ -1071,19 +1129,29 @@ test('Cozy Gamer Bedroom uses 18x18 R6 proportions and BEDROOM_SKIT_PROJECT open
   assert.ok(Math.abs(alexT0.position[2] - -6.42) < 0.01);
 });
 
-test('The Idiom Town 90s episode features 7 scenes, voiceover/dialogue roles, SFX track, smash-cut blackout, and serialization roundtrip', () => {
+test('The Idiom Town 90s episode features 7 scenes, distinct lighting moods, gaze tracking, voiceover/dialogue roles, SFX track, smash-cut blackout, and serialization roundtrip', () => {
   assert.equal(BUILT_IN_SCENES[0].id, 'scene_idiom_town');
   assert.equal(THE_IDIOM_TOWN_PROJECT.duration, 90);
   assert.equal(THE_IDIOM_TOWN_PROJECT.chapters?.length, 7);
   assert.equal(THE_IDIOM_TOWN_PROJECT.mapTrack?.length, 7);
+  assert.ok((THE_IDIOM_TOWN_PROJECT.stageLights?.length ?? 0) >= 2);
   assert.ok((THE_IDIOM_TOWN_PROJECT.sfxTrack?.length ?? 0) >= 16);
   assert.ok(
     THE_IDIOM_TOWN_PROJECT.subtitles.some((s) => s.role === 'voiceover') &&
       THE_IDIOM_TOWN_PROJECT.subtitles.some((s) => s.role === 'dialogue'),
   );
 
-  // Spot-check Scene 1 grounded umbrellas -> crouch pickup -> equipped held steel umbrellas
+  // Verify character gaze tracking & lookAtTarget wiring across cast
+  const characterActors = THE_IDIOM_TOWN_PROJECT.actors.filter((a) => a.kind === 'character');
+  assert.equal(characterActors.length, 18);
+  for (const char of characterActors) {
+    assert.ok(char.lookAtTarget && char.lookAtTarget !== 'none');
+    assert.ok(char.faceConfig?.gazeTarget && char.faceConfig.gazeTarget !== 'manual');
+  }
+
+  // Spot-check Scene 1 stormy mood + grounded umbrellas -> crouch pickup -> equipped held steel umbrellas
   const s1Pre = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 2.0);
+  assert.equal(s1Pre.stage.lightingMood, 'overcast');
   assert.equal(s1Pre.actors['prop-umb-1'].scale[0], 1);
   assert.equal(s1Pre.actors['prop-umb-1'].position[1], 0);
   assert.equal(s1Pre.actors['prop-umb-2'].scale[0], 1);
@@ -1104,15 +1172,49 @@ test('The Idiom Town 90s episode features 7 scenes, voiceover/dialogue roles, SF
   assert.equal(s1Raised.actors['idiom-man-umbrella'].heldItems?.right.visibilityScale, 1);
   assert.equal(s1Raised.actors['idiom-bystander'].heldItems?.right.itemId, 'steelUmbrella');
 
+  // Spot-check Scene 2 cozy sunset cafe & bean spill spacing
+  const s2 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 20.5);
+  assert.equal(s2.stage.customMap?.id, 'idiom_map_s2_cafe');
+  assert.equal(s2.stage.lightingMood, 'sunset');
+  assert.ok(s2.actors['prop-beans'].scale[0] > 1);
+  assert.equal(s2.actors['idiom-barista'].face.preset, 'angry');
+
+  // Spot-check Scene 3 boardroom noon skylight & elephant trumpet reaction
   const s3 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 31);
   assert.equal(s3.stage.customMap?.id, 'idiom_map_s3_boardroom');
+  assert.equal(s3.stage.lightingMood, 'noon');
   assert.equal(s3.actors['prop-elephant'].scale[0], 1.05);
   assert.equal(s3.actors['prop-cats-dogs'].scale[0], 0);
   assert.equal(s3.subtitle?.role, 'voiceover');
 
+  // Spot-check Scene 4 wedding icy freeze lighting shift
+  const s4 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 42.0);
+  assert.equal(s4.stage.customMap?.id, 'idiom_map_s4_wedding');
+  assert.equal(s4.lighting.keyColor, '#38bdf8');
+  assert.ok(s4.actors['prop-ice-feet'].scale[0] > 1);
+
+  // Spot-check Scene 5 midnight theater spotlight & zero overlap between stagehand, actor, and stretcher
+  const s5 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 60.5);
+  assert.equal(s5.stage.customMap?.id, 'idiom_map_s5_theater');
+  assert.equal(s5.stage.lightingMood, 'midnight');
+  assert.ok(
+    Math.hypot(
+      s5.actors['idiom-stagehand'].position[0] - s5.actors['prop-stretcher'].position[0],
+      s5.actors['idiom-stagehand'].position[2] - s5.actors['prop-stretcher'].position[2],
+    ) > 2.5,
+  );
+
+  // Spot-check Scene 6 retro diner sunset mood & zero overlap between waitress and horse platter
   const s6 = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 74);
   assert.equal(s6.stage.customMap?.id, 'idiom_map_s6_diner');
+  assert.equal(s6.stage.lightingMood, 'sunset');
   assert.equal(s6.actors['prop-horse-platter'].scale[0], 1);
+  assert.ok(
+    Math.hypot(
+      s6.actors['idiom-waitress'].position[0] - s6.actors['prop-horse-platter'].position[0],
+      s6.actors['idiom-waitress'].position[2] - s6.actors['prop-horse-platter'].position[2],
+    ) > 1.8,
+  );
 
   const smashPre = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 86.2);
   assert.equal(smashPre.screenBlackout, 0);
@@ -1269,7 +1371,822 @@ test('Roblox City big map, Roblox City Showcase scene, and Idiom Town city-skyli
   const characterActors = THE_IDIOM_TOWN_PROJECT.actors.filter((a) => a.kind === 'character');
   assert.ok(characterActors.some((a) => a.clothing?.outerwearId && a.clothing.outerwearId !== 'none'));
   assert.ok(characterActors.some((a) => a.ornaments?.neck && a.ornaments.neck.id !== 'none'));
+
+  // Hybrid 3P <-> 1P cinematic switching: Scene 1 stays pure 3P; Scenes 2-7 open in 3P, punch into 1P POV on gag beats, then cut back to 3P wide aftermath
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 0.5).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 5.5).camera.povActorId, null);
+  // 3P establishing shots
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 12.5).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 26.0).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 39.0).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 52.0).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 65.5).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 78.0).camera.povActorId, null);
+  // 1P POV gag/reaction beats
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 14.0).camera.povActorId, 'idiom-listener');
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 30.6).camera.povActorId, 'idiom-exec-3');
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 42.2).camera.povActorId, 'idiom-groom');
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 56.0).camera.povActorId, 'idiom-shakespeare');
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 70.0).camera.povActorId, 'idiom-tourist');
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 80.0).camera.povActorId, 'idiom-tourist');
+  // 3P wide aftermath returns
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 19.5).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 34.5).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 45.5).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 59.0).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 74.5).camera.povActorId, null);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 83.8).camera.povActorId, null);
+
+  // Late-entering characters & ambulance MUST stay completely hidden (scale === 0) until their entrance cues
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 14.5).actors['idiom-barista'].scale[0], 0);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 41.0).actors['idiom-groomsman'].scale[0], 0);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 54.0).actors['prop-ambulance'].scale[0], 0);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 54.0).actors['idiom-paramedic'].scale[0], 0);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 56.8).actors['idiom-paramedic'].scale[0], 0);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 67.5).actors['idiom-chef'].scale[0], 0);
+  assert.equal(evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 67.5).actors['prop-horse-platter'].scale[0], 0);
+
+  // Scene 5 (Break a Leg): 1P leg-down cast snap + 3P wide backstage hero shot with docked 3D Ambulance
+  assert.ok(BUILT_IN_PROPS.some((p) => p.kind === 'ambulance'));
+  const s5CastPov = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 56.0);
+  assert.equal(s5CastPov.camera.povActorId, 'idiom-shakespeare');
+  assert.ok(s5CastPov.camera.target[1] < 0, 'Expected Scene 5 leg POV at 56.0s to pitch down toward the actor legs and cast');
+  assert.ok(s5CastPov.actors['prop-plaster-cast'].scale[0] > 1);
+  const s5WideShot = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 58.5);
+  assert.equal(s5WideShot.camera.povActorId, null);
+  assert.ok(s5WideShot.actors['prop-ambulance'].scale[0] > 0.9);
+  assert.ok(s5WideShot.actors['prop-ambulance'].position[2] > -6.5, 'Expected ambulance to pull up at open backstage loading dock');
+
+  // Scene 7 (Blow My Mind): Pedestrians start strictly on the raised North Sidewalk (z in [-2.1, -0.25]), clear of asphalt lanes
+  const s7Start = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 79.8);
+  assert.equal(s7Start.camera.povActorId, 'idiom-tourist');
+  for (const id of ['idiom-tourist', 'idiom-bystander', 'idiom-man-umbrella']) {
+    const pos = s7Start.actors[id].position;
+    assert.ok(pos[2] <= -0.25 && pos[2] >= -2.1, `Expected ${id} on raised north sidewalk in Scene 7, got z=${pos[2]}`);
+  }
+  const s7Panic = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 83.2);
+  assert.equal(s7Panic.camera.povActorId, null);
+  assert.ok(s7Panic.actors['prop-flying-pigs'].position[0] > 1.5);
+  assert.ok(s7Panic.actors['prop-tour-bus'].position[0] > 4.0);
+  assert.ok(s7Panic.actors['prop-sedan'].position[0] > 2.5);
+  assert.ok(s7Panic.actors['prop-groceries'].scale[0] > 1.0);
+
+  // Full-episode 0.25s sweep: zero exit-shrink glitches, strict furniture clearance, and unobstructed 3P camera sightlines
+  const charIds = new Set(characterActors.map((a) => a.id));
+  for (let t = 0; t <= 89.5; t += 0.25) {
+    const f = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, Number(t.toFixed(2)));
+    for (const id of charIds) {
+      const a = f.actors[id];
+      const s = a.scale[0];
+      assert.ok(s === 0 || s >= 0.9, `Unexpected mid-scene shrink on ${id} at t=${t}s (scale=${s})`);
+      if (s === 0) continue;
+      // Scene 2: Barista never clips espresso counter (x=[0.1..5.1], z=[-2.3..-0.9])
+      if (id === 'idiom-barista' && t >= 12 && t < 25) {
+        const inCounter = a.position[0] >= 0.1 && a.position[0] <= 5.1 && a.position[2] >= -2.3 && a.position[2] <= -0.9;
+        assert.equal(inCounter, false, `Barista clipped espresso counter at t=${t}s: ${JSON.stringify(a.position)}`);
+      }
+      // Scene 6: Waitress never clips diner booth table (x=[-3.12..-1.78], z=[-0.25..1.85])
+      if (id === 'idiom-waitress' && t >= 64 && t < 77) {
+        const inTable = a.position[0] >= -3.12 && a.position[0] <= -1.78 && a.position[2] >= -0.25 && a.position[2] <= 1.85;
+        assert.equal(inTable, false, `Waitress clipped diner table at t=${t}s: ${JSON.stringify(a.position)}`);
+      }
+    }
+    // Verify no visible character directly blocks the camera lens on 3P shots (closer than 2.0 units to the camera ray in front of target)
+    if (f.camera.povActorId === null) {
+      const cx = f.camera.position[0];
+      const cy = f.camera.position[1];
+      const cz = f.camera.position[2];
+      const dx = f.camera.target[0] - cx;
+      const dy = f.camera.target[1] - cy;
+      const dz = f.camera.target[2] - cz;
+      const rayLen = Math.hypot(dx, dy, dz);
+      if (rayLen > 1) {
+        for (const id of charIds) {
+          const a = f.actors[id];
+          if (a.scale[0] < 0.5) continue;
+          const ax = a.position[0] - cx;
+          const ay = a.position[1] + 1.3 - cy;
+          const az = a.position[2] - cz;
+          const proj = (ax * dx + ay * dy + az * dz) / rayLen;
+          if (proj > 0.2 && proj < rayLen * 0.65) {
+            const perp = Math.hypot(ax - (dx / rayLen) * proj, ay - (dy / rayLen) * proj, az - (dz / rayLen) * proj);
+            assert.ok(perp > 0.55, `Character ${id} blocks 3P camera sightline at t=${t}s (proj=${proj.toFixed(2)}, perp=${perp.toFixed(2)})`);
+          }
+        }
+      }
+    }
+  }
 });
+
+test('Character State Framework evaluates all 5 FX states deterministically, supports timeline CRUD/ripple/JSON roundtrip, and triggers across The Idiom Town', () => {
+  // Catalog completeness: normal + 5 distinct visual states
+  assert.deepEqual(
+    CHARACTER_STATE_CATALOG.map((s) => s.id),
+    ['normal', 'brokenLeg', 'mindBlown', 'frozenFeet', 'dizzy', 'steamingMad'],
+  );
+
+  // Pure deterministic evaluation + elapsedSec tracking
+  const knight = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
+  let proj = upsertCharacterStateKeyframe(CROSSROADS_SHOWDOWN_PROJECT, knight.id, {
+    id: 'skf-broken',
+    time: 2.0,
+    stateId: 'brokenLeg',
+    intensity: 1.2,
+    targetLimb: 'leftLeg',
+    seed: 17,
+  });
+  proj = upsertCharacterStateKeyframe(proj, knight.id, {
+    id: 'skf-mind',
+    time: 5.0,
+    stateId: 'mindBlown',
+    intensity: 1.35,
+    seed: 99,
+  });
+  proj = upsertCharacterStateKeyframe(proj, knight.id, {
+    id: 'skf-reset',
+    time: 7.5,
+    stateId: 'normal',
+    intensity: 1,
+  });
+
+  const actor = proj.actors.find((a) => a.id === knight.id)!;
+  const beforeCue = evaluateCharacterStateAt(actor.stateKeyframes, 1.2);
+  assert.equal(beforeCue.stateId, 'normal');
+  assert.equal(beforeCue.elapsedSec, 0);
+
+  const duringBreak = evaluateCharacterStateAt(actor.stateKeyframes, 3.25);
+  assert.equal(duringBreak.stateId, 'brokenLeg');
+  assert.equal(duringBreak.targetLimb, 'leftLeg');
+  assert.equal(duringBreak.intensity, 1.2);
+  assert.equal(duringBreak.seed, 17);
+  assert.ok(Math.abs(duringBreak.elapsedSec - 1.25) < 1e-6);
+
+  const duringMind = evaluateCharacterStateAt(actor.stateKeyframes, 5.4);
+  assert.equal(duringMind.stateId, 'mindBlown');
+  assert.equal(duringMind.seed, 99);
+  assert.ok(Math.abs(duringMind.elapsedSec - 0.4) < 1e-6);
+
+  const afterReset = evaluateCharacterStateAt(actor.stateKeyframes, 8.0);
+  assert.equal(afterReset.stateId, 'normal');
+
+  // Move, ripple shift, JSON roundtrip (with intensity clamping), and delete
+  proj = moveCharacterStateKeyframeTime(proj, knight.id, 'skf-mind', 5.5);
+  assert.equal(
+    proj.actors.find((a) => a.id === knight.id)?.stateKeyframes?.find((k) => k.id === 'skf-mind')?.time,
+    5.5,
+  );
+
+  const rippled = rippleShiftProjectFrom(proj, 5.0, 2.0);
+  const rippledActor = rippled.actors.find((a) => a.id === knight.id)!;
+  assert.equal(rippledActor.stateKeyframes?.find((k) => k.id === 'skf-broken')?.time, 2.0);
+  assert.equal(rippledActor.stateKeyframes?.find((k) => k.id === 'skf-mind')?.time, 7.5);
+  assert.equal(rippledActor.stateKeyframes?.find((k) => k.id === 'skf-reset')?.time, 9.5);
+
+  const clampedProj = upsertCharacterStateKeyframe(proj, knight.id, {
+    id: 'skf-mind',
+    time: 5.5,
+    stateId: 'mindBlown',
+    intensity: 9.9, // should clamp to 1.5
+    seed: 99,
+  });
+  const parsed = parseProjectJson(serializeProject(clampedProj));
+  const parsedStateKfs = parsed.actors.find((a) => a.id === knight.id)?.stateKeyframes ?? [];
+  assert.equal(parsedStateKfs.length, 3);
+  assert.equal(parsedStateKfs.find((k) => k.id === 'skf-broken')?.targetLimb, 'leftLeg');
+  assert.equal(parsedStateKfs.find((k) => k.id === 'skf-mind')?.intensity, 1.5);
+
+  const afterDel = deleteCharacterStateKeyframe(proj, knight.id, 'skf-mind');
+  assert.equal(
+    afterDel.actors.find((a) => a.id === knight.id)?.stateKeyframes?.some((k) => k.id === 'skf-mind'),
+    false,
+  );
+
+  // Verify live Idiom Town choreography triggers all 5 states cleanly on their story beats
+  const s2Frame = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 20.0);
+  assert.equal(s2Frame.actors['idiom-barista'].characterState?.stateId, 'steamingMad');
+
+  const s3Frame = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 34.5);
+  assert.equal(s3Frame.actors['idiom-exec-1'].characterState?.stateId, 'dizzy');
+
+  const s4Frozen = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 42.2);
+  assert.equal(s4Frozen.actors['idiom-groom'].characterState?.stateId, 'frozenFeet');
+  const s4Thawed = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 49.5);
+  assert.equal(s4Thawed.actors['idiom-groom'].characterState?.stateId, 'normal');
+
+  const s5BreakPov = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 56.0);
+  assert.equal(s5BreakPov.actors['idiom-shakespeare'].characterState?.stateId, 'brokenLeg');
+  assert.equal(s5BreakPov.actors['idiom-shakespeare'].characterState?.targetLimb, 'rightLeg');
+  const s5BreakWide = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 58.5);
+  assert.equal(s5BreakWide.actors['idiom-shakespeare'].characterState?.stateId, 'brokenLeg');
+
+  const s7Blow = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 85.8);
+  assert.equal(s7Blow.actors['idiom-tourist'].characterState?.stateId, 'mindBlown');
+  assert.ok(
+    (s7Blow.actors['idiom-tourist'].characterState?.elapsedSec ?? 0) > 0.2,
+    'Expected Tourist mindBlown explosion to be mid-burst at 85.8s before the 86.5s smash cut',
+  );
+  assert.equal(s7Blow.screenBlackout, 0);
+});
+
+test('Multi-format video exporter supports MP4/WebM/MOV/MKV, 16:9/9:16/1:1 aspect ratios, cross-format MediaRecorder rescue, and SFX cue counting', () => {
+  // Format catalog covers all 4 containers
+  assert.deepEqual(Object.keys(VIDEO_FORMAT_CATALOG), ['mp4', 'webm', 'mov', 'mkv']);
+  assert.equal(VIDEO_FORMAT_CATALOG.mp4.mimeType, 'video/mp4');
+  assert.equal(VIDEO_FORMAT_CATALOG.webm.mimeType, 'video/webm');
+  assert.equal(VIDEO_FORMAT_CATALOG.mov.mimeType, 'video/quicktime');
+  assert.equal(VIDEO_FORMAT_CATALOG.mkv.mimeType, 'video/x-matroska');
+
+  // Aspect ratio dimension math + 16px macroblock alignment
+  const fakeCanvas = { clientWidth: 1003, clientHeight: 571, width: 1003, height: 571 } as HTMLCanvasElement;
+  assert.deepEqual(resolveExportDimensions(fakeCanvas, '720p', '16:9'), { width: 1280, height: 720 });
+  assert.deepEqual(resolveExportDimensions(fakeCanvas, '720p', '9:16'), { width: 720, height: 1280 });
+  assert.deepEqual(resolveExportDimensions(fakeCanvas, '720p', '1:1'), { width: 720, height: 720 });
+  assert.deepEqual(resolveExportDimensions(fakeCanvas, '1080p', '9:16'), { width: 1080, height: 1920 });
+  assert.deepEqual(resolveExportDimensions(fakeCanvas, '1080p', '1:1'), { width: 1080, height: 1080 });
+
+  const nativeVertical = resolveExportDimensions(fakeCanvas, 'native', '9:16');
+  assert.equal(nativeVertical.width % 16, 0);
+  assert.equal(nativeVertical.height % 16, 0);
+  assert.ok(nativeVertical.height > nativeVertical.width);
+
+  // Portrait & square vertical FOV safety keeps horizontal scene framing intact
+  assert.equal(computeVerticalFovForAspect(50, '16:9'), 50);
+  assert.ok(computeVerticalFovForAspect(50, '1:1') > 50);
+  assert.ok(computeVerticalFovForAspect(50, '9:16') > computeVerticalFovForAspect(50, '1:1'));
+
+  // Multi-format MediaRecorder picker + automatic cross-format WebM rescue
+  const prevMR = (globalThis as Record<string, unknown>).MediaRecorder;
+  try {
+    // Browser supporting ONLY WebM VP9+Opus
+    (globalThis as Record<string, unknown>).MediaRecorder = {
+      isTypeSupported: (mime: string) => mime === 'video/webm;codecs=vp9,opus' || mime === 'video/webm;codecs=vp9',
+    };
+    const directWebm = pickMediaRecorderMimeType('webm', true, false);
+    assert.ok(directWebm);
+    assert.equal(directWebm.actualFormat, 'webm');
+    assert.equal(directWebm.fallbackUsed, false);
+    assert.equal(directWebm.videoCodec, 'VP9');
+    assert.equal(directWebm.audioCodec, 'Opus');
+
+    // Requesting MP4 or MOV without rescue returns null; with rescue automatically falls back to WebM
+    assert.equal(pickMediaRecorderMimeType('mp4', true, false), null);
+    const rescuedMp4 = pickMediaRecorderMimeType('mp4', true, true);
+    assert.ok(rescuedMp4);
+    assert.equal(rescuedMp4.actualFormat, 'webm');
+    assert.equal(rescuedMp4.fallbackUsed, true);
+
+    const rescuedMov = pickMediaRecorderMimeType('mov', false, true);
+    assert.ok(rescuedMov);
+    assert.equal(rescuedMov.actualFormat, 'webm');
+    assert.equal(rescuedMov.fallbackUsed, true);
+  } finally {
+    if (prevMR === undefined) {
+      delete (globalThis as Record<string, unknown>).MediaRecorder;
+    } else {
+      (globalThis as Record<string, unknown>).MediaRecorder = prevMR;
+    }
+  }
+
+  // Offline SFX cue counting matches Idiom Town full episode & single-scene chapter ranges
+  const fullSfx = countSfxCuesInRange(THE_IDIOM_TOWN_PROJECT, 0, THE_IDIOM_TOWN_PROJECT.duration);
+  const scene5Sfx = countSfxCuesInRange(THE_IDIOM_TOWN_PROJECT, 51, 64);
+  assert.ok(fullSfx >= 16, `Expected >= 16 SFX cues across Idiom Town, got ${fullSfx}`);
+  assert.ok(scene5Sfx >= 2, `Expected >= 2 SFX cues in Scene 5, got ${scene5Sfx}`);
+  assert.equal(countSfxCuesInRange(CROSSROADS_SHOWDOWN_PROJECT, 0, 10), 0);
+});
+
+test('Character Model Build & Action Function framework enforces exact foot grounding, evaluates all 5 actions + face sync, supports timeline CRUD/ripple/JSON roundtrip, and triggers in Idiom Town Scene 2', () => {
+  // 4 body build presets with exact foot grounding (foot bottom Y === 0.000)
+  assert.deepEqual(
+    CHARACTER_MODEL_BUILD_CATALOG.map((b) => b.id),
+    ['classic', 'tall', 'chibi', 'chunky'],
+  );
+  const stud = 0.56;
+  for (const build of CHARACTER_MODEL_BUILD_CATALOG) {
+    const layout = computeBuildRigLayout(build.id, stud);
+    const footBottomY = layout.torsoBaseY + layout.legOffsetY - 2 * stud * layout.spec.legScale[1];
+    assert.ok(
+      Math.abs(footBottomY) < 1e-9,
+      `Expected exact foot grounding (0.0) for build ${build.id}, got ${footBottomY}`,
+    );
+    assert.ok(layout.headPivotY > 0);
+    assert.ok(layout.armOffsetX > 0);
+    assert.ok(layout.legOffsetX > 0);
+  }
+  const classicLayout = computeBuildRigLayout('classic', stud);
+  const tallLayout = computeBuildRigLayout('tall', stud);
+  const chibiLayout = computeBuildRigLayout('chibi', stud);
+  assert.ok(tallLayout.torsoBaseY > classicLayout.torsoBaseY);
+  assert.ok(chibiLayout.torsoBaseY < classicLayout.torsoBaseY);
+  assert.ok(chibiLayout.spec.headScale[0] > classicLayout.spec.headScale[0]);
+
+  // All 6 action catalog entries (none + 5 animated actions)
+  assert.deepEqual(
+    CHARACTER_ACTION_CATALOG.map((a) => a.id),
+    ['none', 'spewBeans', 'cryTears', 'breatheFire', 'confettiBurst', 'sweatColdBreath'],
+  );
+
+  // Face sync overlays drive mouth/jaw and crying squint deterministically
+  assert.equal(
+    getActionFaceSyncOverlay(
+      { actionId: 'none', intensity: 1, source: 'mouth', triggerTime: 0, elapsedSec: 0.5, seed: 1 },
+      0.5,
+    ),
+    null,
+  );
+  const beansFace = getActionFaceSyncOverlay(
+    { actionId: 'spewBeans', intensity: 1.2, source: 'mouth', triggerTime: 0, elapsedSec: 0.4, seed: 1 },
+    0.4,
+  );
+  assert.ok(beansFace && (beansFace.jawOpen ?? 0) >= 0.75);
+  const fireFace = getActionFaceSyncOverlay(
+    { actionId: 'breatheFire', intensity: 1.1, source: 'mouth', triggerTime: 0, elapsedSec: 0.5, seed: 1 },
+    0.5,
+  );
+  assert.ok(fireFace && (fireFace.jawOpen ?? 0) >= 0.75);
+  const cryFace = getActionFaceSyncOverlay(
+    { actionId: 'cryTears', intensity: 1.0, source: 'mouth', triggerTime: 0, elapsedSec: 0.6, seed: 1 },
+    0.6,
+  );
+  assert.ok(cryFace && (cryFace.eyeWide ?? 0) < 0);
+
+  // Pure deterministic evaluation + timeline CRUD, ripple shift, and JSON roundtrip
+  const knight = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
+  let proj = {
+    ...CROSSROADS_SHOWDOWN_PROJECT,
+    actors: CROSSROADS_SHOWDOWN_PROJECT.actors.map((a) =>
+      a.id === knight.id ? { ...a, modelBuild: 'chunky' as const } : a,
+    ),
+  };
+  proj = upsertCharacterActionKeyframe(proj, knight.id, {
+    id: 'akf-beans',
+    time: 1.5,
+    actionId: 'spewBeans',
+    intensity: 1.25,
+    source: 'mouth',
+    seed: 24,
+  });
+  proj = upsertCharacterActionKeyframe(proj, knight.id, {
+    id: 'akf-confetti',
+    time: 4.5,
+    actionId: 'confettiBurst',
+    intensity: 1.1,
+    source: 'hands',
+    seed: 77,
+  });
+  proj = upsertCharacterActionKeyframe(proj, knight.id, {
+    id: 'akf-stop',
+    time: 7.0,
+    actionId: 'none',
+    intensity: 1,
+    source: 'mouth',
+  });
+
+  const actor = proj.actors.find((a) => a.id === knight.id)!;
+  const beforeCue = evaluateCharacterActionAt(actor.actionKeyframes, 0.8);
+  assert.equal(beforeCue.actionId, 'none');
+  assert.equal(beforeCue.elapsedSec, 0);
+
+  const duringBeans = evaluateCharacterActionAt(actor.actionKeyframes, 2.15);
+  assert.equal(duringBeans.actionId, 'spewBeans');
+  assert.equal(duringBeans.source, 'mouth');
+  assert.equal(duringBeans.intensity, 1.25);
+  assert.equal(duringBeans.seed, 24);
+  assert.ok(Math.abs(duringBeans.elapsedSec - 0.65) < 1e-6);
+
+  const duringConfetti = evaluateCharacterActionAt(actor.actionKeyframes, 5.0);
+  assert.equal(duringConfetti.actionId, 'confettiBurst');
+  assert.equal(duringConfetti.source, 'hands');
+  assert.equal(duringConfetti.seed, 77);
+  assert.ok(Math.abs(duringConfetti.elapsedSec - 0.5) < 1e-6);
+
+  const afterStop = evaluateCharacterActionAt(actor.actionKeyframes, 7.6);
+  assert.equal(afterStop.actionId, 'none');
+
+  // Move, ripple shift, JSON roundtrip with intensity clamping, and delete
+  proj = moveCharacterActionKeyframeTime(proj, knight.id, 'akf-confetti', 5.0);
+  assert.equal(
+    proj.actors.find((a) => a.id === knight.id)?.actionKeyframes?.find((k) => k.id === 'akf-confetti')?.time,
+    5.0,
+  );
+
+  const rippled = rippleShiftProjectFrom(proj, 4.0, 2.5);
+  const rippledActor = rippled.actors.find((a) => a.id === knight.id)!;
+  assert.equal(rippledActor.actionKeyframes?.find((k) => k.id === 'akf-beans')?.time, 1.5);
+  assert.equal(rippledActor.actionKeyframes?.find((k) => k.id === 'akf-confetti')?.time, 7.5);
+  assert.equal(rippledActor.actionKeyframes?.find((k) => k.id === 'akf-stop')?.time, 9.5);
+
+  const clampedProj = upsertCharacterActionKeyframe(proj, knight.id, {
+    id: 'akf-confetti',
+    time: 5.0,
+    actionId: 'confettiBurst',
+    intensity: 9.9, // should clamp to 1.5
+    source: 'hands',
+    seed: 77,
+  });
+  const parsed = parseProjectJson(serializeProject(clampedProj));
+  const parsedActor = parsed.actors.find((a) => a.id === knight.id)!;
+  assert.equal(parsedActor.modelBuild, 'chunky');
+  const parsedActionKfs = parsedActor.actionKeyframes ?? [];
+  assert.equal(parsedActionKfs.length, 3);
+  assert.equal(parsedActionKfs.find((k) => k.id === 'akf-beans')?.actionId, 'spewBeans');
+  assert.equal(parsedActionKfs.find((k) => k.id === 'akf-confetti')?.intensity, 1.5);
+  assert.equal(parsedActionKfs.find((k) => k.id === 'akf-confetti')?.source, 'hands');
+
+  const afterDel = deleteCharacterActionKeyframe(proj, knight.id, 'akf-confetti');
+  assert.equal(
+    afterDel.actors.find((a) => a.id === knight.id)?.actionKeyframes?.some((k) => k.id === 'akf-confetti'),
+    false,
+  );
+
+  // Idiom Town Scene 2 integration: Gossiper spews beans accurately from mouth + Tall/Chunky builds on cast
+  const s2Beans = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 16.5);
+  assert.equal(s2Beans.actors['idiom-gossiper'].characterAction?.actionId, 'spewBeans');
+  assert.equal(s2Beans.actors['idiom-gossiper'].characterAction?.source, 'mouth');
+  assert.ok(
+    Math.abs((s2Beans.actors['idiom-gossiper'].characterAction?.elapsedSec ?? 0) - 0.65) < 1e-6,
+  );
+  const s2AfterBeans = evaluateProjectAt(THE_IDIOM_TOWN_PROJECT, 21.0);
+  assert.equal(s2AfterBeans.actors['idiom-gossiper'].characterAction?.actionId, 'none');
+
+  const execActor = THE_IDIOM_TOWN_PROJECT.actors.find((a) => a.id === 'idiom-exec-1');
+  const chefActor = THE_IDIOM_TOWN_PROJECT.actors.find((a) => a.id === 'idiom-chef');
+  assert.equal(execActor?.modelBuild, 'tall');
+  assert.equal(chefActor?.modelBuild, 'chunky');
+});
+
+test('Sudden-appearing word-pop captions, emphasis pop, narrator routing, and JSON roundtrip', () => {
+  // 1. Markup stripping and emphasis / punctuation detection
+  const raw = "Okay, fine. I'll *spill the beans!*";
+  assert.equal(stripCaptionMarkup(raw), "Okay, fine. I'll spill the beans!");
+  const parsedWords = parseCaptionWords(raw);
+  assert.equal(parsedWords.length, 6);
+  assert.equal(parsedWords[0].isEmphasis, false);
+  assert.equal(parsedWords[3].text, 'spill');
+  assert.equal(parsedWords[3].isEmphasis, true);
+  assert.equal(parsedWords[5].text, 'beans!');
+  assert.equal(parsedWords[5].isEmphasis, true);
+  assert.equal(parsedWords[5].isPunctuationPop, true);
+
+  // 2. Sudden-appear state progression & chunking
+  const cue = {
+    id: 'test-sub-pop',
+    startTime: 2.0,
+    endTime: 5.0,
+    speaker: 'Gossiper',
+    role: 'dialogue' as const,
+    text: "Okay, fine. I'll *spill the beans!*",
+  };
+  const timed = buildTimedCaptionWords(cue, 3);
+  assert.equal(timed.length, 6);
+  // Sentence break after "fine." creates chunk 0 = ["Okay,", "fine."], chunk 1 = ["I'll", "spill", "the"], chunk 2 = ["beans!"]
+  assert.equal(timed[0].chunkIndex, 0);
+  assert.equal(timed[1].chunkIndex, 0);
+  assert.equal(timed[2].chunkIndex, 1);
+
+  // At cue start, word 0 is active and word 1 is STILL HIDDEN (sudden appear)
+  const atStart = evaluateWordPopCaption(cue, 2.02, { wordsPerChunk: 3, emphasisPop: true })!;
+  assert.ok(atStart);
+  assert.equal(atStart.chunkIndex, 0);
+  assert.equal(atStart.words[0].state, 'active');
+  assert.equal(atStart.words[1].state, 'hidden');
+  assert.equal(atStart.words[1].opacity, 0);
+  assert.ok(atStart.words[0].scale > 0.74);
+
+  // At final emphasized exclamation word, active word is "beans!" with boosted emphasis pop & non-zero tilt
+  const lastWord = timed[timed.length - 1];
+  const atPunchline = evaluateWordPopCaption(
+    cue,
+    lastWord.startTime + 0.06,
+    { wordsPerChunk: 3, emphasisPop: true },
+  )!;
+  assert.equal(atPunchline.activeWordIndex, 5);
+  const punchWord = atPunchline.words.find((w) => w.index === 5)!;
+  assert.equal(punchWord.state, 'active');
+  assert.equal(punchWord.isEmphasis, true);
+  assert.equal(punchWord.isPunctuationPop, true);
+  assert.ok(punchWord.scale > 1.15);
+  assert.ok(Math.abs(punchWord.tiltDeg) > 0.5);
+
+  // Outside cue range returns null
+  assert.equal(evaluateWordPopCaption(cue, 1.5), null);
+  assert.equal(evaluateWordPopCaption(cue, 5.5), null);
+
+  // 3. Settings clamping & voice routing differentiation
+  const clampedCap = resolveCaptionSettings({
+    wordsPerChunk: 99,
+    highlightColor: 'not-a-color',
+    position: 'center',
+  });
+  assert.equal(clampedCap.wordsPerChunk, 5);
+  assert.equal(clampedCap.highlightColor, '#fbbf24');
+  assert.equal(clampedCap.position, 'center');
+
+  const clampedNar = resolveNarratorSettings({
+    speed: 3.0,
+    pitchSemitones: -20,
+    volume: 0.05,
+    duckAmount: 0.99,
+    voice: 'Fenrir',
+  });
+  assert.equal(clampedNar.speed, 1.4);
+  assert.equal(clampedNar.pitchSemitones, -4);
+  assert.equal(clampedNar.volume, 0.2);
+  assert.equal(clampedNar.duckAmount, 0.75);
+  assert.equal(clampedNar.voice, 'Fenrir');
+
+  const voCue = THE_IDIOM_TOWN_PROJECT.subtitles.find((s) => s.id === 'sub-1b')!;
+  const gossiperCue = THE_IDIOM_TOWN_PROJECT.subtitles.find((s) => s.id === 'sub-2a')!;
+  assert.equal(resolveCueVoice(voCue, clampedNar), 'Fenrir');
+  assert.equal(resolveCueVoice(gossiperCue, clampedNar), 'Kore');
+  assert.equal(
+    resolveCueVoice({ ...gossiperCue, voiceOverride: 'Puck' }, clampedNar),
+    'Puck',
+  );
+  assert.ok(countVoiceCuesInRange(THE_IDIOM_TOWN_PROJECT, 0, 90) >= 12);
+
+  // 4. Project JSON roundtrip preserves captionSettings, narratorSettings, and voiceOverride
+  const customized = {
+    ...THE_IDIOM_TOWN_PROJECT,
+    captionSettings: {
+      ...resolveCaptionSettings(THE_IDIOM_TOWN_PROJECT.captionSettings),
+      position: 'center' as const,
+      highlightColor: '#38bdf8',
+      wordsPerChunk: 4,
+    },
+    narratorSettings: {
+      ...resolveNarratorSettings(THE_IDIOM_TOWN_PROJECT.narratorSettings),
+      voice: 'Puck' as const,
+      style: 'energeticHost' as const,
+      speed: 1.15,
+      pitchSemitones: 1.5,
+    },
+    subtitles: THE_IDIOM_TOWN_PROJECT.subtitles.map((s) =>
+      s.id === 'sub-2a' ? { ...s, voiceOverride: 'Zephyr' as const } : s,
+    ),
+  };
+  const roundtrip = parseProjectJson(serializeProject(customized));
+  assert.equal(roundtrip.captionSettings?.position, 'center');
+  assert.equal(roundtrip.captionSettings?.highlightColor, '#38bdf8');
+  assert.equal(roundtrip.captionSettings?.wordsPerChunk, 4);
+  assert.equal(roundtrip.narratorSettings?.voice, 'Puck');
+  assert.equal(roundtrip.narratorSettings?.style, 'energeticHost');
+  assert.equal(roundtrip.narratorSettings?.speed, 1.15);
+  assert.equal(roundtrip.narratorSettings?.pitchSemitones, 1.5);
+  assert.equal(
+    roundtrip.subtitles.find((s) => s.id === 'sub-2a')?.voiceOverride,
+    'Zephyr',
+  );
+});
+
+test('Cinematic presets, expression-tagged narration transcript ([shock] / actions), vocal-activity ducking, and JSON roundtrip work deterministically', () => {
+  // 1. All 6 full-look cinematic presets apply & snapshot/undo restores cleanly
+  assert.equal(CINEMATIC_PRESETS.length, 6);
+  const baseSnapshot = captureCinematicSnapshot(CROSSROADS_SHOWDOWN_PROJECT, false);
+
+  for (const preset of CINEMATIC_PRESETS) {
+    const { project: styled, enableLetterbox } = applyCinematicPreset(
+      CROSSROADS_SHOWDOWN_PROJECT,
+      preset.id,
+    );
+    assert.equal(styled.activeCinematicPreset, preset.id);
+    assert.equal(styled.lightingMood, preset.lightingMood);
+    assert.equal(enableLetterbox, preset.enableLetterbox);
+    assert.equal(styled.actors.length, CROSSROADS_SHOWDOWN_PROJECT.actors.length);
+    assert.equal(styled.subtitles.length, CROSSROADS_SHOWDOWN_PROJECT.subtitles.length);
+    assert.equal(styled.captionSettings?.highlightColor, preset.captionPatch.highlightColor);
+    assert.equal(styled.narratorSettings?.voice, preset.narratorPatch.voice);
+    assert.equal(styled.cameraTrack[0]?.rollDeg, preset.camera.rollDeg);
+
+    const restored = restoreCinematicSnapshot(styled, baseSnapshot);
+    assert.equal(restored.project.lightingMood, CROSSROADS_SHOWDOWN_PROJECT.lightingMood);
+    assert.equal(restored.project.activeCinematicPreset, null);
+    assert.equal(restored.forceLetterbox, false);
+    assert.equal(
+      restored.project.cameraTrack[0]?.fov,
+      CROSSROADS_SHOWDOWN_PROJECT.cameraTrack[0]?.fov,
+    );
+  }
+
+  // 2. Expression-tagged narration transcript emits [shock] for surprised & custom wide-eye/jaw-drop
+  const knight = CROSSROADS_SHOWDOWN_PROJECT.actors[0];
+  let shockProject = upsertFaceKeyframe(CROSSROADS_SHOWDOWN_PROJECT, knight.id, {
+    id: 'fkf-shock',
+    time: 1.0,
+    preset: 'surprised',
+    easing: 'easeInOut',
+  });
+  shockProject = upsertFaceKeyframe(shockProject, knight.id, {
+    id: 'fkf-custom-shock',
+    time: 4.0,
+    preset: 'neutral',
+    overrides: { eyeWide: 0.72, jawOpen: 0.65 },
+    easing: 'easeInOut',
+  });
+  shockProject = {
+    ...shockProject,
+    subtitles: [
+      {
+        id: 'cue-shock-1',
+        startTime: 1.0,
+        endTime: 3.0,
+        speaker: knight.name,
+        actorId: knight.id,
+        role: 'dialogue',
+        text: 'Wait, what just happened?!',
+      },
+      {
+        id: 'cue-shock-2',
+        startTime: 4.0,
+        endTime: 6.0,
+        speaker: knight.name,
+        actorId: knight.id,
+        role: 'dialogue',
+        text: 'No way that actually worked!',
+      },
+    ],
+  };
+
+  const shockEntries = buildNarrationTranscript(shockProject);
+  assert.equal(shockEntries.length, 2);
+  assert.ok(
+    shockEntries[0].expressionTags.includes('shock'),
+    `Expected [shock] tag for surprised face keyframe, got ${JSON.stringify(shockEntries[0].expressionTags)}`,
+  );
+  assert.ok(shockEntries[0].formattedLine.includes('[shock]'));
+  assert.ok(
+    shockEntries[1].expressionTags.includes('shock'),
+    `Expected [shock] tag for wide-eye+jaw-open custom override, got ${JSON.stringify(shockEntries[1].expressionTags)}`,
+  );
+
+  const transcriptDoc = formatTranscriptDocument(shockProject, shockEntries);
+  assert.ok(transcriptDoc.includes('[shock]'));
+  assert.ok(transcriptDoc.includes('Wait, what just happened?!'));
+
+  // 3. The Idiom Town transcript surfaces action & FX state tags ([spew beans], [frozen feet], [mind blown])
+  const idiomTranscript = buildNarrationTranscript(THE_IDIOM_TOWN_PROJECT);
+  const allActionTags = new Set(idiomTranscript.flatMap((e) => e.actionTags));
+  assert.ok(
+    allActionTags.has('spew beans'),
+    `Expected [spew beans] in Idiom Town transcript, got ${JSON.stringify(Array.from(allActionTags))}`,
+  );
+  assert.ok(
+    allActionTags.has('frozen feet'),
+    `Expected [frozen feet] in Idiom Town transcript, got ${JSON.stringify(Array.from(allActionTags))}`,
+  );
+  assert.ok(
+    allActionTags.has('mind blown'),
+    `Expected [mind blown] in Idiom Town transcript, got ${JSON.stringify(Array.from(allActionTags))}`,
+  );
+
+  // 4. Pure RMS vocal-activity interval detection with start offset
+  const sr = 1000;
+  const pcm = new Float32Array(sr * 5); // 5 seconds
+  // Speech burst 1: 0.5s .. 1.5s
+  for (let i = 500; i < 1500; i++) pcm[i] = 0.25 * Math.sin(i * 0.15);
+  // Silence gap 1.5s .. 3.0s (> 0.35s merge gap)
+  // Speech burst 2: 3.0s .. 4.0s
+  for (let i = 3000; i < 4000; i++) pcm[i] = 0.3 * Math.sin(i * 0.12);
+
+  const intervals = detectVocalActivityIntervals(pcm, sr, 2.0);
+  assert.equal(intervals.length, 2);
+  assert.ok(Math.abs(intervals[0].start - 2.5) < 0.15);
+  assert.ok(Math.abs(intervals[0].end - 3.5) < 0.15);
+  assert.ok(Math.abs(intervals[1].start - 5.0) < 0.15);
+  assert.ok(Math.abs(intervals[1].end - 6.0) < 0.15);
+
+  // 5. Project JSON roundtrip preserves activeCinematicPreset and customTranscriptText
+  const withPresetAndScript = {
+    ...applyCinematicPreset(CROSSROADS_SHOWDOWN_PROJECT, 'noir').project,
+    customTranscriptText: '[00:01.0] Knight [shock]: Custom edited cue line!',
+  };
+  const parsed = parseProjectJson(serializeProject(withPresetAndScript));
+  assert.equal(parsed.activeCinematicPreset, 'noir');
+  assert.equal(
+    parsed.customTranscriptText,
+    '[00:01.0] Knight [shock]: Custom edited cue line!',
+  );
+});
+
+test('Multi-clip Voiceover Cutter engine supports appending multiple uploads, razor split, trim handles, fades, ripple delete/move, and SFX ducking projection', () => {
+  const fakeBuffer = { duration: 4.0 } as unknown as AudioBuffer;
+  const asset1 = {
+    id: 'asset_1',
+    fileName: 'take-one.wav',
+    mimeType: 'audio/wav',
+    durationSec: 4.0,
+    audioBuffer: fakeBuffer,
+    waveformPeaks: Array.from({ length: 80 }, (_, i) => (i < 40 ? 0.3 : 0.85)),
+    duckIntervals: [
+      { start: 0.4, end: 1.8 },
+      { start: 2.2, end: 3.6 },
+    ],
+  };
+  const asset2 = {
+    id: 'asset_2',
+    fileName: 'take-two.wav',
+    mimeType: 'audio/wav',
+    durationSec: 3.0,
+    audioBuffer: fakeBuffer,
+    waveformPeaks: Array.from({ length: 60 }, () => 0.65),
+    duckIntervals: [{ start: 0.5, end: 2.5 }],
+  };
+
+  // 1. Append multiple uploaded assets sequentially onto one VO track
+  let track = appendVoiceoverAssetToTrack(null, asset1, 0);
+  track = appendVoiceoverAssetToTrack(track, asset2, 0);
+  assert.equal(track.clips?.length, 2);
+  assert.equal(track.clips![0].startSec, 0);
+  assert.equal(getClipDuration(track.clips![0]), 4.0);
+  assert.equal(track.clips![1].startSec, 4.1); // 4.0s + 0.1s gap
+  assert.equal(getClipDuration(track.clips![1]), 3.0);
+  assert.equal(track.durationSec, 7.0);
+
+  // 2. Razor split / Split at Playhead splits first clip at 1.5s into two contiguous clips
+  const firstClipId = track.clips![0].id;
+  const splitRes = splitVoiceoverClipAtTime(track.clips!, firstClipId, 1.5, 'test');
+  assert.ok(splitRes.leftClipId && splitRes.rightClipId);
+  assert.equal(splitRes.clips.length, 3);
+  const [c1, c2, c3] = splitRes.clips;
+  assert.equal(c1.startSec, 0);
+  assert.equal(c1.sourceStartSec, 0);
+  assert.equal(c1.sourceEndSec, 1.5);
+  assert.equal(c2.startSec, 1.5);
+  assert.equal(c2.sourceStartSec, 1.5);
+  assert.equal(c2.sourceEndSec, 4.0);
+  assert.equal(c3.startSec, 4.1);
+
+  // Split at playhead helper also finds the clip spanning playhead (2.5s inside c2)
+  const playheadSplit = splitVoiceoverTrackAtPlayhead(splitRes.clips, 2.5);
+  assert.ok(playheadSplit.splitClipIds);
+  assert.equal(playheadSplit.clips.length, 4);
+
+  // 3. Trim start & end edges with clamping and ripple shift
+  let clips = splitRes.clips; // [0..1.5], [1.5..4.0], [4.1..7.1]
+  // Trim start of c2 by +0.5s -> sourceStartSec becomes 2.0, startSec becomes 2.0
+  clips = trimVoiceoverClip(clips, c2.id, 'start', 0.5, 4.0, false);
+  const trimmedC2 = clips.find((c) => c.id === c2.id)!;
+  assert.equal(trimmedC2.sourceStartSec, 2.0);
+  assert.equal(trimmedC2.startSec, 2.0);
+  assert.equal(getClipDuration(trimmedC2), 2.0);
+
+  // Trim end of c2 by -0.5s with rippleMode=true -> sourceEndSec becomes 3.5, and downstream c3 shifts left by 0.5s (4.1 -> 3.6)
+  clips = trimVoiceoverClip(clips, c2.id, 'end', -0.5, 4.0, true);
+  const endTrimmedC2 = clips.find((c) => c.id === c2.id)!;
+  const rippledC3 = clips.find((c) => c.id === c3.id)!;
+  assert.equal(endTrimmedC2.sourceEndSec, 3.5);
+  assert.equal(getClipDuration(endTrimmedC2), 1.5);
+  assert.equal(rippledC3.startSec, 3.6);
+
+  // 4. Ripple Move shifts target clip and all downstream clips together
+  clips = moveVoiceoverClip(clips, c2.id, 2.5, true); // +0.5s delta
+  assert.equal(clips.find((c) => c.id === c1.id)!.startSec, 0); // upstream unchanged
+  assert.equal(clips.find((c) => c.id === c2.id)!.startSec, 2.5);
+  assert.equal(clips.find((c) => c.id === c3.id)!.startSec, 4.1);
+
+  // 5. Fade-in / Fade-out envelopes & gain evaluation
+  clips = updateVoiceoverClipSettings(clips, c1.id, {
+    fadeInSec: 0.5,
+    fadeOutSec: 0.5,
+    volume: 1.2,
+  });
+  const fadedC1 = clips.find((c) => c.id === c1.id)!;
+  assert.equal(fadedC1.fadeInSec, 0.5);
+  assert.equal(fadedC1.fadeOutSec, 0.5);
+  assert.equal(evaluateClipFadeGain(fadedC1, 0), 0);
+  assert.ok(Math.abs(evaluateClipFadeGain(fadedC1, 0.25) - 0.5) < 1e-6);
+  assert.equal(evaluateClipFadeGain(fadedC1, 0.75), 1);
+  assert.ok(Math.abs(evaluateClipFadeGain(fadedC1, 1.25) - 0.5) < 1e-6);
+
+  // 6. Waveform peak slicing resamples the trimmed sub-range accurately
+  const lowHalfPeaks = sliceClipWaveformPeaks(asset1.waveformPeaks, 4.0, 0, 1.5, 12);
+  const highHalfPeaks = sliceClipWaveformPeaks(asset1.waveformPeaks, 4.0, 2.2, 3.8, 12);
+  assert.equal(lowHalfPeaks.length, 12);
+  assert.ok(highHalfPeaks[0] > lowHalfPeaks[0]);
+
+  // 7. Projected SFX auto-ducking intervals exclude muted clips and trimmed-out regions
+  const duckBeforeMute = computeTrackDuckIntervals(track.assets!, clips);
+  assert.ok(duckBeforeMute.length >= 2);
+  const mutedClips = updateVoiceoverClipSettings(clips, c3.id, { muted: true });
+  const duckAfterMute = computeTrackDuckIntervals(track.assets!, mutedClips);
+  // c3 started at 4.1s, so no duck interval should extend past getClipEndTime(c2) = 4.0s
+  const maxDuckEnd = Math.max(...duckAfterMute.map((d) => d.end));
+  assert.ok(maxDuckEnd <= getClipEndTime(clips.find((c) => c.id === c2.id)!) + 0.05);
+
+  // 8. Delete vs Ripple Delete
+  const nonRippleDeleted = deleteVoiceoverClip(clips, c1.id, false);
+  assert.equal(nonRippleDeleted.length, 2);
+  assert.equal(nonRippleDeleted.find((c) => c.id === c2.id)!.startSec, 2.5);
+
+  const rippleDeleted = deleteVoiceoverClip(clips, c1.id, true);
+  assert.equal(rippleDeleted.length, 2);
+  // c1 duration was 1.5s, so c2 shifts from 2.5s -> 1.0s and c3 shifts from 4.1s -> 2.6s
+  assert.equal(rippleDeleted.find((c) => c.id === c2.id)!.startSec, 1.0);
+  assert.equal(rippleDeleted.find((c) => c.id === c3.id)!.startSec, 2.6);
+});
+
+
+
 
 
 

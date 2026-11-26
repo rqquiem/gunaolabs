@@ -293,6 +293,7 @@ export type PropKind =
   | 'grocerySpill'
   | 'parkedSedan'
   | 'sightseeingBus'
+  | 'ambulance'
   | 'heldItem';
 
 export type PropCategory = 'bedroom' | 'town' | 'furniture' | 'battle' | 'classic';
@@ -571,11 +572,130 @@ export interface ActorKeyframe {
   easing: EasingType;
 }
 
+export type CharacterStateId =
+  | 'normal'
+  | 'brokenLeg'
+  | 'mindBlown'
+  | 'frozenFeet'
+  | 'dizzy'
+  | 'steamingMad';
+
+export const CHARACTER_STATE_IDS: CharacterStateId[] = [
+  'normal',
+  'brokenLeg',
+  'mindBlown',
+  'frozenFeet',
+  'dizzy',
+  'steamingMad',
+];
+
+export const CHARACTER_STATE_LABELS: Record<CharacterStateId, string> = {
+  normal: 'Normal',
+  brokenLeg: 'Broken Leg',
+  mindBlown: 'Mind Blown',
+  frozenFeet: 'Frozen Feet',
+  dizzy: 'Dizzy',
+  steamingMad: 'Steaming Mad',
+};
+
+export type CharacterStateLimb = 'rightLeg' | 'leftLeg';
+
+export interface CharacterStateKeyframe {
+  id: string;
+  time: number;
+  stateId: CharacterStateId;
+  intensity?: number; // 0.4 .. 1.5, default 1.0
+  targetLimb?: CharacterStateLimb; // used by brokenLeg, default 'rightLeg'
+  seed?: number; // deterministic particle seed
+}
+
+export interface EvaluatedCharacterState {
+  stateId: CharacterStateId;
+  intensity: number;
+  targetLimb: CharacterStateLimb;
+  triggerTime: number;
+  elapsedSec: number;
+  seed: number;
+}
+
+export type CharacterModelBuildId = 'classic' | 'tall' | 'chibi' | 'chunky';
+
+export const CHARACTER_MODEL_BUILD_IDS: CharacterModelBuildId[] = [
+  'classic',
+  'tall',
+  'chibi',
+  'chunky',
+];
+
+export const CHARACTER_MODEL_BUILD_LABELS: Record<CharacterModelBuildId, string> = {
+  classic: 'Classic R6',
+  tall: 'Tall',
+  chibi: 'Chibi',
+  chunky: 'Chunky',
+};
+
+export type CharacterModelSocketId =
+  | 'mouth'
+  | 'leftEye'
+  | 'rightEye'
+  | 'forehead'
+  | 'leftHand'
+  | 'rightHand'
+  | 'chest'
+  | 'feet';
+
+export type CharacterActionId =
+  | 'none'
+  | 'spewBeans'
+  | 'cryTears'
+  | 'breatheFire'
+  | 'confettiBurst'
+  | 'sweatColdBreath';
+
+export const CHARACTER_ACTION_IDS: CharacterActionId[] = [
+  'none',
+  'spewBeans',
+  'cryTears',
+  'breatheFire',
+  'confettiBurst',
+  'sweatColdBreath',
+];
+
+export const CHARACTER_ACTION_LABELS: Record<CharacterActionId, string> = {
+  none: 'Off',
+  spewBeans: 'Spew Beans',
+  cryTears: 'Cry Tears',
+  breatheFire: 'Breathe Fire',
+  confettiBurst: 'Confetti Burst',
+  sweatColdBreath: 'Sweat & Cold Breath',
+};
+
+export type CharacterActionSource = 'mouth' | 'hands';
+
+export interface CharacterActionKeyframe {
+  id: string;
+  time: number;
+  actionId: CharacterActionId;
+  intensity?: number; // 0.4 .. 1.5, default 1.0
+  source?: CharacterActionSource; // used by confettiBurst ('mouth' | 'hands')
+  seed?: number; // deterministic emitter seed
+}
+
+export interface EvaluatedCharacterAction {
+  actionId: CharacterActionId;
+  intensity: number;
+  source: CharacterActionSource;
+  triggerTime: number;
+  elapsedSec: number;
+  seed: number;
+}
+
 export interface SceneActorConfig {
   id: string;
   name: string;
   kind: ActorKind;
   bundleId?: string;
+  modelBuild?: CharacterModelBuildId;
   bodyColors?: R6BodyColors;
   ornaments?: R6Ornaments;
   hair?: HairConfig;
@@ -584,6 +704,8 @@ export interface SceneActorConfig {
   faceKeyframes?: FaceKeyframe[];
   heldItems?: CharacterHeldItems;
   heldItemKeyframes?: HeldItemKeyframe[];
+  stateKeyframes?: CharacterStateKeyframe[];
+  actionKeyframes?: CharacterActionKeyframe[];
   lookAtTarget?: 'none' | 'camera' | string;
   lookAtWeight?: number;
   secondaryMotion?: boolean;
@@ -604,6 +726,7 @@ export interface CameraKeyframe {
   pathMode?: CameraPathMode;
   trackActorId?: string | null;
   trackOffset?: Vec3Tuple;
+  povActorId?: string | null;
   rollDeg?: number;
   shakeIntensity?: number;
   shakeFrequency?: number;
@@ -641,6 +764,116 @@ export interface LightingKeyframe {
 
 export type SubtitleRole = 'dialogue' | 'voiceover';
 
+export type CaptionMode = 'wordPop' | 'classic';
+export type CaptionPosition = 'bottom' | 'center' | 'top';
+export type CaptionSize = 'compact' | 'medium' | 'large';
+export type CaptionBackdrop = 'outline' | 'scrim' | 'card';
+
+export interface CaptionSettings {
+  mode: CaptionMode;
+  position: CaptionPosition;
+  size: CaptionSize;
+  wordsPerChunk: number; // 2..5
+  highlightColor: string;
+  emphasisColor: string;
+  backdrop: CaptionBackdrop;
+  showSpeaker: boolean;
+  emphasisPop: boolean;
+}
+
+export type NarratorEngineMode = 'ai' | 'browser';
+export type NarratorVoiceId = 'Charon' | 'Fenrir' | 'Kore' | 'Puck' | 'Zephyr';
+export type NarratorStyleId =
+  | 'warmStoryteller'
+  | 'cinematicTrailer'
+  | 'snappyComedy'
+  | 'documentary'
+  | 'energeticHost';
+
+export interface NarratorSettings {
+  engine: NarratorEngineMode;
+  voice: NarratorVoiceId;
+  style: NarratorStyleId;
+  speed: number; // 0.75..1.4
+  pitchSemitones: number; // -4..4
+  volume: number; // 0.2..1.0
+  autoDuckSfx: boolean;
+  duckAmount: number; // 0.2..0.75 (reduction fraction, e.g. 0.65 -> 35% SFX gain)
+}
+
+export const NARRATOR_VOICE_IDS: NarratorVoiceId[] = [
+  'Charon',
+  'Fenrir',
+  'Kore',
+  'Puck',
+  'Zephyr',
+];
+
+export const NARRATOR_STYLE_IDS: NarratorStyleId[] = [
+  'warmStoryteller',
+  'cinematicTrailer',
+  'snappyComedy',
+  'documentary',
+  'energeticHost',
+];
+
+export type CinematicPresetId =
+  | 'blockbuster'
+  | 'goldenHour'
+  | 'noir'
+  | 'comedyShorts'
+  | 'documentary'
+  | 'cleanDaylight';
+
+export const CINEMATIC_PRESET_IDS: CinematicPresetId[] = [
+  'blockbuster',
+  'goldenHour',
+  'noir',
+  'comedyShorts',
+  'documentary',
+  'cleanDaylight',
+];
+
+export type VoiceoverCutterToolId = 'select' | 'razor';
+
+export interface VoiceoverSourceAsset {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  durationSec: number;
+  audioBuffer: AudioBuffer;
+  waveformPeaks: number[];
+  duckIntervals: { start: number; end: number }[];
+}
+
+export interface VoiceoverClip {
+  id: string;
+  assetId: string;
+  name: string;
+  startSec: number;
+  sourceStartSec: number;
+  sourceEndSec: number;
+  volume: number; // 0.2..1.5
+  fadeInSec: number; // 0..2.0
+  fadeOutSec: number; // 0..2.0
+  muted: boolean;
+}
+
+export interface CustomVoiceoverTrack {
+  fileName: string;
+  mimeType: string;
+  durationSec: number;
+  audioBuffer: AudioBuffer;
+  waveformPeaks: number[];
+  offsetSec: number; // -5..15
+  volume: number; // 0.2..1.5
+  autoDuckSfx: boolean;
+  duckIntervals: { start: number; end: number }[];
+  assets?: Record<string, VoiceoverSourceAsset>;
+  clips?: VoiceoverClip[];
+  rippleMode?: boolean;
+}
+
 export interface SubtitleCue {
   id: string;
   startTime: number;
@@ -649,6 +882,7 @@ export interface SubtitleCue {
   actorId?: string | null;
   text: string;
   role?: SubtitleRole;
+  voiceOverride?: NarratorVoiceId | null;
 }
 
 export type SfxKind =
@@ -748,6 +982,10 @@ export interface AnimationProject {
   actors: SceneActorConfig[];
   cameraTrack: CameraKeyframe[];
   subtitles: SubtitleCue[];
+  captionSettings?: CaptionSettings;
+  narratorSettings?: NarratorSettings;
+  activeCinematicPreset?: CinematicPresetId | null;
+  customTranscriptText?: string | null;
 }
 
 export interface EvaluatedPose {
@@ -780,6 +1018,8 @@ export interface EvaluatedActorState {
   pose: EvaluatedPose;
   face: EvaluatedFaceState;
   heldItems?: EvaluatedHeldItems;
+  characterState?: EvaluatedCharacterState;
+  characterAction?: EvaluatedCharacterAction;
   secondaryMotion: SecondaryMotionState;
 }
 
@@ -789,6 +1029,7 @@ export interface EvaluatedCameraState {
   fov: number;
   rollRad: number;
   shakeOffset: Vec3Tuple;
+  povActorId?: string | null;
 }
 
 export interface EvaluatedLightingState {
@@ -819,6 +1060,19 @@ export type DockTab = 'timeline' | 'scene' | 'character' | 'cutscene' | 'export'
 
 export type VideoResolution = '720p' | '1080p' | 'native';
 
+export type VideoExportFormat = 'mp4' | 'webm' | 'mov' | 'mkv';
+
+export const VIDEO_EXPORT_FORMATS: VideoExportFormat[] = [
+  'mp4',
+  'webm',
+  'mov',
+  'mkv',
+];
+
+export type VideoAspectRatio = '16:9' | '9:16' | '1:1';
+
+export const VIDEO_ASPECT_RATIOS: VideoAspectRatio[] = ['16:9', '9:16', '1:1'];
+
 export type VideoEncoderBackend = 'webcodecs' | 'mediarecorder';
 
 export type VideoExportRangeMode = 'full' | 'chapter' | 'custom';
@@ -831,9 +1085,12 @@ export interface VideoExportRange {
 }
 
 export interface VideoExportOptions {
+  format: VideoExportFormat;
+  aspectRatio: VideoAspectRatio;
   resolution: VideoResolution;
   fps: 24 | 30 | 60;
   bitrateMbps: 4 | 8 | 14;
+  includeAudio: boolean;
   burnSubtitles: boolean;
   burnLetterbox: boolean;
   streamingMode?: boolean;
@@ -847,11 +1104,22 @@ export interface VideoRecordingState {
   durationSec: number;
   currentFrame: number;
   totalFrames: number;
+  estimatedRemainingSec?: number | null;
   encoderBackend: VideoEncoderBackend | null;
+  format?: VideoExportFormat | null;
+  requestedFormat?: VideoExportFormat | null;
+  fallbackUsed?: boolean;
+  fallbackReason?: string | null;
+  videoCodec?: string | null;
+  audioCodec?: string | null;
+  hasAudio?: boolean;
+  width?: number | null;
+  height?: number | null;
+  aspectRatio?: VideoAspectRatio | null;
   streamedBytes?: number;
   blobUrl: string | null;
   mimeType: string | null;
-  fileExtension: 'mp4' | null;
+  fileExtension: VideoExportFormat | null;
   fileSizeBytes: number | null;
   error: string | null;
 }

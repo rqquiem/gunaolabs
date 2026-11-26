@@ -32,12 +32,31 @@ import {
   SLEEVE_MODE_OPTIONS,
 } from './robloxCatalog';
 import {
+  evaluateCharacterStateAt,
+  isValidCharacterStateId,
+  sanitizeCharacterStateLimb,
+} from './characterStates';
+import {
+  evaluateCharacterActionAt,
+  isValidCharacterActionId,
+  sanitizeCharacterActionSource,
+  sanitizeCharacterModelBuildId,
+} from './characterActions';
+import {
+  resolveCaptionSettings,
+  resolveNarratorSettings,
+} from './captionEngine';
+import {
   ActorKeyframe,
   AnimationProject,
   CHAPTER_COLORS,
+  CINEMATIC_PRESET_IDS,
   CameraKeyframe,
+  CinematicPresetId,
   ChapterMarker,
+  CharacterActionKeyframe,
   CharacterHeldItems,
+  CharacterStateKeyframe,
   EasingType,
   EnvironmentId,
   EvaluatedActorState,
@@ -706,6 +725,14 @@ export function evaluateActorAt(
   const face = evaluateActorFaceAt(actor, time, subtitles, applyEasing);
   const heldItems =
     actor.kind === 'character' ? evaluateActorItemsAt(actor, time) : undefined;
+  const characterState =
+    actor.kind === 'character'
+      ? evaluateCharacterStateAt(actor.stateKeyframes, time)
+      : undefined;
+  const characterAction =
+    actor.kind === 'character'
+      ? evaluateCharacterActionAt(actor.actionKeyframes, time)
+      : undefined;
 
   if (sorted.length === 0) {
     return {
@@ -719,6 +746,8 @@ export function evaluateActorAt(
       pose: evaluateProceduralClipPose('idle', time, 1),
       face,
       heldItems,
+      characterState,
+      characterAction,
       secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, 'idle', 'none'),
     };
   }
@@ -754,6 +783,8 @@ export function evaluateActorAt(
       pose: evalKeyframePose(first),
       face,
       heldItems,
+      characterState,
+      characterAction,
       secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, first.clip, upper),
     };
   }
@@ -772,6 +803,8 @@ export function evaluateActorAt(
       pose: evalKeyframePose(last),
       face,
       heldItems,
+      characterState,
+      characterAction,
       secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, last.clip, upper),
     };
   }
@@ -832,6 +865,8 @@ export function evaluateActorAt(
     pose,
     face,
     heldItems,
+    characterState,
+    characterAction,
     secondaryMotion: evaluateSecondaryMotion(actor, sorted, time, activeClip, activeUpper),
   };
 }
@@ -881,6 +916,7 @@ export function evaluateCameraAt(
       fov: first.fov,
       rollRad: degToRad(first.rollDeg ?? 0) + shake.rollJitterRad,
       shakeOffset: shake.offset,
+      povActorId: first.povActorId ?? null,
     };
   }
 
@@ -897,6 +933,7 @@ export function evaluateCameraAt(
       fov: last.fov,
       rollRad: degToRad(last.rollDeg ?? 0) + shake.rollJitterRad,
       shakeOffset: shake.offset,
+      povActorId: last.povActorId ?? null,
     };
   }
 
@@ -959,6 +996,11 @@ export function evaluateCameraAt(
   );
   const shake = computeCameraShakeOffset(time, shakeAmp, shakeFreq);
 
+  const activePovActorId =
+    prev.easing === 'step' && time >= next.time - 0.0005
+      ? (next.povActorId ?? null)
+      : (prev.povActorId ?? null);
+
   return {
     position,
     target,
@@ -967,6 +1009,7 @@ export function evaluateCameraAt(
       lerp(degToRad(prev.rollDeg ?? 0), degToRad(next.rollDeg ?? 0), easedT) +
       shake.rollJitterRad,
     shakeOffset: shake.offset,
+    povActorId: activePovActorId,
   };
 }
 
@@ -1411,6 +1454,164 @@ export function deleteItemKeyframe(
   };
 }
 
+export function upsertCharacterStateKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframe: CharacterStateKeyframe,
+): AnimationProject {
+  const snapTime = Math.round(clamp(keyframe.time, 0, project.duration) * 100) / 100;
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.stateKeyframes ?? [];
+      const existingIdx = current.findIndex(
+        (kf) => kf.id === keyframe.id || Math.abs(kf.time - snapTime) < 0.04,
+      );
+      const nextFrames = [...current];
+      const normalized: CharacterStateKeyframe = {
+        id: keyframe.id,
+        time: snapTime,
+        stateId: isValidCharacterStateId(keyframe.stateId) ? keyframe.stateId : 'normal',
+        intensity: clamp(keyframe.intensity ?? 1, 0.4, 1.5),
+        targetLimb: sanitizeCharacterStateLimb(keyframe.targetLimb),
+        seed:
+          typeof keyframe.seed === 'number' && Number.isFinite(keyframe.seed)
+            ? keyframe.seed
+            : 1,
+      };
+      if (existingIdx >= 0) {
+        nextFrames[existingIdx] = {
+          ...nextFrames[existingIdx],
+          ...normalized,
+          id: nextFrames[existingIdx].id,
+        };
+      } else {
+        nextFrames.push(normalized);
+      }
+      nextFrames.sort((a, b) => a.time - b.time);
+      return { ...actor, stateKeyframes: nextFrames };
+    }),
+  };
+}
+
+export function moveCharacterStateKeyframeTime(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.stateKeyframes ?? [];
+      const nextFrames = current
+        .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+        .sort((a, b) => a.time - b.time);
+      return { ...actor, stateKeyframes: nextFrames };
+    }),
+  };
+}
+
+export function deleteCharacterStateKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+): AnimationProject {
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.stateKeyframes ?? [];
+      return {
+        ...actor,
+        stateKeyframes: current.filter((kf) => kf.id !== keyframeId),
+      };
+    }),
+  };
+}
+
+export function upsertCharacterActionKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframe: CharacterActionKeyframe,
+): AnimationProject {
+  const snapTime = Math.round(clamp(keyframe.time, 0, project.duration) * 100) / 100;
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.actionKeyframes ?? [];
+      const existingIdx = current.findIndex(
+        (kf) => kf.id === keyframe.id || Math.abs(kf.time - snapTime) < 0.04,
+      );
+      const nextFrames = [...current];
+      const normalized: CharacterActionKeyframe = {
+        id: keyframe.id,
+        time: snapTime,
+        actionId: isValidCharacterActionId(keyframe.actionId) ? keyframe.actionId : 'none',
+        intensity: clamp(keyframe.intensity ?? 1, 0.4, 1.5),
+        source: sanitizeCharacterActionSource(keyframe.source),
+        seed:
+          typeof keyframe.seed === 'number' && Number.isFinite(keyframe.seed)
+            ? keyframe.seed
+            : 1,
+      };
+      if (existingIdx >= 0) {
+        nextFrames[existingIdx] = {
+          ...nextFrames[existingIdx],
+          ...normalized,
+          id: nextFrames[existingIdx].id,
+        };
+      } else {
+        nextFrames.push(normalized);
+      }
+      nextFrames.sort((a, b) => a.time - b.time);
+      return { ...actor, actionKeyframes: nextFrames };
+    }),
+  };
+}
+
+export function moveCharacterActionKeyframeTime(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+  newTime: number,
+): AnimationProject {
+  const snapped = snapTimeToStep(newTime, project.duration);
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.actionKeyframes ?? [];
+      const nextFrames = current
+        .map((kf) => (kf.id === keyframeId ? { ...kf, time: snapped } : kf))
+        .sort((a, b) => a.time - b.time);
+      return { ...actor, actionKeyframes: nextFrames };
+    }),
+  };
+}
+
+export function deleteCharacterActionKeyframe(
+  project: AnimationProject,
+  actorId: string,
+  keyframeId: string,
+): AnimationProject {
+  return {
+    ...project,
+    actors: project.actors.map((actor) => {
+      if (actor.id !== actorId) return actor;
+      const current = actor.actionKeyframes ?? [];
+      return {
+        ...actor,
+        actionKeyframes: current.filter((kf) => kf.id !== keyframeId),
+      };
+    }),
+  };
+}
+
 export function upsertCameraKeyframe(
   project: AnimationProject,
   keyframe: CameraKeyframe,
@@ -1780,6 +1981,20 @@ export function rippleShiftProjectFrom(
             .sort((a, b) => a.time - b.time),
         }
       : {}),
+    ...(actor.stateKeyframes
+      ? {
+          stateKeyframes: actor.stateKeyframes
+            .map((kf) => ({ ...kf, time: trackMax(shiftTime(kf.time)) }))
+            .sort((a, b) => a.time - b.time),
+        }
+      : {}),
+    ...(actor.actionKeyframes
+      ? {
+          actionKeyframes: actor.actionKeyframes
+            .map((kf) => ({ ...kf, time: trackMax(shiftTime(kf.time)) }))
+            .sort((a, b) => a.time - b.time),
+        }
+      : {}),
   }));
 
   const targetDuration = Math.round(
@@ -1874,6 +2089,39 @@ function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
           easing: k.easing === 'equipPop' ? ('equipPop' as const) : ('step' as const),
           right: sanitizeHandItemState(k.right),
           left: sanitizeHandItemState(k.left),
+        }))
+        .sort((a, b) => a.time - b.time)
+    : undefined;
+
+  const stateKeyframes = Array.isArray(actor.stateKeyframes)
+    ? actor.stateKeyframes
+        .filter((k) => k && typeof k.time === 'number' && isValidCharacterStateId(k.stateId))
+        .map((k, idx) => ({
+          id: typeof k.id === 'string' && k.id ? k.id : `skf_${idx}`,
+          time: Math.max(0, k.time),
+          stateId: k.stateId,
+          intensity: typeof k.intensity === 'number' ? clamp(k.intensity, 0.4, 1.5) : 1,
+          targetLimb: sanitizeCharacterStateLimb(k.targetLimb),
+          seed: typeof k.seed === 'number' && Number.isFinite(k.seed) ? k.seed : 1,
+        }))
+        .sort((a, b) => a.time - b.time)
+    : undefined;
+
+  const modelBuild =
+    actor.kind === 'character' && actor.modelBuild !== undefined
+      ? sanitizeCharacterModelBuildId(actor.modelBuild)
+      : undefined;
+
+  const actionKeyframes = Array.isArray(actor.actionKeyframes)
+    ? actor.actionKeyframes
+        .filter((k) => k && typeof k.time === 'number' && isValidCharacterActionId(k.actionId))
+        .map((k, idx) => ({
+          id: typeof k.id === 'string' && k.id ? k.id : `akf_${idx}`,
+          time: Math.max(0, k.time),
+          actionId: k.actionId,
+          intensity: typeof k.intensity === 'number' ? clamp(k.intensity, 0.4, 1.5) : 1,
+          source: sanitizeCharacterActionSource(k.source),
+          seed: typeof k.seed === 'number' && Number.isFinite(k.seed) ? k.seed : 1,
         }))
         .sort((a, b) => a.time - b.time)
     : undefined;
@@ -2027,6 +2275,9 @@ function sanitizeActorConfig(actor: SceneActorConfig): SceneActorConfig {
     ...(propItemId ? { propItemId } : {}),
     ...(heldItems ? { heldItems } : {}),
     ...(heldItemKeyframes ? { heldItemKeyframes } : {}),
+    ...(stateKeyframes ? { stateKeyframes } : {}),
+    ...(modelBuild ? { modelBuild } : {}),
+    ...(actionKeyframes ? { actionKeyframes } : {}),
   };
 }
 
@@ -2149,6 +2400,34 @@ export function parseProjectJson(raw: string): AnimationProject {
         .sort((a, b) => a.time - b.time)
     : [];
 
+  const validVoices = new Set(['Charon', 'Fenrir', 'Kore', 'Puck', 'Zephyr']);
+  const sanitizedSubtitles: SubtitleCue[] = Array.isArray(obj.subtitles)
+    ? obj.subtitles
+        .filter(
+          (s) =>
+            s &&
+            typeof s === 'object' &&
+            typeof s.startTime === 'number' &&
+            typeof s.endTime === 'number' &&
+            typeof s.text === 'string',
+        )
+        .map((s, idx) => ({
+          id: typeof s.id === 'string' && s.id ? s.id : `sub_${idx}`,
+          startTime: clamp(s.startTime, 0, duration),
+          endTime: clamp(Math.max(s.startTime + 0.1, s.endTime), 0, duration),
+          speaker: typeof s.speaker === 'string' ? s.speaker : 'Narrator',
+          ...(s.actorId !== undefined ? { actorId: s.actorId } : {}),
+          text: s.text,
+          ...(s.role === 'voiceover' || s.role === 'dialogue'
+            ? { role: s.role }
+            : {}),
+          ...(typeof s.voiceOverride === 'string' && validVoices.has(s.voiceOverride)
+            ? { voiceOverride: s.voiceOverride }
+            : {}),
+        }))
+        .sort((a, b) => a.startTime - b.startTime)
+    : [];
+
   return {
     id: typeof obj.id === 'string' ? obj.id : `proj_${Date.now()}`,
     name: obj.name,
@@ -2173,6 +2452,20 @@ export function parseProjectJson(raw: string): AnimationProject {
     stageLights: Array.isArray(obj.stageLights) ? obj.stageLights : [],
     actors: obj.actors.map((a) => sanitizeActorConfig(a)),
     cameraTrack: obj.cameraTrack,
-    subtitles: Array.isArray(obj.subtitles) ? obj.subtitles : [],
+    subtitles: sanitizedSubtitles,
+    ...(obj.captionSettings
+      ? { captionSettings: resolveCaptionSettings(obj.captionSettings) }
+      : {}),
+    ...(obj.narratorSettings
+      ? { narratorSettings: resolveNarratorSettings(obj.narratorSettings) }
+      : {}),
+    ...(typeof obj.activeCinematicPreset === 'string' &&
+    (CINEMATIC_PRESET_IDS as string[]).includes(obj.activeCinematicPreset)
+      ? { activeCinematicPreset: obj.activeCinematicPreset as CinematicPresetId }
+      : {}),
+    ...(typeof obj.customTranscriptText === 'string' &&
+    obj.customTranscriptText.trim().length > 0
+      ? { customTranscriptText: obj.customTranscriptText.slice(0, 20000) }
+      : {}),
   };
 }

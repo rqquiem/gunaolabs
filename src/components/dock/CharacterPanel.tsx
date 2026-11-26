@@ -14,10 +14,27 @@ import {
   Shirt,
   PersonStanding,
   Swords,
+  Sparkles,
+  RefreshCw,
+  Flame,
 } from 'lucide-react';
 import { ItemHandlingPanel } from './ItemHandlingPanel';
 import { PoseLibraryPanel } from './PoseLibraryPanel';
 import { WardrobePanel } from './WardrobePanel';
+import {
+  CHARACTER_STATE_CATALOG,
+  CHARACTER_STATE_META,
+  createDefaultCharacterState,
+} from '../../engine/characterStates';
+import {
+  CHARACTER_ACTION_CATALOG,
+  CHARACTER_ACTION_META,
+  CHARACTER_MODEL_BUILD_CATALOG,
+  CHARACTER_MODEL_BUILD_MAP,
+  createDefaultCharacterAction,
+  sanitizeCharacterModelBuildId,
+} from '../../engine/characterActions';
+import { formatTimecode } from '../../engine/timeline';
 import {
   FACE_BROW_STYLES,
   FACE_CHEEK_STYLES,
@@ -44,7 +61,12 @@ import {
 import {
   AccessoryFit,
   AnimationProject,
+  CharacterActionId,
+  CharacterActionSource,
   CharacterHeldItems,
+  CharacterModelBuildId,
+  CharacterStateId,
+  CharacterStateLimb,
   ClothingConfig,
   EASING_OPTIONS,
   EasingType,
@@ -74,7 +96,28 @@ import {
   Vec3Tuple,
 } from '../../engine/types';
 
-type CharacterSubTab = 'face' | 'poses' | 'items' | 'animation' | 'appearance';
+type CharacterSubTab =
+  | 'face'
+  | 'actions'
+  | 'states'
+  | 'poses'
+  | 'items'
+  | 'animation'
+  | 'appearance';
+
+export interface CharacterStateDraft {
+  stateId: CharacterStateId;
+  intensity: number;
+  targetLimb: CharacterStateLimb;
+  seed: number;
+}
+
+export interface CharacterActionDraft {
+  actionId: CharacterActionId;
+  intensity: number;
+  source: CharacterActionSource;
+  seed: number;
+}
 
 interface CharacterPanelProps {
   project: AnimationProject;
@@ -89,6 +132,8 @@ interface CharacterPanelProps {
     overrides: Partial<ExpressionParams>;
   } | null;
   itemDraft: CharacterHeldItems | null;
+  stateDraft: CharacterStateDraft | null;
+  actionDraft: CharacterActionDraft | null;
   onSelectActor: (actorId: string) => void;
   onAddCharacter: (bundleId: string) => void;
   onAddProp: (propKind: PropKind, propItemId?: ItemId) => void;
@@ -127,6 +172,16 @@ interface CharacterPanelProps {
   onPreviewHeldItems: (next: CharacterHeldItems) => void;
   onResetItemDraft: () => void;
   onCommitItemKeyframe: (easing?: ItemEasingMode) => void;
+  onPreviewCharacterState: (draft: CharacterStateDraft) => void;
+  onReplayCharacterState: () => void;
+  onResetCharacterStateDraft: () => void;
+  onCommitCharacterStateKeyframe: () => void;
+  onChangeModelBuild: (actorId: string, buildId: CharacterModelBuildId) => void;
+  onPreviewCharacterAction: (draft: CharacterActionDraft) => void;
+  onReplayCharacterAction: () => void;
+  onResetCharacterActionDraft: () => void;
+  onCommitCharacterActionKeyframe: () => void;
+  onSeekToTime: (time: number) => void;
   onSpawnItemAsProp: (
     itemId: ItemId,
     primaryColor: string,
@@ -218,6 +273,8 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   hipTiltDraft,
   faceDraft,
   itemDraft,
+  stateDraft,
+  actionDraft,
   onSelectActor,
   onAddCharacter,
   onAddProp,
@@ -242,6 +299,16 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
   onPreviewHeldItems,
   onResetItemDraft,
   onCommitItemKeyframe,
+  onPreviewCharacterState,
+  onReplayCharacterState,
+  onResetCharacterStateDraft,
+  onCommitCharacterStateKeyframe,
+  onChangeModelBuild,
+  onPreviewCharacterAction,
+  onReplayCharacterAction,
+  onResetCharacterActionDraft,
+  onCommitCharacterActionKeyframe,
+  onSeekToTime,
   onSpawnItemAsProp,
   onChangeClip,
   onUpdateActorAnimSettings,
@@ -318,6 +385,22 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
       )
     : undefined;
 
+  const activeCharacterState =
+    stateDraft ??
+    evaluatedActor?.characterState ??
+    createDefaultCharacterState();
+
+  const activeStateMeta = CHARACTER_STATE_META[activeCharacterState.stateId];
+
+  const activeCharacterAction =
+    actionDraft ??
+    evaluatedActor?.characterAction ??
+    createDefaultCharacterAction();
+
+  const activeActionMeta = CHARACTER_ACTION_META[activeCharacterAction.actionId];
+  const activeModelBuild = sanitizeCharacterModelBuildId(selectedActor?.modelBuild);
+  const activeBuildSpec = CHARACTER_MODEL_BUILD_MAP[activeModelBuild];
+
   const otherActors = project.actors.filter((a) => a.id !== selectedActorId);
 
   return (
@@ -347,10 +430,12 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
             <div className="flex items-center p-0.5 ml-1 rounded-md bg-[#14161a] border border-[#393d47] shrink-0">
               {(
                 [
-                  { id: 'face', label: 'Face & Expressions', icon: Smile },
-                  { id: 'poses', label: 'Pose Library', icon: PersonStanding },
-                  { id: 'items', label: 'Items & Hands', icon: Swords },
-                  { id: 'animation', label: 'Animation & Rig', icon: Layers },
+                  { id: 'face', label: 'Face', icon: Smile },
+                  { id: 'actions', label: 'Model & Actions', icon: Flame },
+                  { id: 'states', label: 'States & FX', icon: Sparkles },
+                  { id: 'poses', label: 'Poses', icon: PersonStanding },
+                  { id: 'items', label: 'Items', icon: Swords },
+                  { id: 'animation', label: 'Anim & Rig', icon: Layers },
                   { id: 'appearance', label: 'Wardrobe', icon: Shirt },
                 ] as const
               ).map((tab) => {
@@ -361,7 +446,7 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
                     key={tab.id}
                     type="button"
                     onClick={() => setSubTab(tab.id)}
-                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
                       active
                         ? 'bg-[#2b2e35] text-white'
                         : 'text-slate-400 hover:text-slate-200'
@@ -793,6 +878,468 @@ export const CharacterPanel: React.FC<CharacterPanelProps> = ({
                       );
                     })}
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-TAB 1A: CHARACTER MODEL BUILD & ACTION FUNCTIONS */}
+            {subTab === 'actions' && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-[#393d47]">
+                {/* Column 1: Body Build Presets + Action Function Selector */}
+                <div className="space-y-2">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-slate-400 whitespace-nowrap shrink-0">
+                        Body Build
+                      </span>
+                      <span className="text-[10px] text-slate-500 truncate">
+                        {activeBuildSpec.description}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {CHARACTER_MODEL_BUILD_CATALOG.map((spec) => {
+                        const active = activeModelBuild === spec.id;
+                        return (
+                          <button
+                            key={spec.id}
+                            type="button"
+                            onClick={() => onChangeModelBuild(selectedActor.id, spec.id)}
+                            className={`px-1.5 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap truncate ${
+                              active
+                                ? 'bg-[#00a2ff] border-[#00a2ff] text-slate-950 font-semibold'
+                                : 'bg-[#14161a] border-[#393d47] text-slate-300 hover:bg-[#2b2e35]'
+                            }`}
+                          >
+                            {spec.shortLabel}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-slate-400">
+                        Character Action Function
+                      </span>
+                      {actionDraft && (
+                        <button
+                          type="button"
+                          onClick={onResetCharacterActionDraft}
+                          aria-label="Reset action preview"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] text-slate-300 hover:text-white whitespace-nowrap"
+                        >
+                          <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                          <span>Reset</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1">
+                      {CHARACTER_ACTION_CATALOG.map((meta) => {
+                        const active = activeCharacterAction.actionId === meta.id;
+                        return (
+                          <button
+                            key={meta.id}
+                            type="button"
+                            onClick={() =>
+                              onPreviewCharacterAction({
+                                actionId: meta.id,
+                                intensity: activeCharacterAction.intensity,
+                                source: meta.supportsSourceToggle
+                                  ? activeCharacterAction.source
+                                  : 'mouth',
+                                seed: activeCharacterAction.seed,
+                              })
+                            }
+                            className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-medium border transition-colors text-left whitespace-nowrap truncate ${
+                              active
+                                ? 'bg-[#2b2e35] text-white border-[#00a2ff]'
+                                : 'bg-[#14161a] border-[#393d47] text-slate-300 hover:bg-[#2b2e35]'
+                            }`}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-xs shrink-0"
+                              style={{ backgroundColor: meta.accentColor }}
+                              aria-hidden="true"
+                            />
+                            <span className="truncate">{meta.shortLabel}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Column 2: Action Controls, Socket Routing & Replay */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      Action Emitter & Socket
+                    </span>
+                    {activeCharacterAction.actionId !== 'none' && (
+                      <button
+                        type="button"
+                        onClick={onReplayCharacterAction}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-amber-300 hover:bg-[#363a43] whitespace-nowrap"
+                      >
+                        <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                        <span>Replay</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    {activeActionMeta.description}
+                  </p>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-400 w-14 shrink-0">
+                      Power
+                    </span>
+                    <input
+                      type="range"
+                      min={0.4}
+                      max={1.5}
+                      step={0.05}
+                      aria-label="Character Action Power"
+                      disabled={activeCharacterAction.actionId === 'none'}
+                      value={activeCharacterAction.intensity}
+                      onChange={(e) =>
+                        onPreviewCharacterAction({
+                          actionId: activeCharacterAction.actionId,
+                          intensity: Number(e.target.value),
+                          source: activeCharacterAction.source,
+                          seed: activeCharacterAction.seed,
+                        })
+                      }
+                      className="studio-slider flex-1 disabled:opacity-40"
+                    />
+                    <span className="text-[11px] font-mono-tabular text-slate-300 w-9 text-right">
+                      {activeCharacterAction.intensity.toFixed(2)}x
+                    </span>
+                  </div>
+
+                  {activeActionMeta.supportsSourceToggle && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-400 w-14 shrink-0">
+                        Origin
+                      </span>
+                      <div className="grid grid-cols-2 gap-1 flex-1">
+                        {(
+                          [
+                            { id: 'mouth', label: 'Mouth Socket' },
+                            { id: 'hands', label: 'Both Hands' },
+                          ] as const
+                        ).map((src) => (
+                          <button
+                            key={src.id}
+                            type="button"
+                            onClick={() =>
+                              onPreviewCharacterAction({
+                                actionId: activeCharacterAction.actionId,
+                                intensity: activeCharacterAction.intensity,
+                                source: src.id,
+                                seed: activeCharacterAction.seed,
+                              })
+                            }
+                            className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors whitespace-nowrap ${
+                              activeCharacterAction.source === src.id
+                                ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                                : 'bg-[#14161a] border-[#393d47] text-slate-300 hover:bg-[#2b2e35]'
+                            }`}
+                          >
+                            {src.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeCharacterAction.actionId !== 'none' && (
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <span className="text-[11px] text-slate-400 font-mono-tabular">
+                        Seed #{activeCharacterAction.seed}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onPreviewCharacterAction({
+                            actionId: activeCharacterAction.actionId,
+                            intensity: activeCharacterAction.intensity,
+                            source: activeCharacterAction.source,
+                            seed: ((activeCharacterAction.seed + 17) % 97) + 1,
+                          })
+                        }
+                        className="px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] text-slate-200 hover:bg-[#363a43] whitespace-nowrap"
+                      >
+                        Shuffle Pattern
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Column 3: Key Action on Timeline & Existing Action Cues */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      Timeline Action Cues
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onCommitCharacterActionKeyframe}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 text-slate-950 text-xs font-semibold hover:bg-amber-400 transition-colors whitespace-nowrap"
+                    >
+                      <KeyRound className="w-3 h-3" aria-hidden="true" />
+                      <span>Key Action</span>
+                    </button>
+                  </div>
+
+                  {(selectedActor.actionKeyframes ?? []).length > 0 ? (
+                    <div className="max-h-24 overflow-y-auto space-y-1 pr-0.5">
+                      {(selectedActor.actionKeyframes ?? []).map((kf) => {
+                        const meta = CHARACTER_ACTION_META[kf.actionId];
+                        return (
+                          <button
+                            key={kf.id}
+                            type="button"
+                            onClick={() => onSeekToTime(kf.time)}
+                            className="w-full flex items-center justify-between gap-2 px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200 hover:bg-[#2b2e35] transition-colors"
+                          >
+                            <span className="inline-flex items-center gap-1.5 truncate">
+                              <span
+                                className="w-2 h-2 rounded-xs shrink-0"
+                                style={{ backgroundColor: meta.accentColor }}
+                                aria-hidden="true"
+                              />
+                              <span className="truncate">{meta.label}</span>
+                            </span>
+                            <span className="font-mono-tabular text-slate-400 shrink-0">
+                              {formatTimecode(kf.time)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-500 pt-1">
+                      Pick a Body Build or trigger an Action Function to preview live from exact head/hand sockets, then click Key Action at {formatTimecode(currentTime)}.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* SUB-TAB 1B: CHARACTER STATES & FX FRAMEWORK */}
+            {subTab === 'states' && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-[#393d47]">
+                {/* Column 1: State Selector Grid */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      Character State
+                    </span>
+                    {stateDraft && (
+                      <button
+                        type="button"
+                        onClick={onResetCharacterStateDraft}
+                        aria-label="Reset state preview"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] text-slate-300 hover:text-white"
+                      >
+                        <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                        <span>Reset</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-1">
+                    {CHARACTER_STATE_CATALOG.map((meta) => {
+                      const active = activeCharacterState.stateId === meta.id;
+                      return (
+                        <button
+                          key={meta.id}
+                          type="button"
+                          onClick={() =>
+                            onPreviewCharacterState({
+                              stateId: meta.id,
+                              intensity: activeCharacterState.intensity,
+                              targetLimb: activeCharacterState.targetLimb,
+                              seed: activeCharacterState.seed,
+                            })
+                          }
+                          className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-medium border transition-colors text-left whitespace-nowrap truncate ${
+                            active
+                              ? 'bg-[#2b2e35] text-white border-[#00a2ff]'
+                              : 'bg-[#14161a] border-[#393d47] text-slate-300 hover:bg-[#2b2e35]'
+                          }`}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-xs shrink-0"
+                            style={{ backgroundColor: meta.accentColor }}
+                            aria-hidden="true"
+                          />
+                          <span className="truncate">{meta.shortLabel}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <p className="text-[11px] text-slate-400 leading-snug pt-0.5">
+                    {activeStateMeta.description}
+                  </p>
+                </div>
+
+                {/* Column 2: Parameters & Live Burst Replay */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      FX Controls
+                    </span>
+                    {activeStateMeta.hasBurstReplay && (
+                      <button
+                        type="button"
+                        onClick={onReplayCharacterState}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-sky-300 hover:bg-[#363a43] whitespace-nowrap"
+                      >
+                        <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                        <span>Replay Burst</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-400 w-16 shrink-0">
+                      Intensity
+                    </span>
+                    <input
+                      type="range"
+                      min={0.4}
+                      max={1.5}
+                      step={0.05}
+                      aria-label="Character State Intensity"
+                      disabled={activeCharacterState.stateId === 'normal'}
+                      value={activeCharacterState.intensity}
+                      onChange={(e) =>
+                        onPreviewCharacterState({
+                          stateId: activeCharacterState.stateId,
+                          intensity: Number(e.target.value),
+                          targetLimb: activeCharacterState.targetLimb,
+                          seed: activeCharacterState.seed,
+                        })
+                      }
+                      className="studio-slider flex-1 disabled:opacity-40"
+                    />
+                    <span className="text-[11px] font-mono-tabular text-slate-300 w-9 text-right">
+                      {activeCharacterState.intensity.toFixed(2)}x
+                    </span>
+                  </div>
+
+                  {activeStateMeta.supportsLimb && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-400 w-16 shrink-0">
+                        Target Leg
+                      </span>
+                      <div className="grid grid-cols-2 gap-1 flex-1">
+                        {(
+                          [
+                            { id: 'rightLeg', label: 'Right Leg' },
+                            { id: 'leftLeg', label: 'Left Leg' },
+                          ] as const
+                        ).map((limb) => (
+                          <button
+                            key={limb.id}
+                            type="button"
+                            onClick={() =>
+                              onPreviewCharacterState({
+                                stateId: activeCharacterState.stateId,
+                                intensity: activeCharacterState.intensity,
+                                targetLimb: limb.id,
+                                seed: activeCharacterState.seed,
+                              })
+                            }
+                            className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
+                              activeCharacterState.targetLimb === limb.id
+                                ? 'bg-red-500/20 border-red-400 text-red-200'
+                                : 'bg-[#14161a] border-[#393d47] text-slate-300 hover:bg-[#2b2e35]'
+                            }`}
+                          >
+                            {limb.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeCharacterState.stateId === 'mindBlown' && (
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <span className="text-[11px] text-slate-400">
+                        Burst Seed #{activeCharacterState.seed}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onPreviewCharacterState({
+                            stateId: 'mindBlown',
+                            intensity: activeCharacterState.intensity,
+                            targetLimb: activeCharacterState.targetLimb,
+                            seed: ((activeCharacterState.seed + 13) % 97) + 1,
+                          })
+                        }
+                        className="px-2 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] text-slate-200 hover:bg-[#363a43]"
+                      >
+                        Shuffle Chunks
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Column 3: Key State on Timeline & Existing Cues */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-400">
+                      Timeline State Cues
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onCommitCharacterStateKeyframe}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-fuchsia-500 text-slate-950 text-xs font-semibold hover:bg-fuchsia-400 transition-colors whitespace-nowrap"
+                    >
+                      <KeyRound className="w-3 h-3" aria-hidden="true" />
+                      <span>Key State</span>
+                    </button>
+                  </div>
+
+                  {(selectedActor.stateKeyframes ?? []).length > 0 ? (
+                    <div className="max-h-24 overflow-y-auto space-y-1 pr-0.5">
+                      {(selectedActor.stateKeyframes ?? []).map((kf) => {
+                        const meta = CHARACTER_STATE_META[kf.stateId];
+                        return (
+                          <button
+                            key={kf.id}
+                            type="button"
+                            onClick={() => onSeekToTime(kf.time)}
+                            className="w-full flex items-center justify-between gap-2 px-2 py-1 rounded bg-[#14161a] border border-[#393d47] text-[11px] text-slate-200 hover:bg-[#2b2e35] transition-colors"
+                          >
+                            <span className="inline-flex items-center gap-1.5 truncate">
+                              <span
+                                className="w-2 h-2 rounded-xs shrink-0"
+                                style={{ backgroundColor: meta.accentColor }}
+                                aria-hidden="true"
+                              />
+                              <span className="truncate">{meta.label}</span>
+                            </span>
+                            <span className="font-mono-tabular text-slate-400 shrink-0">
+                              {formatTimecode(kf.time)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-500 pt-1">
+                      Select any state on the left to preview live, then click Key State to trigger it at {formatTimecode(currentTime)}.
+                    </p>
+                  )}
                 </div>
               </div>
             )}

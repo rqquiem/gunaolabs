@@ -24,12 +24,25 @@ import {
   StudTexturePair,
 } from './robloxTextures';
 import { getActiveMapSignature } from './mapLibrary';
+import { createDefaultCharacterState } from './characterStates';
+import {
+  createDefaultCharacterAction,
+  getActionFaceSyncOverlay,
+  sanitizeCharacterModelBuildId,
+} from './characterActions';
 import { clamp, degToRad, evaluateProjectAt } from './timeline';
 import {
   AnimationProject,
   CameraFramingPreset,
   CameraMode,
+  CharacterActionId,
+  CharacterActionSource,
+  CharacterStateId,
+  CharacterStateLimb,
+  CustomVoiceoverTrack,
   EnvironmentId,
+  EvaluatedCharacterAction,
+  EvaluatedCharacterState,
   EvaluatedFaceState,
   EvaluatedFrame,
   EvaluatedHeldItems,
@@ -41,14 +54,23 @@ import {
   StageLightConfig,
   SubtitleRole,
   Vec3Tuple,
+  VideoAspectRatio,
   VideoEncoderBackend,
+  VideoExportFormat,
   VideoExportOptions,
 } from './types';
 import {
+  computeVerticalFovForAspect,
   Mp4CutsceneRecorder,
   resolveExportDimensions,
   VideoRecordedResult,
 } from './mp4Recorder';
+import {
+  getCachedCueDuration,
+  pregenerateProjectVoices,
+  renderProjectAudioOffline,
+} from './episodeAudio';
+import { resolveNarratorSettings } from './captionEngine';
 
 export interface StageEngineCallbacks {
   onSelectActor: (actorId: string | null) => void;
@@ -153,9 +175,26 @@ export class StageEngine {
   private poseOverride: { actorId: string; pose: EvaluatedPose } | null = null;
   private faceOverride: { actorId: string; face: EvaluatedFaceState } | null = null;
   private itemOverride: { actorId: string; heldItems: EvaluatedHeldItems } | null = null;
+  private stateOverride: {
+    actorId: string;
+    stateId: CharacterStateId;
+    intensity: number;
+    targetLimb: CharacterStateLimb;
+    seed: number;
+    previewStartMs: number;
+  } | null = null;
+  private actionOverride: {
+    actorId: string;
+    actionId: CharacterActionId;
+    intensity: number;
+    source: CharacterActionSource;
+    seed: number;
+    previewStartMs: number;
+  } | null = null;
   private lastEvaluatedFrame: EvaluatedFrame | null = null;
 
   private frameId = 0;
+  private statePreviewTimerId = 0;
   private isLoopActive = false;
   private lastTickMs = 0;
   private renderBusy = false;
@@ -522,6 +561,7 @@ export class StageEngine {
           this.selectedActorId = null;
         }
         this.scene.remove(managed.group);
+        managed.rig?.disposeStateController();
         this.disposeObject3D(managed.group);
         this.actors.delete(id);
       }
@@ -549,6 +589,7 @@ export class StageEngine {
             this.transformControls.detach();
           }
           this.scene.remove(existing.group);
+          existing.rig?.disposeStateController();
           this.disposeObject3D(existing.group);
         }
 
@@ -567,6 +608,7 @@ export class StageEngine {
             hair,
             clothing,
             this.renderer.capabilities.getMaxAnisotropy(),
+            sanitizeCharacterModelBuildId(cfg.modelBuild),
           );
           rig.root.userData.actorId = cfg.id;
           this.actors.set(cfg.id, {
@@ -611,6 +653,7 @@ export class StageEngine {
       } else if (existing) {
         existing.config = cfg;
         if (existing.rig) {
+          existing.rig.setModelBuild(sanitizeCharacterModelBuildId(cfg.modelBuild));
           existing.rig.setBodyColors(cfg.bodyColors ?? fallbackBundle.bodyColors);
           existing.rig.setOrnaments(resolveActorOrnaments(cfg));
           existing.rig.setHair(resolveActorHair(cfg));
@@ -838,6 +881,7 @@ export class StageEngine {
     this.cameraMode = mode;
     this.orbitControls.enabled = mode === 'orbit';
     this.updateCameraRigVisibility();
+    this.evaluateAndApply(this.currentTime);
     this.selectActor(this.selectedActorId);
     this.requestRender();
   }
@@ -931,6 +975,103 @@ export class StageEngine {
     this.requestRender();
   }
 
+  private stopStatePreviewTicker() {
+    if (this.statePreviewTimerId) {
+      cancelAnimationFrame(this.statePreviewTimerId);
+      clearTimeout(this.statePreviewTimerId);
+      this.statePreviewTimerId = 0;
+    }
+  }
+
+  private hasActiveLivePreview(): boolean {
+    const hasState = Boolean(this.stateOverride && this.stateOverride.stateId !== 'normal');
+    const hasAction = Boolean(this.actionOverride && this.actionOverride.actionId !== 'none');
+    return hasState || hasAction;
+  }
+
+  private startStatePreviewTicker() {
+    this.stopStatePreviewTicker();
+    if (this.disposed || this.isPlaying || !this.hasActiveLivePreview()) return;
+
+    const step = () => {
+      if (this.disposed || this.isPlaying || !this.hasActiveLivePreview()) {
+        this.statePreviewTimerId = 0;
+        return;
+      }
+      this.evaluateAndApply(this.currentTime);
+      this.renderCurrentCamera();
+      if (this.isSoftwareGl) {
+        this.statePreviewTimerId = window.setTimeout(step, 240);
+      } else {
+        this.statePreviewTimerId = requestAnimationFrame(step);
+      }
+    };
+
+    if (this.isSoftwareGl) {
+      this.statePreviewTimerId = window.setTimeout(step, 240);
+    } else {
+      this.statePreviewTimerId = requestAnimationFrame(step);
+    }
+  }
+
+  public setCharacterStateOverride(
+    actorId: string | null,
+    override: {
+      stateId: CharacterStateId;
+      intensity: number;
+      targetLimb: CharacterStateLimb;
+      seed: number;
+    } | null,
+  ) {
+    this.stopStatePreviewTicker();
+    if (actorId && override) {
+      this.stateOverride = {
+        actorId,
+        stateId: override.stateId,
+        intensity: override.intensity,
+        targetLimb: override.targetLimb,
+        seed: override.seed,
+        previewStartMs: performance.now(),
+      };
+    } else {
+      this.stateOverride = null;
+    }
+    this.evaluateAndApply(this.currentTime);
+    this.requestRender();
+    if (!this.isPlaying && this.hasActiveLivePreview()) {
+      this.startStatePreviewTicker();
+    }
+  }
+
+  public setCharacterActionOverride(
+    actorId: string | null,
+    override: {
+      actionId: CharacterActionId;
+      intensity: number;
+      source: CharacterActionSource;
+      seed: number;
+    } | null,
+  ) {
+    this.stopStatePreviewTicker();
+    if (actorId && override) {
+      this.actionOverride = {
+        actorId,
+        actionId: override.actionId,
+        intensity: override.intensity,
+        source: override.source,
+        seed: override.seed,
+        previewStartMs: performance.now(),
+      };
+    } else {
+      this.actionOverride = null;
+    }
+    this.evaluateAndApply(this.currentTime);
+    this.requestRender();
+    if (!this.isPlaying && this.hasActiveLivePreview()) {
+      this.startStatePreviewTicker();
+    }
+  }
+
   public focusActorFace(actorId: string) {
     const managed = this.actors.get(actorId);
     if (!managed || !managed.rig) return;
@@ -973,6 +1114,9 @@ export class StageEngine {
       this.poseOverride = null;
       this.faceOverride = null;
       this.itemOverride = null;
+      this.stateOverride = null;
+      this.actionOverride = null;
+      this.stopStatePreviewTicker();
       this.transformControls.detach();
       this.updateMapModuleSelectionRings();
       this.lastTickMs = performance.now();
@@ -1113,12 +1257,42 @@ export class StageEngine {
     }
     if (targetId === selfId) return false;
     const other = this.actors.get(targetId);
-    if (!other) return false;
+    if (!other || !other.group.visible) {
+      out.copy(activeCamera.position);
+      return true;
+    }
     if (other.rig) {
       other.rig.faceRig.root.getWorldPosition(out);
     } else {
       other.group.getWorldPosition(out);
-      out.y += 1.1;
+      switch (other.config.propKind) {
+        case 'rainingCatsDogs':
+        case 'flyingPigs':
+          out.y += 4.35;
+          break;
+        case 'africanElephant':
+          out.y += 1.95;
+          out.z += 0.85;
+          break;
+        case 'clydesdalePlatter':
+          out.y += 2.15;
+          break;
+        case 'beanWaterfall':
+          out.y += 1.15;
+          out.z += 0.55;
+          break;
+        case 'iceFeet':
+        case 'grocerySpill':
+        case 'steelUmbrella':
+          out.y += 0.35;
+          break;
+        case 'plasterCast':
+          out.y += 0.55;
+          break;
+        default:
+          out.y += 1.1;
+          break;
+      }
     }
     return true;
   }
@@ -1150,15 +1324,24 @@ export class StageEngine {
         );
       }
 
-      const isVisible =
+      const isScaledVisible =
         Math.max(
           Math.abs(managed.group.scale.x),
           Math.abs(managed.group.scale.y),
           Math.abs(managed.group.scale.z),
         ) > 0.001;
-      managed.group.visible = isVisible;
+      const isFirstPersonPovActor =
+        this.cameraMode === 'director' &&
+        Boolean(frame.camera.povActorId && frame.camera.povActorId === id);
 
-      if (!isVisible) {
+      if (managed.rig) {
+        managed.group.visible = isScaledVisible;
+        managed.rig.torsoPivot.visible = !isFirstPersonPovActor;
+      } else {
+        managed.group.visible = isScaledVisible && !isFirstPersonPovActor;
+      }
+
+      if (!isScaledVisible) {
         continue;
       }
 
@@ -1276,7 +1459,74 @@ export class StageEngine {
         gazeOverride = { x: 0, y: 0 };
       }
 
-      managed.rig.applyFaceState(activeFace, gazeOverride);
+      // Resolve Character Action Function early so mouth/eye sync blends cleanly into the 3D Face Rig
+      let activeCharAction: EvaluatedCharacterAction =
+        actorState.characterAction ?? createDefaultCharacterAction();
+      let actionClock = time;
+      if (
+        this.actionOverride &&
+        this.actionOverride.actorId === id &&
+        !this.isPlaying
+      ) {
+        const previewElapsed = Math.max(
+          0,
+          (performance.now() - this.actionOverride.previewStartMs) / 1000,
+        );
+        activeCharAction = {
+          actionId: this.actionOverride.actionId,
+          intensity: this.actionOverride.intensity,
+          source: this.actionOverride.source,
+          triggerTime: time,
+          elapsedSec: previewElapsed,
+          seed: this.actionOverride.seed,
+        };
+        actionClock = time + previewElapsed;
+      }
+
+      const faceOverlay =
+        !this.faceOverride || this.faceOverride.actorId !== id
+          ? getActionFaceSyncOverlay(activeCharAction, actionClock)
+          : null;
+      const syncedFace = faceOverlay
+        ? {
+            ...activeFace,
+            params: {
+              ...activeFace.params,
+              ...faceOverlay,
+            },
+          }
+        : activeFace;
+
+      managed.rig.applyFaceState(syncedFace, gazeOverride);
+
+      // Character State Framework FX (Broken Leg, Mind Blown, Frozen Feet, Dizzy, Steaming Mad)
+      let activeCharState: EvaluatedCharacterState =
+        actorState.characterState ?? createDefaultCharacterState();
+      let stateClock = time;
+      if (
+        this.stateOverride &&
+        this.stateOverride.actorId === id &&
+        !this.isPlaying
+      ) {
+        const previewElapsed = Math.max(
+          0,
+          (performance.now() - this.stateOverride.previewStartMs) / 1000,
+        );
+        activeCharState = {
+          stateId: this.stateOverride.stateId,
+          intensity: this.stateOverride.intensity,
+          targetLimb: this.stateOverride.targetLimb,
+          triggerTime: time,
+          elapsedSec: previewElapsed,
+          seed: this.stateOverride.seed,
+        };
+        stateClock = time + previewElapsed;
+      }
+      managed.rig.applyCharacterState(activeCharState, stateClock);
+
+      // Refresh world matrices after head look-at & state transforms so mouth/eye/hand sockets are exact
+      managed.group.updateMatrixWorld(true);
+      managed.rig.applyCharacterAction(activeCharAction, actionClock);
     }
 
     // Hot-swap map/skybox cleanly if timeline crosses a Stage/Map cue
@@ -1440,19 +1690,28 @@ export class StageEngine {
         durationSec: number;
         currentFrame: number;
         totalFrames: number;
+        estimatedRemainingSec: number | null;
         encoderBackend: VideoEncoderBackend;
+        format: VideoExportFormat;
+        videoCodec: string;
+        audioCodec: string | null;
+        hasAudio: boolean;
+        width: number;
+        height: number;
+        aspectRatio: VideoAspectRatio;
         streamedBytes?: number;
       }) => void;
       onFinalizing: (encoderBackend: VideoEncoderBackend) => void;
       onComplete: (result: VideoRecordedResult) => void;
       onError: (message: string) => void;
     },
+    customVoiceover?: CustomVoiceoverTrack | null,
   ): boolean {
     if (this.isRecordingExport || this.disposed) return false;
     this.isRecordingExport = true;
     this.exportStopRequested = false;
     this.exportCancelRequested = false;
-    void this.runOfflineMp4Export(options, callbacks);
+    void this.runOfflineMp4Export(options, callbacks, customVoiceover);
     return true;
   }
 
@@ -1464,13 +1723,22 @@ export class StageEngine {
         durationSec: number;
         currentFrame: number;
         totalFrames: number;
+        estimatedRemainingSec: number | null;
         encoderBackend: VideoEncoderBackend;
+        format: VideoExportFormat;
+        videoCodec: string;
+        audioCodec: string | null;
+        hasAudio: boolean;
+        width: number;
+        height: number;
+        aspectRatio: VideoAspectRatio;
         streamedBytes?: number;
       }) => void;
       onFinalizing: (encoderBackend: VideoEncoderBackend) => void;
       onComplete: (result: VideoRecordedResult) => void;
       onError: (message: string) => void;
     },
+    customVoiceover?: CustomVoiceoverTrack | null,
   ) {
     const prevCameraMode = this.cameraMode;
     const prevSelectedActor = this.selectedActorId;
@@ -1482,9 +1750,12 @@ export class StageEngine {
     this.isLoopActive = false;
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
+    this.stopStatePreviewTicker();
     this.poseOverride = null;
     this.faceOverride = null;
     this.itemOverride = null;
+    this.stateOverride = null;
+    this.actionOverride = null;
     this.cameraMode = 'director';
     this.orbitControls.enabled = false;
     this.transformControls.detach();
@@ -1496,9 +1767,11 @@ export class StageEngine {
     let recorder: Mp4CutsceneRecorder | null = null;
 
     try {
+      const aspectRatio: VideoAspectRatio = options.aspectRatio ?? '16:9';
       const targetDims = resolveExportDimensions(
         this.renderer.domElement,
         options.resolution,
+        aspectRatio,
       );
 
       // Render WebGL buffer directly at target resolution before initializing encoder
@@ -1516,10 +1789,36 @@ export class StageEngine {
         : projectDur;
       const clipDuration = Math.max(0.1, endSec - startSec);
 
+      // Optionally pre-generate AI narrator clips (unless replaced by custom voiceover) and synthesize sample-accurate offline audio
+      if (options.includeAudio && !customVoiceover) {
+        const narratorSettings = resolveNarratorSettings(this.project.narratorSettings);
+        if (narratorSettings.engine === 'ai' && this.project.subtitles.length > 0) {
+          await pregenerateProjectVoices(this.project, {
+            start: startSec,
+            end: endSec,
+          }).catch(() => undefined);
+        }
+      }
+
+      const audioBuffer = options.includeAudio
+        ? await renderProjectAudioOffline(
+            this.project,
+            startSec,
+            endSec,
+            48000,
+            customVoiceover,
+          )
+        : null;
+
+      if (this.disposed || this.exportCancelRequested) {
+        return;
+      }
+
       recorder = await Mp4CutsceneRecorder.create(
         this.renderer.domElement,
         options,
         clipDuration,
+        audioBuffer,
       );
       this.mp4Recorder = recorder;
 
@@ -1533,6 +1832,8 @@ export class StageEngine {
       const frameDurationSec = 1 / fps;
       const keyIntervalFrames = fps * 2;
       const gl = this.renderer.getContext();
+      const exportStartMs = performance.now();
+      let renderedFrames = 0;
 
       for (let frameIdx = 0; frameIdx < totalFrames; frameIdx++) {
         if (this.disposed || this.exportCancelRequested) {
@@ -1546,25 +1847,58 @@ export class StageEngine {
         const t = Math.min(endSec, startSec + outTimestampSec);
         this.currentTime = t;
         this.evaluateAndApply(t);
+
+        // Apply portrait/square vertical FOV compensation so wide shots don't crop characters
+        if (aspectRatio !== '16:9') {
+          const baseFov = this.lastEvaluatedFrame?.camera.fov ?? this.directorCamera.fov;
+          const adjustedFov = computeVerticalFovForAspect(baseFov, aspectRatio);
+          if (Math.abs(this.directorCamera.fov - adjustedFov) > 0.01) {
+            this.directorCamera.fov = adjustedFov;
+            this.directorCamera.updateProjectionMatrix();
+          }
+        }
+
         this.renderer.render(this.scene, this.directorCamera);
         gl.flush();
 
         const sub = this.lastEvaluatedFrame?.subtitle ?? null;
+        const overrideDur = sub
+          ? getCachedCueDuration(sub, this.project.narratorSettings)
+          : undefined;
         await recorder.addFrame(
           this.renderer.domElement,
-          sub ? { speaker: sub.speaker, text: sub.text, role: sub.role } : null,
+          sub,
           outTimestampSec,
           frameDurationSec,
           frameIdx % keyIntervalFrames === 0,
           this.lastEvaluatedFrame?.screenBlackout ?? 0,
+          t,
+          this.project.captionSettings,
+          overrideDur,
         );
+        renderedFrames = frameIdx + 1;
+
+        const wallElapsedSec = (performance.now() - exportStartMs) / 1000;
+        const remainingFrames = Math.max(0, totalFrames - renderedFrames);
+        const estimatedRemainingSec =
+          renderedFrames >= 3 && wallElapsedSec > 0.1
+            ? (wallElapsedSec / renderedFrames) * remainingFrames
+            : null;
 
         callbacks.onProgress({
-          elapsedSec: Math.min(clipDuration, (frameIdx + 1) * frameDurationSec),
+          elapsedSec: Math.min(clipDuration, renderedFrames * frameDurationSec),
           durationSec: clipDuration,
-          currentFrame: frameIdx + 1,
+          currentFrame: renderedFrames,
           totalFrames,
+          estimatedRemainingSec,
           encoderBackend: recorder.backend,
+          format: recorder.format,
+          videoCodec: recorder.videoCodecLabel,
+          audioCodec: recorder.audioCodecLabel,
+          hasAudio: recorder.hasAudio,
+          width: recorder.width,
+          height: recorder.height,
+          aspectRatio: recorder.aspectRatio,
           streamedBytes: recorder.getStreamedBytes(),
         });
 
@@ -1578,7 +1912,11 @@ export class StageEngine {
       }
 
       callbacks.onFinalizing(recorder.backend);
-      const result = await recorder.finalize();
+      const actualDurationSec = Math.max(
+        frameDurationSec * 2,
+        renderedFrames * frameDurationSec,
+      );
+      const result = await recorder.finalize(actualDurationSec);
       if (!this.disposed && !this.exportCancelRequested) {
         callbacks.onComplete(result);
       }
@@ -1588,7 +1926,7 @@ export class StageEngine {
       }
       if (!this.disposed && !this.exportCancelRequested) {
         callbacks.onError(
-          err instanceof Error ? err.message : 'Unable to export cutscene MP4.',
+          err instanceof Error ? err.message : 'Unable to export cutscene video.',
         );
       }
     } finally {
@@ -1644,6 +1982,7 @@ export class StageEngine {
   public dispose() {
     this.disposed = true;
     this.exportCancelRequested = true;
+    this.stopStatePreviewTicker();
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
     if (this.mp4Recorder) {
@@ -1661,7 +2000,10 @@ export class StageEngine {
     this.studTextures.albedo.dispose();
     this.studTextures.bump.dispose();
     this.skyboxTex?.dispose();
-    this.actors.forEach((m) => this.disposeObject3D(m.group));
+    this.actors.forEach((m) => {
+      m.rig?.disposeStateController();
+      this.disposeObject3D(m.group);
+    });
     this.stageLightsMap.forEach((l) => {
       l.helper.dispose();
       this.disposeObject3D(l.fixtureGroup);

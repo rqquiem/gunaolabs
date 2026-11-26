@@ -1,22 +1,105 @@
 import {
   AppendOnlyStreamTarget,
+  AudioBufferSource,
+  AudioCodec,
   BufferTarget,
   CanvasSource,
+  MkvOutputFormat,
+  MovOutputFormat,
   Mp4OutputFormat,
   Output,
+  OutputFormat,
   Quality,
+  VideoCodec,
+  WebMOutputFormat,
   canEncodeVideo,
+  getFirstEncodableAudioCodec,
 } from 'mediabunny';
+import { drawWordPopCaptionOnCanvas } from './captionEngine';
+import { trimAudioBuffer } from './episodeAudio';
 import {
+  CaptionSettings,
+  SubtitleCue,
+  VideoAspectRatio,
   VideoEncoderBackend,
+  VideoExportFormat,
   VideoExportOptions,
   VideoResolution,
 } from './types';
 
+export interface VideoFormatMeta {
+  id: VideoExportFormat;
+  label: string;
+  extension: VideoExportFormat;
+  mimeType: string;
+  shortDesc: string;
+  preferredVideoCodecs: VideoCodec[];
+  preferredAudioCodecs: AudioCodec[];
+  supportsInlinePreview: boolean;
+  supportsStreaming: boolean;
+}
+
+export const VIDEO_FORMAT_CATALOG: Record<VideoExportFormat, VideoFormatMeta> = {
+  mp4: {
+    id: 'mp4',
+    label: 'MP4',
+    extension: 'mp4',
+    mimeType: 'video/mp4',
+    shortDesc: 'H.264 / VP9 · Universal',
+    preferredVideoCodecs: ['avc', 'vp9', 'av1'],
+    preferredAudioCodecs: ['aac', 'opus'],
+    supportsInlinePreview: true,
+    supportsStreaming: true,
+  },
+  webm: {
+    id: 'webm',
+    label: 'WebM',
+    extension: 'webm',
+    mimeType: 'video/webm',
+    shortDesc: 'VP9 / VP8 · Fast Web',
+    preferredVideoCodecs: ['vp9', 'vp8', 'av1'],
+    preferredAudioCodecs: ['opus'],
+    supportsInlinePreview: true,
+    supportsStreaming: true,
+  },
+  mov: {
+    id: 'mov',
+    label: 'MOV',
+    extension: 'mov',
+    mimeType: 'video/quicktime',
+    shortDesc: 'QuickTime · Editing',
+    preferredVideoCodecs: ['avc', 'vp9', 'hevc'],
+    preferredAudioCodecs: ['aac', 'pcm-s16'],
+    supportsInlinePreview: false,
+    supportsStreaming: true,
+  },
+  mkv: {
+    id: 'mkv',
+    label: 'MKV',
+    extension: 'mkv',
+    mimeType: 'video/x-matroska',
+    shortDesc: 'Matroska · Flexible',
+    preferredVideoCodecs: ['avc', 'vp9', 'vp8', 'av1'],
+    preferredAudioCodecs: ['opus', 'aac', 'pcm-s16'],
+    supportsInlinePreview: false,
+    supportsStreaming: true,
+  },
+};
+
 export interface VideoRecordedResult {
   blobUrl: string;
   mimeType: string;
-  fileExtension: 'mp4';
+  fileExtension: VideoExportFormat;
+  format: VideoExportFormat;
+  requestedFormat: VideoExportFormat;
+  fallbackUsed: boolean;
+  fallbackReason: string | null;
+  videoCodec: string;
+  audioCodec: string | null;
+  hasAudio: boolean;
+  width: number;
+  height: number;
+  aspectRatio: VideoAspectRatio;
   fileSizeBytes: number;
   encoderBackend: VideoEncoderBackend;
   isFragmentedStream?: boolean;
@@ -28,7 +111,8 @@ export interface ExportDimensions {
 }
 
 interface WebCodecsEncoderProfile {
-  fullCodecString: string;
+  codec: VideoCodec;
+  fullCodecString?: string;
   quality: Quality;
   latencyMode?: 'quality' | 'realtime';
   hardwareAcceleration: 'no-preference' | 'prefer-software';
@@ -37,13 +121,21 @@ interface WebCodecsEncoderProfile {
 export function resolveExportDimensions(
   sourceCanvas: HTMLCanvasElement,
   resolution: VideoResolution,
+  aspectRatio: VideoAspectRatio = '16:9',
 ): ExportDimensions {
+  const align16 = (v: number) => Math.max(64, Math.round(v / 16) * 16);
+
   if (resolution === '720p') {
+    if (aspectRatio === '9:16') return { width: 720, height: 1280 };
+    if (aspectRatio === '1:1') return { width: 720, height: 720 };
     return { width: 1280, height: 720 };
   }
   if (resolution === '1080p') {
+    if (aspectRatio === '9:16') return { width: 1080, height: 1920 };
+    if (aspectRatio === '1:1') return { width: 1080, height: 1080 };
     return { width: 1920, height: 1080 };
   }
+
   const srcW = Math.max(
     64,
     sourceCanvas.clientWidth || sourceCanvas.width || 1280,
@@ -52,11 +144,34 @@ export function resolveExportDimensions(
     64,
     sourceCanvas.clientHeight || sourceCanvas.height || 720,
   );
-  // Align native dimensions to 16px macroblocks for H.264 / hardware encoders
+
+  if (aspectRatio === '9:16') {
+    const h = align16(Math.max(srcH, 960));
+    return { width: align16((h * 9) / 16), height: h };
+  }
+  if (aspectRatio === '1:1') {
+    const side = align16(Math.max(Math.min(srcW, srcH), 720));
+    return { width: side, height: side };
+  }
+
+  // Align native dimensions to 16px macroblocks for H.264 / VP9 / hardware encoders
   return {
-    width: Math.max(64, Math.round(srcW / 16) * 16),
-    height: Math.max(64, Math.round(srcH / 16) * 16),
+    width: align16(srcW),
+    height: align16(srcH),
   };
+}
+
+export function computeVerticalFovForAspect(
+  baseFovDeg: number,
+  aspectRatio: VideoAspectRatio = '16:9',
+): number {
+  if (aspectRatio === '9:16') {
+    return Math.min(86, Math.round(baseFovDeg * 1.32 * 10) / 10);
+  }
+  if (aspectRatio === '1:1') {
+    return Math.min(78, Math.round(baseFovDeg * 1.14 * 10) / 10);
+  }
+  return baseFovDeg;
 }
 
 export function getH264CodecCandidates(
@@ -83,112 +198,37 @@ export function getH264CodecCandidates(
     : ['avc1.42e01f', 'avc1.42001f', 'avc1.4d001f', 'avc1.42e028', 'avc1.4d002a', 'avc1.64001f'];
 }
 
-async function smokeTestVideoEncoder(
-  codecString: string,
-  width: number,
-  height: number,
-  fps: number,
-  bitrateBps: number,
-  bitrateMode: 'variable' | 'constant' | 'quantizer',
-  latencyMode: 'quality' | 'realtime' | undefined,
-  hardwareAcceleration: 'no-preference' | 'prefer-software',
-): Promise<boolean> {
-  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
-    return false;
-  }
-
-  let chunkCount = 0;
-  let hasDescription = false;
-  let errored = false;
-
-  const encoder = new VideoEncoder({
-    output: (chunk, meta) => {
-      if (chunk.byteLength > 0) {
-        chunkCount++;
-      }
-      if (meta?.decoderConfig?.description && meta.decoderConfig.description.byteLength > 0) {
-        hasDescription = true;
-      }
-    },
-    error: () => {
-      errored = true;
-    },
-  });
-
-  try {
-    const config: VideoEncoderConfig = {
-      codec: codecString,
-      width,
-      height,
-      framerate: fps,
-      hardwareAcceleration,
-      avc: { format: 'avc' },
-      ...(latencyMode ? { latencyMode } : {}),
-      ...(bitrateMode === 'quantizer'
-        ? { bitrateMode: 'quantizer' }
-        : { bitrate: bitrateBps, bitrateMode }),
-    };
-
-    const support = await VideoEncoder.isConfigSupported(config);
-    if (!support.supported) {
-      return false;
-    }
-
-    encoder.configure(config);
-
-    // Encode 2 small frames at target dimensions to verify real chunk emission + SPS/PPS header
-    const frameDurUs = Math.max(1, Math.round(1_000_000 / fps));
-    const buffer = new Uint8Array(width * height * 4);
-    buffer.fill(48);
-    const frame0 = new VideoFrame(buffer, {
-      format: 'RGBA',
-      codedWidth: width,
-      codedHeight: height,
-      timestamp: 0,
-      duration: frameDurUs,
-    });
-    const quantizerOpt =
-      bitrateMode === 'quantizer' ? ({ avc: { quantizer: 22 } } as VideoEncoderEncodeOptions) : {};
-    encoder.encode(frame0, { keyFrame: true, ...quantizerOpt });
-    frame0.close();
-
-    buffer.fill(180);
-    const frame1 = new VideoFrame(buffer, {
-      format: 'RGBA',
-      codedWidth: width,
-      codedHeight: height,
-      timestamp: frameDurUs,
-      duration: frameDurUs,
-    });
-    encoder.encode(frame1, { keyFrame: false, ...quantizerOpt });
-    frame1.close();
-
-    await encoder.flush();
-    return !errored && chunkCount >= 2 && hasDescription;
-  } catch {
-    return false;
-  } finally {
-    if (encoder.state !== 'closed') {
-      try {
-        encoder.close();
-      } catch {
-        // Ignore close errors during probing
-      }
-    }
-  }
+function formatVideoCodecLabel(codec: string): string {
+  const c = codec.toLowerCase();
+  if (c.startsWith('avc') || c.includes('h264')) return 'H.264';
+  if (c.startsWith('hevc') || c.startsWith('hvc') || c.includes('h265')) return 'H.265';
+  if (c.startsWith('vp9') || c.startsWith('vp09')) return 'VP9';
+  if (c.startsWith('vp8')) return 'VP8';
+  if (c.startsWith('av1') || c.startsWith('av01')) return 'AV1';
+  return codec.toUpperCase();
 }
 
-async function resolveWebCodecsH264Profile(
+function formatAudioCodecLabel(codec: string | null): string | null {
+  if (!codec) return null;
+  const c = codec.toLowerCase();
+  if (c.includes('aac') || c.includes('mp4a')) return 'AAC';
+  if (c.includes('opus')) return 'Opus';
+  if (c.includes('pcm')) return 'PCM';
+  return codec.toUpperCase();
+}
+
+async function resolveWebCodecsProfileForFormat(
+  format: VideoExportFormat,
   width: number,
   height: number,
   fps: number,
   bitrateBps: number,
 ): Promise<WebCodecsEncoderProfile | null> {
-  if (typeof VideoEncoder === 'undefined') {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
     return null;
   }
 
-  const codecCandidates = getH264CodecCandidates(width, height, fps, bitrateBps);
+  const meta = VIDEO_FORMAT_CATALOG[format];
   const attempts: Array<{
     bitrateMode: 'variable' | 'constant' | 'quantizer';
     latencyMode?: 'quality' | 'realtime';
@@ -203,50 +243,44 @@ async function resolveWebCodecsH264Profile(
     { bitrateMode: 'quantizer', hardwareAcceleration: 'prefer-software' },
   ];
 
-  for (const codecStr of codecCandidates) {
-    for (const attempt of attempts) {
-      const quality =
-        attempt.bitrateMode === 'quantizer'
-          ? new Quality('high')
-          : new Quality({
-              bitrate: bitrateBps,
-              bitrateMode: attempt.bitrateMode,
-            });
+  for (const codec of meta.preferredVideoCodecs) {
+    const codecStrings: Array<string | undefined> =
+      codec === 'avc'
+        ? [...getH264CodecCandidates(width, height, fps, bitrateBps), undefined]
+        : [undefined];
 
-      try {
-        const supportedByMediabunny = await canEncodeVideo('avc', {
-          width,
-          height,
-          quality,
-          frameRate: fps,
-          fullCodecString: codecStr,
-          hardwareAcceleration: attempt.hardwareAcceleration,
-          ...(attempt.latencyMode ? { latencyMode: attempt.latencyMode } : {}),
-        });
-        if (!supportedByMediabunny) {
-          continue;
-        }
+    for (const fullCodecString of codecStrings) {
+      for (const attempt of attempts) {
+        const quality =
+          attempt.bitrateMode === 'quantizer'
+            ? new Quality('high')
+            : new Quality({
+                bitrate: bitrateBps,
+                bitrateMode: attempt.bitrateMode,
+              });
 
-        const verified = await smokeTestVideoEncoder(
-          codecStr,
-          width,
-          height,
-          fps,
-          bitrateBps,
-          attempt.bitrateMode,
-          attempt.latencyMode,
-          attempt.hardwareAcceleration,
-        );
-        if (verified) {
+        try {
+          const supported = await canEncodeVideo(codec, {
+            width,
+            height,
+            quality,
+            frameRate: fps,
+            hardwareAcceleration: attempt.hardwareAcceleration,
+            ...(fullCodecString ? { fullCodecString } : {}),
+            ...(attempt.latencyMode ? { latencyMode: attempt.latencyMode } : {}),
+          });
+          if (!supported) continue;
+
           return {
-            fullCodecString: codecStr,
+            codec,
+            fullCodecString,
             quality,
             latencyMode: attempt.latencyMode,
             hardwareAcceleration: attempt.hardwareAcceleration,
           };
+        } catch {
+          // Try next profile combination
         }
-      } catch {
-        // Try next profile/option combination
       }
     }
   }
@@ -276,6 +310,151 @@ export function pickMediaRecorderMp4MimeType(): string | null {
   return null;
 }
 
+export interface MediaRecorderSelection {
+  mimeType: string;
+  actualFormat: VideoExportFormat;
+  videoCodec: string;
+  audioCodec: string | null;
+  fallbackUsed: boolean;
+}
+
+export function pickMediaRecorderMimeType(
+  requestedFormat: VideoExportFormat,
+  includeAudio: boolean,
+  allowCrossFormatRescue = true,
+): MediaRecorderSelection | null {
+  if (typeof MediaRecorder === 'undefined') {
+    return null;
+  }
+
+  const mp4Candidates: Array<{ mime: string; v: string; a: string | null }> = includeAudio
+    ? [
+        { mime: 'video/mp4;codecs=avc1.42e01f,mp4a.40.2', v: 'H.264', a: 'AAC' },
+        { mime: 'video/mp4;codecs=avc1,mp4a.40.2', v: 'H.264', a: 'AAC' },
+        { mime: 'video/mp4;codecs=avc1.42e01f', v: 'H.264', a: null },
+        { mime: 'video/mp4;codecs=avc1', v: 'H.264', a: null },
+        { mime: 'video/mp4', v: 'H.264', a: null },
+      ]
+    : [
+        { mime: 'video/mp4;codecs=avc1.42e01f', v: 'H.264', a: null },
+        { mime: 'video/mp4;codecs=avc1.42001f', v: 'H.264', a: null },
+        { mime: 'video/mp4;codecs=avc1.4d002a', v: 'H.264', a: null },
+        { mime: 'video/mp4;codecs=avc1', v: 'H.264', a: null },
+        { mime: 'video/mp4', v: 'H.264', a: null },
+      ];
+
+  const webmCandidates: Array<{ mime: string; v: string; a: string | null }> = includeAudio
+    ? [
+        { mime: 'video/webm;codecs=vp9,opus', v: 'VP9', a: 'Opus' },
+        { mime: 'video/webm;codecs=vp8,opus', v: 'VP8', a: 'Opus' },
+        { mime: 'video/webm;codecs=vp9', v: 'VP9', a: null },
+        { mime: 'video/webm;codecs=vp8', v: 'VP8', a: null },
+        { mime: 'video/webm', v: 'VP8/VP9', a: null },
+      ]
+    : [
+        { mime: 'video/webm;codecs=vp9', v: 'VP9', a: null },
+        { mime: 'video/webm;codecs=vp8', v: 'VP8', a: null },
+        { mime: 'video/webm', v: 'VP8/VP9', a: null },
+      ];
+
+  const mkvCandidates: Array<{ mime: string; v: string; a: string | null }> = includeAudio
+    ? [
+        { mime: 'video/x-matroska;codecs=avc1,opus', v: 'H.264', a: 'Opus' },
+        { mime: 'video/x-matroska;codecs=vp9,opus', v: 'VP9', a: 'Opus' },
+        { mime: 'video/x-matroska', v: 'H.264/VP9', a: null },
+      ]
+    : [
+        { mime: 'video/x-matroska;codecs=avc1', v: 'H.264', a: null },
+        { mime: 'video/x-matroska;codecs=vp9', v: 'VP9', a: null },
+        { mime: 'video/x-matroska', v: 'H.264/VP9', a: null },
+      ];
+
+  const tryList = (
+    list: Array<{ mime: string; v: string; a: string | null }>,
+    actualFormat: VideoExportFormat,
+    fallbackUsed: boolean,
+  ): MediaRecorderSelection | null => {
+    for (const entry of list) {
+      try {
+        if (MediaRecorder.isTypeSupported(entry.mime)) {
+          return {
+            mimeType: entry.mime,
+            actualFormat,
+            videoCodec: entry.v,
+            audioCodec: entry.a,
+            fallbackUsed,
+          };
+        }
+      } catch {
+        // Ignore unsupported query errors
+      }
+    }
+    return null;
+  };
+
+  if (requestedFormat === 'mp4') {
+    const direct = tryList(mp4Candidates, 'mp4', false);
+    if (direct) return direct;
+  } else if (requestedFormat === 'webm') {
+    const direct = tryList(webmCandidates, 'webm', false);
+    if (direct) return direct;
+  } else if (requestedFormat === 'mkv') {
+    const direct = tryList(mkvCandidates, 'mkv', false);
+    if (direct) return direct;
+  }
+
+  if (!allowCrossFormatRescue) {
+    return null;
+  }
+
+  // Tier 3 Cross-Format Auto-Rescue: try WebM first, then MP4, then browser default
+  const webmRescue = tryList(webmCandidates, 'webm', requestedFormat !== 'webm');
+  if (webmRescue) return webmRescue;
+
+  const mp4Rescue = tryList(mp4Candidates, 'mp4', requestedFormat !== 'mp4');
+  if (mp4Rescue) return mp4Rescue;
+
+  return {
+    mimeType: '',
+    actualFormat: 'webm',
+    videoCodec: 'Browser Default',
+    audioCodec: null,
+    fallbackUsed: requestedFormat !== 'webm',
+  };
+}
+
+function createMediabunnyFormat(
+  format: VideoExportFormat,
+  useStreaming: boolean,
+): OutputFormat {
+  if (format === 'webm') {
+    return new WebMOutputFormat(
+      useStreaming
+        ? { appendOnly: true, minimumClusterDuration: 2 }
+        : undefined,
+    );
+  }
+  if (format === 'mkv') {
+    return new MkvOutputFormat(
+      useStreaming
+        ? { appendOnly: true, minimumClusterDuration: 2 }
+        : undefined,
+    );
+  }
+  if (format === 'mov') {
+    return new MovOutputFormat(
+      useStreaming
+        ? { fastStart: 'fragmented', minimumFragmentDuration: 2 }
+        : { fastStart: 'in-memory' },
+    );
+  }
+  return new Mp4OutputFormat(
+    useStreaming
+      ? { fastStart: 'fragmented', minimumFragmentDuration: 2 }
+      : { fastStart: 'in-memory' },
+  );
+}
+
 interface CaptureTrack extends MediaStreamTrack {
   requestFrame?: () => void;
 }
@@ -283,6 +462,14 @@ interface CaptureTrack extends MediaStreamTrack {
 export class Mp4CutsceneRecorder {
   public readonly width: number;
   public readonly height: number;
+  public readonly aspectRatio: VideoAspectRatio;
+  public readonly format: VideoExportFormat;
+  public readonly requestedFormat: VideoExportFormat;
+  public readonly fallbackUsed: boolean;
+  public readonly fallbackReason: string | null;
+  public readonly videoCodecLabel: string;
+  public readonly audioCodecLabel: string | null;
+  public readonly hasAudio: boolean;
   public readonly backend: VideoEncoderBackend;
   public readonly isStreamingFragmented: boolean;
 
@@ -296,34 +483,57 @@ export class Mp4CutsceneRecorder {
   private streamedParts: Uint8Array<ArrayBuffer>[] = [];
 
   // Primary: Mediabunny WebCodecs pipeline
-  private output: Output<Mp4OutputFormat, BufferTarget | AppendOnlyStreamTarget> | null = null;
+  private output: Output<OutputFormat, BufferTarget | AppendOnlyStreamTarget> | null = null;
   private canvasSource: CanvasSource | null = null;
+  private audioSource: AudioBufferSource | null = null;
+  private pendingAudioBuffer: AudioBuffer | null = null;
+  private audioAdded = false;
 
-  // Fallback: MediaRecorder MP4-only pipeline
+  // Fallback: MediaRecorder pipeline
   private mediaRecorder: MediaRecorder | null = null;
   private stream: MediaStream | null = null;
   private videoTrack: CaptureTrack | null = null;
+  private audioPlaybackCtx: AudioContext | null = null;
+  private audioPlaybackNode: AudioBufferSourceNode | null = null;
   private chunks: BlobPart[] = [];
-  private fallbackMimeType = 'video/mp4';
+  private fallbackMimeType = 'video/webm';
   private fallbackError: string | null = null;
   private fallbackStopPromise: Promise<VideoRecordedResult> | null = null;
 
-  private constructor(
-    width: number,
-    height: number,
-    backend: VideoEncoderBackend,
-    options: VideoExportOptions,
-    canvas: HTMLCanvasElement,
-    ctx: CanvasRenderingContext2D,
-    isStreamingFragmented: boolean,
-  ) {
-    this.width = width;
-    this.height = height;
-    this.backend = backend;
-    this.options = options;
-    this.canvas = canvas;
-    this.ctx = ctx;
-    this.isStreamingFragmented = isStreamingFragmented;
+  private constructor(params: {
+    width: number;
+    height: number;
+    aspectRatio: VideoAspectRatio;
+    format: VideoExportFormat;
+    requestedFormat: VideoExportFormat;
+    fallbackUsed: boolean;
+    fallbackReason: string | null;
+    videoCodecLabel: string;
+    audioCodecLabel: string | null;
+    hasAudio: boolean;
+    backend: VideoEncoderBackend;
+    options: VideoExportOptions;
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    isStreamingFragmented: boolean;
+    audioBuffer: AudioBuffer | null;
+  }) {
+    this.width = params.width;
+    this.height = params.height;
+    this.aspectRatio = params.aspectRatio;
+    this.format = params.format;
+    this.requestedFormat = params.requestedFormat;
+    this.fallbackUsed = params.fallbackUsed;
+    this.fallbackReason = params.fallbackReason;
+    this.videoCodecLabel = params.videoCodecLabel;
+    this.audioCodecLabel = params.audioCodecLabel;
+    this.hasAudio = params.hasAudio;
+    this.backend = params.backend;
+    this.options = params.options;
+    this.canvas = params.canvas;
+    this.ctx = params.ctx;
+    this.isStreamingFragmented = params.isStreamingFragmented;
+    this.pendingAudioBuffer = params.audioBuffer;
   }
 
   public getStreamedBytes(): number {
@@ -334,97 +544,230 @@ export class Mp4CutsceneRecorder {
     sourceCanvas: HTMLCanvasElement,
     options: VideoExportOptions,
     estimatedDurationSec = 0,
+    audioBuffer: AudioBuffer | null = null,
   ): Promise<Mp4CutsceneRecorder> {
+    const requestedFormat: VideoExportFormat = options.format ?? 'mp4';
+    const aspectRatio: VideoAspectRatio = options.aspectRatio ?? '16:9';
     const { width, height } = resolveExportDimensions(
       sourceCanvas,
       options.resolution,
+      aspectRatio,
     );
     const bitrateBps = options.bitrateMbps * 1_000_000;
+    const effectiveAudio = options.includeAudio ? audioBuffer : null;
+
+    // For WebCodecs with audio attached, BufferTarget guarantees clean interleave
+    // even when audio is trimmed on early stop; streaming mode engages for long video-only renders.
     const useStreaming =
-      typeof options.streamingMode === 'boolean'
+      !effectiveAudio &&
+      (typeof options.streamingMode === 'boolean'
         ? options.streamingMode
-        : estimatedDurationSec > 45;
+        : estimatedDurationSec > 45);
 
-    // Attach hidden compositing canvas inside viewport bounds so Chromium compositor & captureStream never occlude updates
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    canvas.setAttribute('aria-hidden', 'true');
-    canvas.style.position = 'fixed';
-    canvas.style.left = '0';
-    canvas.style.top = '0';
-    canvas.style.width = '2px';
-    canvas.style.height = '2px';
-    canvas.style.opacity = '0.001';
-    canvas.style.pointerEvents = 'none';
-    canvas.style.zIndex = '-1';
-    document.body.appendChild(canvas);
+    const createHiddenCanvas = (): {
+      canvas: HTMLCanvasElement;
+      ctx: CanvasRenderingContext2D;
+    } => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      canvas.setAttribute('aria-hidden', 'true');
+      canvas.style.position = 'fixed';
+      canvas.style.left = '0';
+      canvas.style.top = '0';
+      canvas.style.width = '4px';
+      canvas.style.height = '4px';
+      canvas.style.opacity = '0.01';
+      canvas.style.pointerEvents = 'none';
+      canvas.style.zIndex = '-1';
+      document.body.appendChild(canvas);
 
-    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
-    if (!ctx) {
-      canvas.remove();
-      throw new Error('Could not initialize 2D compositing context for MP4 export.');
-    }
+      const ctx = canvas.getContext('2d', {
+        alpha: false,
+        willReadFrequently: false,
+      });
+      if (!ctx) {
+        canvas.remove();
+        throw new Error('Could not initialize 2D compositing context for video export.');
+      }
+      return { canvas, ctx };
+    };
 
-    const profile = await resolveWebCodecsH264Profile(
-      width,
-      height,
-      options.fps,
-      bitrateBps,
-    );
-
-    if (profile) {
-      const recorder = new Mp4CutsceneRecorder(
+    const tryInitWebCodecs = async (
+      targetFormat: VideoExportFormat,
+      isFallback: boolean,
+      fallbackReason: string | null,
+    ): Promise<Mp4CutsceneRecorder | null> => {
+      const profile = await resolveWebCodecsProfileForFormat(
+        targetFormat,
         width,
         height,
-        'webcodecs',
+        options.fps,
+        bitrateBps,
+      );
+      if (!profile) return null;
+
+      let chosenAudioCodec: AudioCodec | null = null;
+      if (effectiveAudio) {
+        const preferredAudio = VIDEO_FORMAT_CATALOG[targetFormat].preferredAudioCodecs;
+        try {
+          chosenAudioCodec = await getFirstEncodableAudioCodec(preferredAudio, {
+            numberOfChannels: effectiveAudio.numberOfChannels,
+            sampleRate: effectiveAudio.sampleRate,
+            bitrate: 128_000,
+          });
+        } catch {
+          chosenAudioCodec = null;
+        }
+      }
+
+      const { canvas, ctx } = createHiddenCanvas();
+      const recorder = new Mp4CutsceneRecorder({
+        width,
+        height,
+        aspectRatio,
+        format: targetFormat,
+        requestedFormat,
+        fallbackUsed: isFallback,
+        fallbackReason,
+        videoCodecLabel: formatVideoCodecLabel(profile.codec),
+        audioCodecLabel: formatAudioCodecLabel(chosenAudioCodec),
+        hasAudio: Boolean(effectiveAudio && chosenAudioCodec),
+        backend: 'webcodecs',
         options,
         canvas,
         ctx,
-        useStreaming,
-      );
+        isStreamingFragmented: useStreaming,
+        audioBuffer: chosenAudioCodec ? effectiveAudio : null,
+      });
+
       try {
-        await recorder.initWebCodecsPipeline(profile);
+        await recorder.initWebCodecsPipeline(profile, chosenAudioCodec);
         return recorder;
-      } catch (err) {
+      } catch {
         recorder.detachCanvas();
-        throw err;
+        return null;
+      }
+    };
+
+    // Tier 1: Try WebCodecs directly for the requested container
+    const directWebCodecs = await tryInitWebCodecs(requestedFormat, false, null);
+    if (directWebCodecs) {
+      return directWebCodecs;
+    }
+
+    // Tier 2: Try native MediaRecorder for the requested container (without cross-format rescue yet)
+    const directMediaRec = pickMediaRecorderMimeType(
+      requestedFormat,
+      Boolean(effectiveAudio),
+      false,
+    );
+    if (
+      directMediaRec &&
+      typeof MediaRecorder !== 'undefined' &&
+      typeof HTMLCanvasElement !== 'undefined'
+    ) {
+      const { canvas, ctx } = createHiddenCanvas();
+      if (typeof canvas.captureStream === 'function') {
+        const recorder = new Mp4CutsceneRecorder({
+          width,
+          height,
+          aspectRatio,
+          format: directMediaRec.actualFormat,
+          requestedFormat,
+          fallbackUsed: false,
+          fallbackReason: null,
+          videoCodecLabel: directMediaRec.videoCodec,
+          audioCodecLabel: effectiveAudio ? directMediaRec.audioCodec ?? 'Audio' : null,
+          hasAudio: Boolean(effectiveAudio),
+          backend: 'mediarecorder',
+          options,
+          canvas,
+          ctx,
+          isStreamingFragmented: false,
+          audioBuffer: effectiveAudio,
+        });
+        try {
+          recorder.initMediaRecorderFallback(directMediaRec.mimeType, bitrateBps, effectiveAudio);
+          return recorder;
+        } catch {
+          recorder.cleanupAudioPlayback();
+          recorder.cleanupStream();
+          recorder.detachCanvas();
+        }
+      } else {
+        canvas.remove();
       }
     }
 
-    const mp4Mime = pickMediaRecorderMp4MimeType();
-    if (
-      !mp4Mime ||
-      typeof MediaRecorder === 'undefined' ||
-      typeof canvas.captureStream !== 'function'
-    ) {
-      canvas.remove();
-      throw new Error(
-        'MP4 (H.264) encoding is not supported in this browser. Please use Chrome, Edge, or Safari with WebCodecs H.264 or MP4 MediaRecorder support.',
-      );
+    // Tier 3A: Cross-Format Auto-Rescue via WebCodecs (try WebM or MP4)
+    const rescueOrder: VideoExportFormat[] = (['webm', 'mp4', 'mkv'] as VideoExportFormat[]).filter(
+      (f) => f !== requestedFormat,
+    );
+    for (const rescueFmt of rescueOrder) {
+      const reason = `This browser does not natively encode ${requestedFormat.toUpperCase()} here; automatically exported as ${rescueFmt.toUpperCase()}.`;
+      const rescuedWebCodecs = await tryInitWebCodecs(rescueFmt, true, reason);
+      if (rescuedWebCodecs) {
+        return rescuedWebCodecs;
+      }
     }
 
-    const recorder = new Mp4CutsceneRecorder(
-      width,
-      height,
-      'mediarecorder',
-      options,
-      canvas,
-      ctx,
-      false,
+    // Tier 3B: Cross-Format Auto-Rescue via MediaRecorder (WebM / MP4 / browser default)
+    const rescueMediaRec = pickMediaRecorderMimeType(
+      requestedFormat,
+      Boolean(effectiveAudio),
+      true,
     );
-    try {
-      recorder.initMediaRecorderMp4Fallback(mp4Mime, bitrateBps);
-      return recorder;
-    } catch (err) {
-      recorder.detachCanvas();
-      throw err;
+    if (rescueMediaRec && typeof MediaRecorder !== 'undefined') {
+      const { canvas, ctx } = createHiddenCanvas();
+      if (typeof canvas.captureStream === 'function') {
+        const reason = rescueMediaRec.fallbackUsed
+          ? `This browser does not natively encode ${requestedFormat.toUpperCase()} here; automatically exported as ${rescueMediaRec.actualFormat.toUpperCase()}.`
+          : null;
+        const recorder = new Mp4CutsceneRecorder({
+          width,
+          height,
+          aspectRatio,
+          format: rescueMediaRec.actualFormat,
+          requestedFormat,
+          fallbackUsed: rescueMediaRec.fallbackUsed,
+          fallbackReason: reason,
+          videoCodecLabel: rescueMediaRec.videoCodec,
+          audioCodecLabel: effectiveAudio ? rescueMediaRec.audioCodec ?? 'Audio' : null,
+          hasAudio: Boolean(effectiveAudio),
+          backend: 'mediarecorder',
+          options,
+          canvas,
+          ctx,
+          isStreamingFragmented: false,
+          audioBuffer: effectiveAudio,
+        });
+        try {
+          recorder.initMediaRecorderFallback(rescueMediaRec.mimeType, bitrateBps, effectiveAudio);
+          return recorder;
+        } catch {
+          recorder.cleanupAudioPlayback();
+          recorder.cleanupStream();
+          recorder.detachCanvas();
+        }
+      } else {
+        canvas.remove();
+      }
     }
+
+    throw new Error(
+      'Video recording is unavailable in this browser environment. Try Snapshot PNG or open in Chrome, Edge, Firefox, or Safari.',
+    );
   }
 
-  private async initWebCodecsPipeline(profile: WebCodecsEncoderProfile) {
+  private async initWebCodecsPipeline(
+    profile: WebCodecsEncoderProfile,
+    audioCodec: AudioCodec | null,
+  ) {
     this.streamedBytes = 0;
     this.streamedParts = [];
+
+    const format = createMediabunnyFormat(this.format, this.isStreamingFragmented);
 
     if (this.isStreamingFragmented) {
       const writable = new WritableStream<Uint8Array>({
@@ -437,23 +780,18 @@ export class Mp4CutsceneRecorder {
         },
       });
       const target = new AppendOnlyStreamTarget(writable);
-      const format = new Mp4OutputFormat({
-        fastStart: 'fragmented',
-        minimumFragmentDuration: 2,
-      });
       this.output = new Output({ format, target });
     } else {
       const target = new BufferTarget();
-      const format = new Mp4OutputFormat({ fastStart: 'in-memory' });
       this.output = new Output({ format, target });
     }
 
     this.canvasSource = new CanvasSource(this.canvas, {
-      codec: 'avc',
+      codec: profile.codec,
       quality: profile.quality,
       keyFrameInterval: 2,
-      fullCodecString: profile.fullCodecString,
       hardwareAcceleration: profile.hardwareAcceleration,
+      ...(profile.fullCodecString ? { fullCodecString: profile.fullCodecString } : {}),
       ...(profile.latencyMode ? { latencyMode: profile.latencyMode } : {}),
       onEncodedPacket: () => {
         this.encodedPackets++;
@@ -464,31 +802,91 @@ export class Mp4CutsceneRecorder {
       frameRate: this.options.fps,
     });
 
+    if (this.pendingAudioBuffer && audioCodec) {
+      const isPcm = audioCodec.startsWith('pcm');
+      this.audioSource = new AudioBufferSource(
+        isPcm
+          ? { codec: audioCodec }
+          : { codec: audioCodec, quality: new Quality({ bitrate: 128_000 }) },
+      );
+      this.output.addAudioTrack(this.audioSource);
+    }
+
     await this.output.start();
   }
 
-  private initMediaRecorderMp4Fallback(mp4Mime: string, bitrateBps: number) {
-    this.fallbackMimeType = mp4Mime;
-    this.stream = this.canvas.captureStream(this.options.fps);
-    this.videoTrack = (this.stream.getVideoTracks()[0] as CaptureTrack) ?? null;
+  private initMediaRecorderFallback(
+    mimeType: string,
+    bitrateBps: number,
+    audioBuffer: AudioBuffer | null,
+  ) {
+    const defaultMime = VIDEO_FORMAT_CATALOG[this.format].mimeType;
+    this.fallbackMimeType = mimeType || defaultMime;
+
+    // Paint initial frame so captureStream initializes with valid dimensions immediately
+    this.ctx.fillStyle = '#14161a';
+    this.ctx.fillRect(0, 0, this.width, this.height);
+
+    const videoStream = this.canvas.captureStream(this.options.fps);
+    this.videoTrack = (videoStream.getVideoTracks()[0] as CaptureTrack) ?? null;
+
+    const combinedTracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
+
+    // Route offline-synthesized audio into a MediaStreamAudioDestinationNode (silent to speakers)
+    if (audioBuffer && typeof window !== 'undefined') {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (AudioCtx) {
+        try {
+          const ctx = new AudioCtx();
+          const dest = ctx.createMediaStreamDestination();
+          const src = ctx.createBufferSource();
+          src.buffer = audioBuffer;
+          src.connect(dest);
+          src.start(0);
+          this.audioPlaybackCtx = ctx;
+          this.audioPlaybackNode = src;
+          combinedTracks.push(...dest.stream.getAudioTracks());
+        } catch {
+          // Proceed video-only if AudioContext is restricted
+        }
+      }
+    }
+
+    this.stream = new MediaStream(combinedTracks);
 
     const recOpts: MediaRecorderOptions = {
-      mimeType: mp4Mime,
+      ...(mimeType ? { mimeType } : {}),
       videoBitsPerSecond: bitrateBps,
     };
 
     try {
       this.mediaRecorder = new MediaRecorder(this.stream, recOpts);
     } catch {
-      this.mediaRecorder = new MediaRecorder(this.stream, { mimeType: mp4Mime });
+      try {
+        this.mediaRecorder = mimeType
+          ? new MediaRecorder(this.stream, { mimeType })
+          : new MediaRecorder(this.stream);
+      } catch {
+        this.mediaRecorder = new MediaRecorder(this.stream);
+      }
     }
 
-    const actualMime = (this.mediaRecorder.mimeType || mp4Mime).toLowerCase();
-    if (actualMime.includes('webm')) {
-      throw new Error(
-        'Browser MediaRecorder does not support MP4 output. Please use a browser with WebCodecs H.264 support.',
-      );
-    }
+    const actualMime = (
+      this.mediaRecorder.mimeType ||
+      this.fallbackMimeType ||
+      defaultMime
+    ).toLowerCase();
+
+    const actualExt: VideoExportFormat = actualMime.includes('mp4')
+      ? 'mp4'
+      : actualMime.includes('matroska') || actualMime.includes('mkv')
+        ? 'mkv'
+        : actualMime.includes('quicktime')
+          ? 'mov'
+          : 'webm';
 
     this.chunks = [];
     this.fallbackError = null;
@@ -496,11 +894,12 @@ export class Mp4CutsceneRecorder {
     this.mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) {
         this.chunks.push(e.data);
+        this.streamedBytes += e.data.size;
       }
     };
 
     this.mediaRecorder.onerror = () => {
-      this.fallbackError = 'MediaRecorder encountered an MP4 encoding error.';
+      this.fallbackError = 'Browser MediaRecorder encountered an encoding error.';
     };
 
     this.fallbackStopPromise = new Promise<VideoRecordedResult>(
@@ -510,6 +909,7 @@ export class Mp4CutsceneRecorder {
           return;
         }
         this.mediaRecorder.onstop = () => {
+          this.cleanupAudioPlayback();
           this.cleanupStream();
           this.detachCanvas();
           if (this.disposed) {
@@ -523,26 +923,40 @@ export class Mp4CutsceneRecorder {
             return;
           }
           const finalType =
-            this.mediaRecorder?.mimeType || this.fallbackMimeType;
-          if (finalType.toLowerCase().includes('webm')) {
-            this.chunks = [];
-            reject(new Error('Non-MP4 output rejected.'));
-            return;
-          }
-          const blob = new Blob(this.chunks, { type: 'video/mp4' });
+            this.mediaRecorder?.mimeType || this.fallbackMimeType || defaultMime;
+          const blob = new Blob(this.chunks, {
+            type: finalType || VIDEO_FORMAT_CATALOG[actualExt].mimeType,
+          });
           this.chunks = [];
           if (blob.size === 0) {
             reject(
               new Error(
-                'MP4 encoder produced an empty clip. Please export at least 1 second.',
+                'Video recorder produced an empty clip. Please export at least 0.5 seconds.',
               ),
             );
             return;
           }
+          const usedFallback =
+            this.fallbackUsed || actualExt !== this.requestedFormat;
+          const fallbackNote =
+            this.fallbackReason ??
+            (usedFallback
+              ? `This browser recorded ${actualExt.toUpperCase()} instead of ${this.requestedFormat.toUpperCase()}.`
+              : null);
           resolve({
             blobUrl: URL.createObjectURL(blob),
-            mimeType: finalType || 'video/mp4',
-            fileExtension: 'mp4',
+            mimeType: finalType || VIDEO_FORMAT_CATALOG[actualExt].mimeType,
+            fileExtension: actualExt,
+            format: actualExt,
+            requestedFormat: this.requestedFormat,
+            fallbackUsed: usedFallback,
+            fallbackReason: fallbackNote,
+            videoCodec: this.videoCodecLabel,
+            audioCodec: this.hasAudio ? this.audioCodecLabel : null,
+            hasAudio: this.hasAudio,
+            width: this.width,
+            height: this.height,
+            aspectRatio: this.aspectRatio,
             fileSizeBytes: blob.size,
             encoderBackend: 'mediarecorder',
           });
@@ -550,8 +964,8 @@ export class Mp4CutsceneRecorder {
       },
     );
 
-    // Start without timeslice so the browser emits a complete single-moov MP4 on stop()
-    this.mediaRecorder.start();
+    // Use 250ms timeslice so chunks flush continuously and never finish empty
+    this.mediaRecorder.start(250);
   }
 
   private drawSource(webglCanvas: HTMLCanvasElement) {
@@ -581,8 +995,11 @@ export class Mp4CutsceneRecorder {
 
   private compositeToCanvas(
     webglCanvas: HTMLCanvasElement,
-    subtitle: { speaker: string | null; text: string; role?: 'dialogue' | 'voiceover' } | null,
+    subtitle: SubtitleCue | null,
     screenBlackout = 0,
+    sceneTimeSec = 0,
+    captionSettings?: CaptionSettings,
+    overrideDurationSec?: number,
   ) {
     const w = this.width;
     const h = this.height;
@@ -596,79 +1013,52 @@ export class Mp4CutsceneRecorder {
       ctx.fillRect(0, 0, w, h);
     }
 
-    // Optional cinema letterbox bars
-    const barH = this.options.burnLetterbox ? Math.round(h * 0.055) : 0;
+    // Optional cinema letterbox bars (scaled proportionally for 16:9, 9:16, 1:1)
+    const barRatio = this.aspectRatio === '9:16' ? 0.04 : 0.055;
+    const barH = this.options.burnLetterbox ? Math.round(h * barRatio) : 0;
     if (barH > 0) {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.94)';
       ctx.fillRect(0, 0, w, barH);
       ctx.fillRect(0, h - barH, w, barH);
     }
 
-    // Optional burned-in cutscene subtitles
+    // Optional burned-in sudden-appearing word-pop (or classic) captions
     if (this.options.burnSubtitles && subtitle && subtitle.text) {
-      const isVoiceover = subtitle.role === 'voiceover';
-      const fontSize = Math.max(16, Math.round(h * 0.026));
-      ctx.font = `${isVoiceover ? 'italic ' : ''}600 ${fontSize}px "Plus Jakarta Sans", system-ui, sans-serif`;
-      const speakerPrefix = subtitle.speaker ? `${subtitle.speaker}: ` : '';
-      const fullText = `${speakerPrefix}${subtitle.text}`;
-
-      const maxBoxW = Math.min(w * 0.84, Math.round(h * 1.15));
-      const lines = wrapText(ctx, fullText, maxBoxW - 44);
-      const lineHeight = Math.round(fontSize * 1.38);
-      const boxH = lines.length * lineHeight + 22;
-      const boxW = Math.min(
-        maxBoxW,
-        Math.max(...lines.map((l) => ctx.measureText(l).width)) + 48,
+      drawWordPopCaptionOnCanvas(
+        ctx,
+        w,
+        h,
+        barH,
+        this.aspectRatio,
+        subtitle,
+        sceneTimeSec,
+        captionSettings,
+        overrideDurationSec,
       );
-      const boxX = Math.round((w - boxW) / 2);
-      const boxY = Math.round(h - barH - boxH - Math.max(18, h * 0.03));
-
-      ctx.fillStyle = 'rgba(20, 22, 26, 0.9)';
-      roundRect(ctx, boxX, boxY, boxW, boxH, 10);
-      ctx.fill();
-
-      ctx.strokeStyle = isVoiceover ? 'rgba(251, 191, 36, 0.45)' : 'rgba(57, 61, 71, 0.95)';
-      ctx.lineWidth = 1.5;
-      roundRect(ctx, boxX, boxY, boxW, boxH, 10);
-      ctx.stroke();
-
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'center';
-
-      lines.forEach((line, idx) => {
-        const cy = boxY + 11 + lineHeight * (idx + 0.5);
-        if (idx === 0 && speakerPrefix && line.startsWith(speakerPrefix)) {
-          const rest = line.slice(speakerPrefix.length);
-          const prefixW = ctx.measureText(speakerPrefix).width;
-          const restW = ctx.measureText(rest).width;
-          const totalW = prefixW + restW;
-          const startX = w / 2 - totalW / 2;
-
-          ctx.textAlign = 'left';
-          ctx.fillStyle = isVoiceover ? '#fbbf24' : '#00a2ff';
-          ctx.fillText(speakerPrefix, startX, cy);
-          ctx.fillStyle = isVoiceover ? '#fef3c7' : '#f1f5f9';
-          ctx.fillText(rest, startX + prefixW, cy);
-          ctx.textAlign = 'center';
-        } else {
-          ctx.fillStyle = isVoiceover ? '#fef3c7' : '#f1f5f9';
-          ctx.fillText(line, w / 2, cy);
-        }
-      });
     }
   }
 
   public async addFrame(
     webglCanvas: HTMLCanvasElement,
-    subtitle: { speaker: string | null; text: string; role?: 'dialogue' | 'voiceover' } | null,
+    subtitle: SubtitleCue | null,
     timestampSec: number,
     frameDurationSec: number,
     isKeyFrame: boolean,
     screenBlackout = 0,
+    sceneTimeSec?: number,
+    captionSettings?: CaptionSettings,
+    overrideDurationSec?: number,
   ): Promise<void> {
     if (this.disposed) return;
 
-    this.compositeToCanvas(webglCanvas, subtitle, screenBlackout);
+    this.compositeToCanvas(
+      webglCanvas,
+      subtitle,
+      screenBlackout,
+      sceneTimeSec ?? timestampSec,
+      captionSettings,
+      overrideDurationSec,
+    );
     this.submittedFrames++;
 
     if (this.backend === 'webcodecs' && this.canvasSource) {
@@ -684,64 +1074,92 @@ export class Mp4CutsceneRecorder {
     if (this.fallbackError) {
       throw new Error(this.fallbackError);
     }
-    this.ctx.getImageData(0, 0, 1, 1);
     this.videoTrack?.requestFrame?.();
     const frameMs = Math.max(16, Math.round(frameDurationSec * 1000));
     await new Promise<void>((resolve) => {
-      window.requestAnimationFrame(() => {
-        window.setTimeout(resolve, frameMs);
-      });
+      window.setTimeout(resolve, frameMs);
     });
   }
 
-  public async finalize(): Promise<VideoRecordedResult> {
+  public async finalize(recordedDurationSec?: number): Promise<VideoRecordedResult> {
     if (this.backend === 'webcodecs' && this.output) {
       try {
+        // Encode and attach offline-rendered audio track (trimmed cleanly if user stopped early)
+        if (this.audioSource && this.pendingAudioBuffer && !this.audioAdded) {
+          this.audioAdded = true;
+          const trimmed =
+            typeof recordedDurationSec === 'number' && recordedDurationSec > 0
+              ? trimAudioBuffer(this.pendingAudioBuffer, recordedDurationSec)
+              : this.pendingAudioBuffer;
+          await this.audioSource.add(trimmed);
+          this.audioSource.close();
+        } else if (this.audioSource) {
+          this.audioSource.close();
+        }
+
         this.canvasSource?.close();
         await this.output.finalize();
 
-        if (this.submittedFrames > 1 && this.encodedPackets < 2) {
+        if (this.submittedFrames > 1 && this.encodedPackets < 1) {
           throw new Error(
-            'H.264 encoder stalled after the first frame. Try lowering resolution or quality and export again.',
+            `${this.format.toUpperCase()} encoder stalled. Try switching format to WebM or lowering resolution.`,
           );
         }
 
+        const defaultMime = VIDEO_FORMAT_CATALOG[this.format].mimeType;
         const mimeType = await this.output
           .getMimeType()
-          .catch(() => 'video/mp4');
+          .catch(() => defaultMime);
 
         let blob: Blob;
         if (this.isStreamingFragmented) {
           if (this.streamedParts.length === 0 || this.streamedBytes === 0) {
-            throw new Error('Streaming fMP4 muxer produced zero bytes.');
+            throw new Error(`Streaming ${this.format.toUpperCase()} muxer produced zero bytes.`);
           }
-          blob = new Blob(this.streamedParts, { type: 'video/mp4' });
+          blob = new Blob(this.streamedParts, { type: defaultMime });
           this.streamedParts = [];
         } else {
           const target = this.output.target as BufferTarget;
           const buffer = target.buffer;
           if (!buffer || buffer.byteLength === 0) {
-            throw new Error('MP4 muxer produced an empty buffer.');
+            throw new Error(`${this.format.toUpperCase()} muxer produced an empty buffer.`);
           }
-          blob = new Blob([buffer], { type: 'video/mp4' });
+          blob = new Blob([buffer], { type: defaultMime });
         }
 
         return {
           blobUrl: URL.createObjectURL(blob),
-          mimeType: mimeType || 'video/mp4',
-          fileExtension: 'mp4',
+          mimeType: mimeType || defaultMime,
+          fileExtension: this.format,
+          format: this.format,
+          requestedFormat: this.requestedFormat,
+          fallbackUsed: this.fallbackUsed,
+          fallbackReason: this.fallbackReason,
+          videoCodec: this.videoCodecLabel,
+          audioCodec: this.hasAudio ? this.audioCodecLabel : null,
+          hasAudio: this.hasAudio,
+          width: this.width,
+          height: this.height,
+          aspectRatio: this.aspectRatio,
           fileSizeBytes: blob.size,
           encoderBackend: 'webcodecs',
           isFragmentedStream: this.isStreamingFragmented,
         };
       } finally {
         this.streamedParts = [];
+        this.pendingAudioBuffer = null;
         this.detachCanvas();
       }
     }
 
     if (this.mediaRecorder && this.fallbackStopPromise) {
+      this.cleanupAudioPlayback();
       if (this.mediaRecorder.state !== 'inactive') {
+        try {
+          this.mediaRecorder.requestData();
+        } catch {
+          // Ignore if requestData is unsupported
+        }
         this.mediaRecorder.stop();
       }
       return this.fallbackStopPromise;
@@ -754,8 +1172,10 @@ export class Mp4CutsceneRecorder {
   public async cancel(): Promise<void> {
     this.disposed = true;
     this.streamedParts = [];
+    this.pendingAudioBuffer = null;
     if (this.backend === 'webcodecs' && this.output) {
       try {
+        this.audioSource?.close();
         this.canvasSource?.close();
         if (
           this.output.state === 'started' ||
@@ -768,10 +1188,12 @@ export class Mp4CutsceneRecorder {
       }
       this.output = null;
       this.canvasSource = null;
+      this.audioSource = null;
       this.detachCanvas();
       return;
     }
 
+    this.cleanupAudioPlayback();
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       try {
         this.mediaRecorder.stop();
@@ -782,6 +1204,21 @@ export class Mp4CutsceneRecorder {
     this.cleanupStream();
     this.detachCanvas();
     this.chunks = [];
+  }
+
+  private cleanupAudioPlayback() {
+    if (this.audioPlaybackNode) {
+      try {
+        this.audioPlaybackNode.stop();
+      } catch {
+        // Ignore already stopped source
+      }
+      this.audioPlaybackNode = null;
+    }
+    if (this.audioPlaybackCtx) {
+      void this.audioPlaybackCtx.close().catch(() => {});
+      this.audioPlaybackCtx = null;
+    }
   }
 
   private cleanupStream() {
@@ -797,46 +1234,4 @@ export class Mp4CutsceneRecorder {
       this.canvas.parentNode.removeChild(this.canvas);
     }
   }
-}
-
-function wrapText(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-): string[] {
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let current = '';
-  for (const word of words) {
-    const test = current ? `${current} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth && current) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = test;
-    }
-  }
-  if (current) lines.push(current);
-  return lines;
-}
-
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
 }

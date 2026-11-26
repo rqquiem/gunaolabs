@@ -21,8 +21,18 @@ import {
   MapPin,
   Volume2,
   VolumeX,
+  Sparkles,
+  Flame,
+  Scissors,
+  Mic,
 } from 'lucide-react';
+import { CHARACTER_STATE_META } from '../../engine/characterStates';
+import { CHARACTER_ACTION_META } from '../../engine/characterActions';
 import { formatHeldItemsSummary } from '../../engine/itemCatalog';
+import {
+  getClipDuration,
+  sliceClipWaveformPeaks,
+} from '../../engine/voiceoverCutter';
 import {
   clamp,
   formatTimecode,
@@ -34,11 +44,13 @@ import {
   CameraMode,
   CHAPTER_COLORS,
   ChapterMarker,
+  CustomVoiceoverTrack,
   EASING_OPTIONS,
   EasingType,
   EXPRESSION_PRESET_LABELS,
   ItemEasingMode,
   MapDefinition,
+  VoiceoverClip,
 } from '../../engine/types';
 
 export type SelectedKeyRef =
@@ -47,7 +59,9 @@ export type SelectedKeyRef =
   | { kind: 'map'; keyframeId: string }
   | { kind: 'actor'; actorId: string; keyframeId: string }
   | { kind: 'face'; actorId: string; keyframeId: string }
-  | { kind: 'item'; actorId: string; keyframeId: string };
+  | { kind: 'item'; actorId: string; keyframeId: string }
+  | { kind: 'state'; actorId: string; keyframeId: string }
+  | { kind: 'action'; actorId: string; keyframeId: string };
 
 interface TimelinePanelProps {
   project: AnimationProject;
@@ -59,6 +73,12 @@ interface TimelinePanelProps {
   selectedActorId: string | null;
   builtInMaps: MapDefinition[];
   customMaps: MapDefinition[];
+  customVoiceover?: CustomVoiceoverTrack | null;
+  selectedVoClipId?: string | null;
+  onSelectVoClip?: (clipId: string) => void;
+  onMoveVoClip?: (clipId: string, newStartSec: number) => void;
+  onSplitVoAtPlayhead?: () => void;
+  onOpenVoiceoverCutter?: () => void;
   onTogglePlay: () => void;
   onToggleAudio?: () => void;
   onSeek: (time: number) => void;
@@ -69,12 +89,16 @@ interface TimelinePanelProps {
   onKeyActorAtCurrentTime: () => void;
   onKeyFaceAtCurrentTime: () => void;
   onKeyItemAtCurrentTime: () => void;
+  onKeyStateAtCurrentTime: () => void;
+  onKeyActionAtCurrentTime: () => void;
   onKeyCameraAtCurrentTime: () => void;
   onKeyLightingAtCurrentTime: () => void;
   onKeyMapAtCurrentTime: (map: MapDefinition, applyAtmosphere: boolean) => void;
   onMoveActorKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveFaceKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveItemKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
+  onMoveStateKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
+  onMoveActionKeyframe: (actorId: string, keyframeId: string, newTime: number) => void;
   onMoveCameraKeyframe: (keyframeId: string, newTime: number) => void;
   onMoveLightingKeyframe: (keyframeId: string, newTime: number) => void;
   onMoveMapKeyframe: (keyframeId: string, newTime: number) => void;
@@ -87,6 +111,8 @@ interface TimelinePanelProps {
   onDeleteActorKeyframe: (actorId: string, keyframeId: string) => void;
   onDeleteFaceKeyframe: (actorId: string, keyframeId: string) => void;
   onDeleteItemKeyframe: (actorId: string, keyframeId: string) => void;
+  onDeleteStateKeyframe: (actorId: string, keyframeId: string) => void;
+  onDeleteActionKeyframe: (actorId: string, keyframeId: string) => void;
   onDeleteCameraKeyframe: (keyframeId: string) => void;
   onDeleteLightingKeyframe: (keyframeId: string) => void;
   onDeleteMapKeyframe: (keyframeId: string) => void;
@@ -105,6 +131,12 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   selectedActorId,
   builtInMaps,
   customMaps,
+  customVoiceover = null,
+  selectedVoClipId = null,
+  onSelectVoClip,
+  onMoveVoClip,
+  onSplitVoAtPlayhead,
+  onOpenVoiceoverCutter,
   onTogglePlay,
   onToggleAudio,
   onSeek,
@@ -115,12 +147,16 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onKeyActorAtCurrentTime,
   onKeyFaceAtCurrentTime,
   onKeyItemAtCurrentTime,
+  onKeyStateAtCurrentTime,
+  onKeyActionAtCurrentTime,
   onKeyCameraAtCurrentTime,
   onKeyLightingAtCurrentTime,
   onKeyMapAtCurrentTime,
   onMoveActorKeyframe,
   onMoveFaceKeyframe,
   onMoveItemKeyframe,
+  onMoveStateKeyframe,
+  onMoveActionKeyframe,
   onMoveCameraKeyframe,
   onMoveLightingKeyframe,
   onMoveMapKeyframe,
@@ -129,6 +165,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onDeleteActorKeyframe,
   onDeleteFaceKeyframe,
   onDeleteItemKeyframe,
+  onDeleteStateKeyframe,
+  onDeleteActionKeyframe,
   onDeleteCameraKeyframe,
   onDeleteLightingKeyframe,
   onDeleteMapKeyframe,
@@ -161,6 +199,14 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     ref: SelectedKeyRef;
     trackEl: HTMLElement;
     startX: number;
+    didDrag: boolean;
+  } | null>(null);
+
+  const voTrackDragRef = useRef<{
+    clipId: string;
+    trackEl: HTMLElement;
+    startX: number;
+    initStartSec: number;
     didDrag: boolean;
   } | null>(null);
 
@@ -306,7 +352,13 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     if (!trackEl) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     setSelectedKey(ref);
-    if (ref.kind === 'actor' || ref.kind === 'face' || ref.kind === 'item') {
+    if (
+      ref.kind === 'actor' ||
+      ref.kind === 'face' ||
+      ref.kind === 'item' ||
+      ref.kind === 'state' ||
+      ref.kind === 'action'
+    ) {
       onSelectActor(ref.actorId);
     }
     dragStateRef.current = {
@@ -336,6 +388,10 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       onMoveFaceKeyframe(state.ref.actorId, state.ref.keyframeId, snapped);
     } else if (state.ref.kind === 'item') {
       onMoveItemKeyframe(state.ref.actorId, state.ref.keyframeId, snapped);
+    } else if (state.ref.kind === 'state') {
+      onMoveStateKeyframe(state.ref.actorId, state.ref.keyframeId, snapped);
+    } else if (state.ref.kind === 'action') {
+      onMoveActionKeyframe(state.ref.actorId, state.ref.keyframeId, snapped);
     } else if (state.ref.kind === 'camera') {
       onMoveCameraKeyframe(state.ref.keyframeId, snapped);
     } else if (state.ref.kind === 'lighting') {
@@ -431,6 +487,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       a.keyframes.forEach((k) => addTick(k.time));
       a.faceKeyframes?.forEach((k) => addTick(k.time));
       a.heldItemKeyframes?.forEach((k) => addTick(k.time));
+      a.stateKeyframes?.forEach((k) => addTick(k.time));
+      a.actionKeyframes?.forEach((k) => addTick(k.time));
     });
     return Array.from(buckets);
   }, [project, lightingTrack, mapTrack]);
@@ -528,6 +586,36 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
         },
       };
     }
+    if (selectedKey.kind === 'state') {
+      const actor = project.actors.find((a) => a.id === selectedKey.actorId);
+      const kf = actor?.stateKeyframes?.find((k) => k.id === selectedKey.keyframeId);
+      if (!actor || !kf) return null;
+      const meta = CHARACTER_STATE_META[kf.stateId];
+      return {
+        label: `${actor.name} State (${meta.label}) · ${formatTimecode(kf.time)}`,
+        mode: 'map' as const,
+        canDelete: true,
+        onDelete: () => {
+          onDeleteStateKeyframe(actor.id, kf.id);
+          setSelectedKey(null);
+        },
+      };
+    }
+    if (selectedKey.kind === 'action') {
+      const actor = project.actors.find((a) => a.id === selectedKey.actorId);
+      const kf = actor?.actionKeyframes?.find((k) => k.id === selectedKey.keyframeId);
+      if (!actor || !kf) return null;
+      const meta = CHARACTER_ACTION_META[kf.actionId];
+      return {
+        label: `${actor.name} Action (${meta.label}) · ${formatTimecode(kf.time)}`,
+        mode: 'map' as const,
+        canDelete: true,
+        onDelete: () => {
+          onDeleteActionKeyframe(actor.id, kf.id);
+          setSelectedKey(null);
+        },
+      };
+    }
     return null;
   })();
 
@@ -535,10 +623,16 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     if (!selectedKey || selectedKey.kind !== ref.kind) return false;
     if (selectedKey.keyframeId !== ref.keyframeId) return false;
     if (
-      (ref.kind === 'actor' || ref.kind === 'face' || ref.kind === 'item') &&
+      (ref.kind === 'actor' ||
+        ref.kind === 'face' ||
+        ref.kind === 'item' ||
+        ref.kind === 'state' ||
+        ref.kind === 'action') &&
       (selectedKey.kind === 'actor' ||
         selectedKey.kind === 'face' ||
-        selectedKey.kind === 'item')
+        selectedKey.kind === 'item' ||
+        selectedKey.kind === 'state' ||
+        selectedKey.kind === 'action')
     ) {
       return selectedKey.actorId === ref.actorId;
     }
@@ -738,6 +832,26 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           >
             <Swords className="w-3.5 h-3.5 text-cyan-400" aria-hidden="true" />
             <span>Key Item</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onKeyStateAtCurrentTime}
+            disabled={!selectedActor || selectedActor.kind !== 'character'}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-fuchsia-400" aria-hidden="true" />
+            <span>Key State</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onKeyActionAtCurrentTime}
+            disabled={!selectedActor || selectedActor.kind !== 'character'}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#2b2e35] border border-[#393d47] text-xs font-medium text-slate-100 hover:bg-[#363a43] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+          >
+            <Flame className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
+            <span>Key Action</span>
           </button>
 
           <button
@@ -1231,6 +1345,137 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           </div>
         </div>
 
+        {/* Synchronized Voiceover Audio Track */}
+        <div data-testid="timeline-vo-track" className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onOpenVoiceoverCutter?.()}
+            className="w-24 shrink-0 flex items-center gap-1 text-left text-xs text-sky-300 hover:text-white font-medium truncate"
+            title="Open Voiceover Cutter workspace"
+          >
+            <Mic className="w-3 h-3 text-[#00a2ff] shrink-0" aria-hidden="true" />
+            <span className="truncate">Voiceover VO</span>
+          </button>
+          <div className="relative flex-1 h-6 rounded bg-[#14161a] border border-[#393d47] overflow-hidden">
+            {playheadVisible && (
+              <div
+                className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none z-20"
+                style={{ left: `${playheadPct}%` }}
+              />
+            )}
+            {(customVoiceover?.clips ?? []).length === 0 ? (
+              <div className="h-full px-2 flex items-center text-[10px] text-slate-500 pointer-events-none">
+                No uploaded VO clips — upload &amp; cut audio in Voiceover Cutter
+              </div>
+            ) : (
+              (customVoiceover?.clips ?? []).map((clip: VoiceoverClip, idx: number) => {
+                const dur = getClipDuration(clip);
+                const end = clip.startSec + dur;
+                if (end < viewStart || clip.startSec > viewEnd) return null;
+                const asset = customVoiceover?.assets?.[clip.assetId];
+                const peaks = sliceClipWaveformPeaks(
+                  asset?.waveformPeaks ?? customVoiceover?.waveformPeaks ?? [],
+                  asset?.durationSec ?? clip.sourceEndSec,
+                  clip.sourceStartSec,
+                  clip.sourceEndSec,
+                  18,
+                );
+                const leftPct = toWindowPct(clip.startSec);
+                const widthPct = Math.max(1.8, (dur / viewSpan) * 100);
+                const isSelected = selectedVoClipId === clip.id;
+
+                return (
+                  <button
+                    key={clip.id}
+                    type="button"
+                    data-testid={`timeline-vo-clip-${idx}`}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      const trackEl = e.currentTarget.parentElement;
+                      if (!trackEl) return;
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                      onSelectVoClip?.(clip.id);
+                      voTrackDragRef.current = {
+                        clipId: clip.id,
+                        trackEl,
+                        startX: e.clientX,
+                        initStartSec: clip.startSec,
+                        didDrag: false,
+                      };
+                    }}
+                    onPointerMove={(e) => {
+                      const st = voTrackDragRef.current;
+                      if (!st) return;
+                      if (!st.didDrag && Math.abs(e.clientX - st.startX) < 3) return;
+                      st.didDrag = true;
+                      const rect = st.trackEl.getBoundingClientRect();
+                      const dxSec =
+                        ((e.clientX - st.startX) / Math.max(1, rect.width)) * viewSpan;
+                      const nextStart = Math.max(
+                        0,
+                        Math.round((st.initStartSec + dxSec) * 20) / 20,
+                      );
+                      onMoveVoClip?.(st.clipId, nextStart);
+                    }}
+                    onPointerUp={(e) => {
+                      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                        e.currentTarget.releasePointerCapture(e.pointerId);
+                      }
+                      voTrackDragRef.current = null;
+                    }}
+                    title={`Drag to move · ${clip.name} (${dur.toFixed(2)}s)`}
+                    style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                    className={`absolute top-0.5 bottom-0.5 rounded-xs border px-1 flex items-center gap-1 overflow-hidden cursor-grab active:cursor-grabbing ${
+                      clip.muted
+                        ? 'bg-slate-800/70 border-slate-600 opacity-60'
+                        : isSelected
+                          ? 'bg-[#172a3a] border-[#00a2ff] ring-1 ring-[#00a2ff]'
+                          : 'bg-[#18222d] border-[#38bdf8]/60 hover:border-[#00a2ff]'
+                    }`}
+                  >
+                    <span className="text-[10px] font-mono-tabular font-semibold text-sky-200 truncate pointer-events-none">
+                      {clip.name}
+                    </span>
+                    <div className="flex-1 h-3 flex items-end gap-[1px] pointer-events-none">
+                      {peaks.map((p, pIdx) => (
+                        <div
+                          key={pIdx}
+                          className="flex-1 bg-[#38bdf8]/80 rounded-t-[0.5px]"
+                          style={{ height: `${Math.max(20, Math.round(p * 100))}%` }}
+                        />
+                      ))}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {(customVoiceover?.clips ?? []).length > 0 && onSplitVoAtPlayhead && (
+              <button
+                type="button"
+                data-testid="timeline-split-vo-btn"
+                onClick={onSplitVoAtPlayhead}
+                title="Split voiceover clip at playhead"
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] text-amber-300 hover:bg-[#363a43] whitespace-nowrap shrink-0"
+              >
+                <Scissors className="w-3 h-3" aria-hidden="true" />
+                <span>Split</span>
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="timeline-open-cutter-btn"
+              onClick={() => onOpenVoiceoverCutter?.()}
+              title="Open Voiceover Cutter workspace"
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] text-sky-300 hover:bg-[#363a43] whitespace-nowrap shrink-0"
+            >
+              <Scissors className="w-3 h-3 text-[#00a2ff]" aria-hidden="true" />
+              <span>Cutter</span>
+            </button>
+          </div>
+        </div>
+
         {/* Actor Pose + Dedicated Face/Expression + Held Items Lanes */}
         {project.actors.map((actor) => {
           const isSelected = actor.id === selectedActorId;
@@ -1420,6 +1665,110 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                               sel
                                 ? 'bg-white ring-2 ring-cyan-400'
                                 : 'bg-cyan-400 hover:bg-cyan-200'
+                            }`}
+                          />
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {/* Dedicated Character States & FX Track */}
+              {actor.kind === 'character' && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSelectActor(actor.id)}
+                    className="text-left text-[11px] text-fuchsia-400/90 hover:text-fuchsia-300 w-24 truncate shrink-0 pl-2"
+                  >
+                    State FX
+                  </button>
+                  <div className="relative flex-1 h-5 rounded bg-[#14161a]/80 border border-[#393d47]/80 overflow-hidden">
+                    {playheadVisible && (
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                        style={{ left: `${playheadPct}%` }}
+                      />
+                    )}
+
+                    {(actor.stateKeyframes ?? [])
+                      .filter((kf) => isInWindow(kf.time))
+                      .map((kf) => {
+                        const left = toWindowPct(kf.time);
+                        const ref: SelectedKeyRef = {
+                          kind: 'state',
+                          actorId: actor.id,
+                          keyframeId: kf.id,
+                        };
+                        const sel = isKeySelected(ref);
+                        const meta = CHARACTER_STATE_META[kf.stateId];
+                        return (
+                          <button
+                            key={kf.id}
+                            type="button"
+                            onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                            onPointerMove={handleKeyPointerMove}
+                            onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                            title={`Drag or click · ${actor.name} State (${meta.label}) at ${formatTimecode(kf.time)}`}
+                            aria-label={`${actor.name} state keyframe ${meta.label} at ${formatTimecode(kf.time)}`}
+                            style={{
+                              left: `${left}%`,
+                              backgroundColor: sel ? '#ffffff' : meta.accentColor,
+                            }}
+                            className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                              sel ? 'ring-2 ring-fuchsia-400' : ''
+                            }`}
+                          />
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {/* Dedicated Character Action Functions Track */}
+              {actor.kind === 'character' && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSelectActor(actor.id)}
+                    className="text-left text-[11px] text-amber-400/90 hover:text-amber-300 w-24 truncate shrink-0 pl-2"
+                  >
+                    Action FX
+                  </button>
+                  <div className="relative flex-1 h-5 rounded bg-[#14161a]/80 border border-[#393d47]/80 overflow-hidden">
+                    {playheadVisible && (
+                      <div
+                        className="absolute top-0 bottom-0 w-px bg-[#00a2ff] pointer-events-none"
+                        style={{ left: `${playheadPct}%` }}
+                      />
+                    )}
+
+                    {(actor.actionKeyframes ?? [])
+                      .filter((kf) => isInWindow(kf.time))
+                      .map((kf) => {
+                        const left = toWindowPct(kf.time);
+                        const ref: SelectedKeyRef = {
+                          kind: 'action',
+                          actorId: actor.id,
+                          keyframeId: kf.id,
+                        };
+                        const sel = isKeySelected(ref);
+                        const meta = CHARACTER_ACTION_META[kf.actionId];
+                        return (
+                          <button
+                            key={kf.id}
+                            type="button"
+                            onPointerDown={(e) => beginKeyDrag(e, ref, kf.time)}
+                            onPointerMove={handleKeyPointerMove}
+                            onPointerUp={(e) => endKeyDrag(e, kf.time)}
+                            title={`Drag or click · ${actor.name} Action (${meta.label}) at ${formatTimecode(kf.time)}`}
+                            aria-label={`${actor.name} action keyframe ${meta.label} at ${formatTimecode(kf.time)}`}
+                            style={{
+                              left: `${left}%`,
+                              backgroundColor: sel ? '#ffffff' : meta.accentColor,
+                            }}
+                            className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[#14161a] cursor-ew-resize transition-transform hover:scale-125 ${
+                              sel ? 'ring-2 ring-amber-400' : ''
                             }`}
                           />
                         );

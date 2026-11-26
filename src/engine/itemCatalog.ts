@@ -810,6 +810,14 @@ export const BUILT_IN_PROPS: PropCatalogEntry[] = [
     defaultPrimaryColor: '#eab308',
     defaultAccentColor: '#1e293b',
   },
+  {
+    kind: 'ambulance',
+    name: 'Emergency Ambulance',
+    category: 'town',
+    description: 'Emergency EMS ambulance with open rear loading doors, medical emblems, and flashing roof lightbar.',
+    defaultPrimaryColor: '#f8fafc',
+    defaultAccentColor: '#dc2626',
+  },
 ];
 
 const VALID_ITEM_ID_SET = new Set<string>(BUILT_IN_ITEMS.map((i) => i.id));

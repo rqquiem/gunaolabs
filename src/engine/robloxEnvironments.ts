@@ -471,31 +471,127 @@ function buildBaseplateAndPaths(
       root.add(strip);
     }
   } else if (pathStyle === 'street') {
-    const streetSpan = Math.max(size - 2, 30);
-    // Sidewalks flanking the two-lane main street
-    addBrick(root, streetSpan, 0.08, 2.2, 0, 0.04, 0.2, '#cbd5e1', studTextures, 1.2, false, 0.72);
-    addBrick(root, streetSpan, 0.08, 2.2, 0, 0.04, 5.6, '#cbd5e1', studTextures, 1.2, false, 0.72);
-    // Asphalt two-lane street centered at z = 2.9
-    const asphaltMat = createPlasticBrickMaterial('#334155', { roughness: 0.88 });
-    const road = new THREE.Mesh(new THREE.BoxGeometry(streetSpan, 0.06, 3.6), asphaltMat);
-    road.position.set(0, 0.03, 2.9);
+    const streetSpan = size;
+    const halfS = size * 0.5;
+    const roadCenterZ = 3.2;
+    const roadDepth = 6.4; // z = 0.0 .. 6.4 (wide 4-lane avenue)
+    const crossHalfW = 2.8; // cross-street x = -2.8 .. +2.8
+
+    // Continuous North Sidewalk & Storefront Plaza (z = -8.4 .. 0.0, zero gaps to buildings)
+    addBrick(root, streetSpan, 0.08, 8.4, 0, 0.04, -4.2, '#cbd5e1', studTextures, 1.1, false, 0.72);
+    // Raised North Curb
+    const curbMat = createPlasticBrickMaterial('#94a3b8', { roughness: 0.62 });
+    const northCurb = new THREE.Mesh(new THREE.BoxGeometry(streetSpan, 0.11, 0.22), curbMat);
+    northCurb.position.set(0, 0.055, -0.06);
+    northCurb.receiveShadow = true;
+    root.add(northCurb);
+
+    // Continuous South Sidewalks flanking the perpendicular South Cross-Street (z = 6.4 .. 12.8)
+    const southSidewalkW = Math.max(8, halfS - crossHalfW);
+    const southSidewalkCenterX = crossHalfW + southSidewalkW * 0.5;
+    for (const side of [-1, 1]) {
+      addBrick(
+        root,
+        southSidewalkW,
+        0.08,
+        6.4,
+        side * southSidewalkCenterX,
+        0.04,
+        9.6,
+        '#cbd5e1',
+        studTextures,
+        1.1,
+        false,
+        0.72,
+      );
+      const southCurb = new THREE.Mesh(new THREE.BoxGeometry(southSidewalkW, 0.11, 0.22), curbMat);
+      southCurb.position.set(side * southSidewalkCenterX, 0.055, 6.46);
+      southCurb.receiveShadow = true;
+      root.add(southCurb);
+
+      const crossCurbLen = Math.max(4, halfS - 6.4);
+      const crossCurb = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.11, crossCurbLen), curbMat);
+      crossCurb.position.set(side * (crossHalfW + 0.06), 0.055, 6.4 + crossCurbLen * 0.5);
+      crossCurb.receiveShadow = true;
+      root.add(crossCurb);
+    }
+
+    // Full-span 4-lane East-West Asphalt Main Avenue (edge-to-edge across entire baseplate)
+    const asphaltMat = createPlasticBrickMaterial('#273244', { roughness: 0.88 });
+    const road = new THREE.Mesh(new THREE.BoxGeometry(streetSpan, 0.06, roadDepth), asphaltMat);
+    road.position.set(0, 0.03, roadCenterZ);
     road.receiveShadow = true;
     root.add(road);
 
-    // Center dashed yellow lane dividers (clean >= 0.02 clearance over road top y=0.06)
-    const yellowStripeMat = createPlasticBrickMaterial('#facc15', { roughness: 0.55 });
-    for (let dx = -streetSpan * 0.42; dx <= streetSpan * 0.42; dx += 2.6) {
-      if (Math.abs(dx) < 2.1) continue;
-      const dash = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.025, 0.14), yellowStripeMat);
-      dash.position.set(dx, 0.072, 2.9);
-      root.add(dash);
+    // Perpendicular South Cross-Street extending from Main Avenue to South edge of baseplate
+    const southRoadLen = Math.max(6, halfS - 6.2);
+    const southRoad = new THREE.Mesh(
+      new THREE.BoxGeometry(crossHalfW * 2, 0.058, southRoadLen),
+      asphaltMat,
+    );
+    southRoad.position.set(0, 0.029, 6.2 + southRoadLen * 0.5);
+    southRoad.receiveShadow = true;
+    root.add(southRoad);
+
+    // Double solid yellow centerlines along Main Avenue & South Cross-Street
+    const yellowStripeMat = createPlasticBrickMaterial('#facc15', { roughness: 0.48 });
+    const whiteStripeMat = createPlasticBrickMaterial('#f8fafc', { roughness: 0.48 });
+    const wingLen = Math.max(6, halfS - 3.9);
+    const wingCenterX = 3.9 + wingLen * 0.5;
+    for (const side of [-1, 1]) {
+      for (const offsetZ of [-0.11, 0.11]) {
+        const yLine = new THREE.Mesh(new THREE.BoxGeometry(wingLen, 0.024, 0.11), yellowStripeMat);
+        yLine.position.set(side * wingCenterX, 0.072, roadCenterZ + offsetZ);
+        root.add(yLine);
+      }
+      // Solid white stop bar at intersection approach
+      const stopBar = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.025, roadDepth - 0.6), whiteStripeMat);
+      stopBar.position.set(side * 3.85, 0.073, roadCenterZ);
+      root.add(stopBar);
     }
-    // Zebra crosswalk stripes at x = 0
-    const whiteStripeMat = createPlasticBrickMaterial(trimColor, { roughness: 0.5 });
-    for (let cz = 1.45; cz <= 4.35; cz += 0.58) {
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.025, 0.28), whiteStripeMat);
-      bar.position.set(0, 0.075, cz);
-      root.add(bar);
+
+    // Double yellow centerline on South Cross-Street
+    const southYellowLen = Math.max(4, halfS - 7.6);
+    for (const offsetX of [-0.11, 0.11]) {
+      const syLine = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.024, southYellowLen), yellowStripeMat);
+      syLine.position.set(offsetX, 0.072, 7.6 + southYellowLen * 0.5);
+      root.add(syLine);
+    }
+
+    // Dashed white outer lane dividers for all 4 lanes (z = 1.6 and z = 4.8)
+    for (const laneZ of [1.6, 4.8]) {
+      for (let dx = -halfS + 1.8; dx <= halfS - 1.8; dx += 2.5) {
+        if (Math.abs(dx) < 4.4) continue;
+        const dash = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.024, 0.12), whiteStripeMat);
+        dash.position.set(dx, 0.072, laneZ);
+        root.add(dash);
+      }
+    }
+
+    // Complete Zebra Crosswalks across West, East, and South intersection approaches
+    for (const crossX of [-3.15, 3.15]) {
+      for (let cz = 0.55; cz <= 5.85; cz += 0.66) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.026, 0.32), whiteStripeMat);
+        bar.position.set(crossX, 0.075, cz);
+        root.add(bar);
+      }
+    }
+    for (let cx = -2.25; cx <= 2.25; cx += 0.75) {
+      const sBar = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.026, 1.05), whiteStripeMat);
+      sBar.position.set(cx, 0.075, 6.75);
+      root.add(sBar);
+    }
+
+    // Detailed cast-iron manhole covers & storm drain grates along the avenue
+    const ironMat = createPlasticBrickMaterial('#475569', { roughness: 0.45, metalness: 0.65 });
+    for (const [mx, mz] of [
+      [-6.5, 2.4],
+      [0, 3.2],
+      [7.5, 4.1],
+    ]) {
+      const manhole = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.44, 0.026, 14), ironMat);
+      manhole.position.set(mx, 0.073, mz);
+      root.add(manhole);
     }
   } else if (pathStyle === 'cityGrid') {
     buildCityGridRoadNetwork(root, size, trimColor, studTextures);
@@ -1209,14 +1305,16 @@ export function buildRobloxPropGroup(
     case 'flyingPigs':
     case 'grocerySpill':
     case 'parkedSedan':
-    case 'sightseeingBus': {
+    case 'sightseeingBus':
+    case 'ambulance': {
       if (propKind === 'rainingCatsDogs' || propKind === 'flyingPigs') {
         shadowDisc.visible = false;
       } else if (
         propKind === 'africanElephant' ||
         propKind === 'clydesdalePlatter' ||
         propKind === 'parkedSedan' ||
-        propKind === 'sightseeingBus'
+        propKind === 'sightseeingBus' ||
+        propKind === 'ambulance'
       ) {
         shadowDisc.scale.set(2.2, 2.2, 1);
       }

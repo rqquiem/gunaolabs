@@ -34,7 +34,21 @@ import {
 } from './robloxWardrobe';
 import { animateHeldItemGroup, buildItemModelGroup } from './robloxItems';
 import {
+  CharacterStateController,
+  createCharacterStateController,
+} from './characterStates';
+import {
+  CharacterActionController,
+  computeBuildRigLayout,
+  createCharacterActionController,
+  sanitizeCharacterModelBuildId,
+} from './characterActions';
+import {
+  CharacterModelBuildId,
+  CharacterModelSocketId,
   ClothingConfig,
+  EvaluatedCharacterAction,
+  EvaluatedCharacterState,
   EvaluatedFaceState,
   EvaluatedHeldItems,
   EvaluatedPose,
@@ -59,6 +73,7 @@ export interface RobloxR6CharacterRig {
   torsoPivot: THREE.Group;
   pivots: Record<R6BodyPartId, THREE.Group>;
   sockets: Record<OrnamentSlot, THREE.Group>;
+  modelSockets: Record<CharacterModelSocketId, THREE.Group>;
   hairSocket: THREE.Group;
   handSockets: Record<HandSlot, THREE.Group>;
   faceRig: Roblox3DFaceRig;
@@ -69,13 +84,17 @@ export interface RobloxR6CharacterRig {
     face: EvaluatedFaceState,
     gazeOverride?: { x: number; y: number } | null,
   ) => void;
+  applyCharacterState: (state: EvaluatedCharacterState, sceneTime: number) => void;
+  applyCharacterAction: (action: EvaluatedCharacterAction, sceneTime: number) => void;
   applySecondaryMotion: (sec: SecondaryMotionState, time?: number) => void;
+  setModelBuild: (buildId: CharacterModelBuildId) => void;
   setBodyColors: (colors: R6BodyColors) => void;
   setOrnaments: (ornaments: R6Ornaments) => void;
   setHair: (hair: HairConfig) => void;
   setClothing: (clothing: ClothingConfig) => void;
   setHeldItems: (heldItems: EvaluatedHeldItems) => void;
   setFaceConfig: (config: FaceRigConfig) => void;
+  disposeStateController: () => void;
 }
 
 function buildRoundedHeadGeometry(): THREE.LatheGeometry {
@@ -105,8 +124,11 @@ export function buildRobloxR6CharacterRig(
   initialHair: HairConfig = createDefaultHairConfig(),
   initialClothing: ClothingConfig = createDefaultClothingConfig(),
   maxAnisotropy = 4,
+  initialModelBuild: CharacterModelBuildId = 'classic',
 ): RobloxR6CharacterRig {
   const root = new THREE.Group();
+  let currentTorsoBaseY = TORSO_BASE_Y;
+  let currentModelBuild: CharacterModelBuildId = 'classic';
 
   // Contact shadow disc grounded at y = 0.015
   const shadowPlane = new THREE.Mesh(
@@ -398,6 +420,92 @@ export function buildRobloxR6CharacterRig(
     legs: legsSocket,
   };
 
+  // --- EXACT ANATOMICAL MODEL SOCKETS (inherit head/limb/torso transforms & body build) ---
+  const mouthModelSocket = new THREE.Group();
+  mouthModelSocket.position.set(0, (0.56 - 0.175) * R6_STUD, 0.56 * R6_STUD);
+  headPivot.add(mouthModelSocket);
+
+  const leftEyeModelSocket = new THREE.Group();
+  leftEyeModelSocket.position.set(0.17 * R6_STUD, (0.56 + 0.08) * R6_STUD, 0.56 * R6_STUD);
+  headPivot.add(leftEyeModelSocket);
+
+  const rightEyeModelSocket = new THREE.Group();
+  rightEyeModelSocket.position.set(-0.17 * R6_STUD, (0.56 + 0.08) * R6_STUD, 0.56 * R6_STUD);
+  headPivot.add(rightEyeModelSocket);
+
+  const foreheadModelSocket = new THREE.Group();
+  foreheadModelSocket.position.set(0.34 * R6_STUD, (0.56 + 0.24) * R6_STUD, 0.44 * R6_STUD);
+  headPivot.add(foreheadModelSocket);
+
+  const leftHandModelSocket = new THREE.Group();
+  leftHandModelSocket.position.set(0, -1.78 * R6_STUD, 0.22 * R6_STUD);
+  leftArmPivot.add(leftHandModelSocket);
+
+  const rightHandModelSocket = new THREE.Group();
+  rightHandModelSocket.position.set(0, -1.78 * R6_STUD, 0.22 * R6_STUD);
+  rightArmPivot.add(rightHandModelSocket);
+
+  const chestModelSocket = new THREE.Group();
+  chestModelSocket.position.set(0, 0.22 * R6_STUD, 0.52 * R6_STUD);
+  torsoPivot.add(chestModelSocket);
+
+  const feetModelSocket = new THREE.Group();
+  feetModelSocket.position.set(0, 0.02, 0);
+  root.add(feetModelSocket);
+
+  const modelSockets: Record<CharacterModelSocketId, THREE.Group> = {
+    mouth: mouthModelSocket,
+    leftEye: leftEyeModelSocket,
+    rightEye: rightEyeModelSocket,
+    forehead: foreheadModelSocket,
+    leftHand: leftHandModelSocket,
+    rightHand: rightHandModelSocket,
+    chest: chestModelSocket,
+    feet: feetModelSocket,
+  };
+
+  const applyModelBuildLayout = (buildId: CharacterModelBuildId, force = false) => {
+    const safeBuild = sanitizeCharacterModelBuildId(buildId);
+    if (!force && safeBuild === currentModelBuild) return;
+    currentModelBuild = safeBuild;
+    const layout = computeBuildRigLayout(safeBuild, R6_STUD);
+    const { torsoScale, headScale, armScale, legScale } = layout.spec;
+
+    currentTorsoBaseY = layout.torsoBaseY;
+    hipPivot.position.y = currentTorsoBaseY;
+
+    // Scale torso meshes/trim independently of torsoPivot so rotated child pivots never shear
+    torsoMesh.scale.set(torsoScale[0], torsoScale[1], torsoScale[2]);
+    torsoTrimGroup.scale.set(torsoScale[0], torsoScale[1], torsoScale[2]);
+    hipClothingGroup.scale.set(torsoScale[0], torsoScale[1], torsoScale[2]);
+
+    headPivot.scale.set(headScale[0], headScale[1], headScale[2]);
+    headPivot.position.set(0, layout.headPivotY, 0);
+
+    leftArmPivot.scale.set(armScale[0], armScale[1], armScale[2]);
+    rightArmPivot.scale.set(armScale[0], armScale[1], armScale[2]);
+    leftArmPivot.position.set(layout.armOffsetX, layout.armOffsetY, 0);
+    rightArmPivot.position.set(-layout.armOffsetX, layout.armOffsetY, 0);
+
+    leftLegPivot.scale.set(legScale[0], legScale[1], legScale[2]);
+    rightLegPivot.scale.set(legScale[0], legScale[1], legScale[2]);
+    leftLegPivot.position.set(layout.legOffsetX, layout.legOffsetY, 0);
+    rightLegPivot.position.set(-layout.legOffsetX, layout.legOffsetY, 0);
+
+    // Keep torso-attached accessory sockets flush with the rescaled torso
+    neckSocket.position.set(0, 0.98 * R6_STUD * torsoScale[1], 0);
+    shoulderSocket.position.set(0, 1.02 * R6_STUD * torsoScale[1], 0);
+    backSocket.position.set(0, 0.1 * R6_STUD * torsoScale[1], -0.52 * R6_STUD * torsoScale[2]);
+    waistSocket.position.set(0, -0.82 * R6_STUD * torsoScale[1], 0);
+    chestModelSocket.position.set(
+      0,
+      0.22 * R6_STUD * torsoScale[1],
+      0.52 * R6_STUD * torsoScale[2],
+    );
+  };
+
+  applyModelBuildLayout(initialModelBuild, true);
+
   // --- DYNAMIC CLOTHING MATERIAL & RIG MANAGEMENT ---
   let dynamicTorsoMats: THREE.Material[] | null = null;
   let dynamicLeftArmMat: THREE.Material | null = null;
@@ -506,6 +614,7 @@ export function buildRobloxR6CharacterRig(
     currentHairJson = nextJson;
     currentHair = { ...hair };
     hairRig = buildHairRig(hairSocket, currentHair, currentHatId);
+    stateController.refreshPalette();
   };
 
   // --- ORNAMENTS & SCULPTED ACCESSORIES ---
@@ -708,7 +817,7 @@ export function buildRobloxR6CharacterRig(
     const squash = pose.squashY ?? 1;
     const invXZ = 1 / Math.sqrt(Math.max(0.75, squash));
 
-    hipPivot.position.set(hipOff[0], TORSO_BASE_Y + hipOff[1], hipOff[2]);
+    hipPivot.position.set(hipOff[0], currentTorsoBaseY + hipOff[1], hipOff[2]);
     hipPivot.rotation.set(hipTilt[0], hipTilt[1], hipTilt[2]);
     hipPivot.scale.set(invXZ, squash, invXZ);
 
@@ -755,6 +864,50 @@ export function buildRobloxR6CharacterRig(
     }
   };
 
+  const stateController: CharacterStateController = createCharacterStateController({
+    studSize: R6_STUD,
+    headPivot,
+    headMesh,
+    headBaseMaterial: partMaterials.head,
+    faceRoot: faceRig.root,
+    hairSocket,
+    hatSocket,
+    headSocket,
+    faceSocket,
+    leftLegPivot,
+    rightLegPivot,
+    leftLegMesh,
+    rightLegMesh,
+    leftLegTrimGroup,
+    rightLegTrimGroup,
+    legLeftGuardSocket,
+    legRightGuardSocket,
+    getPalette: () => ({
+      headColor: currentBodyColors.head,
+      hairColor: currentHair.primaryColor,
+      shirtColor:
+        currentClothing.shirtId !== 'none'
+          ? currentClothing.shirtColor
+          : currentBodyColors.torso,
+      pantsColor:
+        currentClothing.pantsId !== 'none'
+          ? currentClothing.pantsColor
+          : currentBodyColors.rightLeg,
+      leftLegColor: currentBodyColors.leftLeg,
+      rightLegColor: currentBodyColors.rightLeg,
+      shoeColor:
+        currentClothing.footwearId !== 'none'
+          ? (currentClothing.shoeColor ?? '#18181b')
+          : currentBodyColors.rightLeg,
+    }),
+  });
+
+  const actionController: CharacterActionController = createCharacterActionController({
+    root,
+    studSize: R6_STUD,
+    sockets: modelSockets,
+  });
+
   const setBodyColors = (colors: R6BodyColors) => {
     currentBodyColors = { ...colors };
     for (const part of R6_BODY_PARTS) {
@@ -762,11 +915,13 @@ export function buildRobloxR6CharacterRig(
     }
     faceRig.setSkinColor(colors.head);
     applyClothingAndSkinMaterials(false);
+    stateController.refreshPalette();
   };
 
   const setClothing = (clothing: ClothingConfig) => {
     currentClothing = { ...clothing };
     applyClothingAndSkinMaterials(false);
+    stateController.refreshPalette();
   };
 
   return {
@@ -775,6 +930,7 @@ export function buildRobloxR6CharacterRig(
     torsoPivot,
     pivots,
     sockets,
+    modelSockets,
     hairSocket,
     handSockets,
     faceRig,
@@ -782,12 +938,19 @@ export function buildRobloxR6CharacterRig(
     applyPose,
     applyHeadLookAt,
     applyFaceState: (face, gazeOverride) => faceRig.applyFaceState(face, gazeOverride),
+    applyCharacterState: (state, sceneTime) => stateController.applyState(state, sceneTime),
+    applyCharacterAction: (action, sceneTime) => actionController.applyAction(action, sceneTime),
     applySecondaryMotion,
+    setModelBuild: (buildId) => applyModelBuildLayout(buildId, false),
     setBodyColors,
     setOrnaments: rebuildOrnaments,
     setHair: rebuildHair,
     setClothing,
     setHeldItems,
     setFaceConfig: (config) => faceRig.setConfig(config),
+    disposeStateController: () => {
+      stateController.dispose();
+      actionController.dispose();
+    },
   };
 }

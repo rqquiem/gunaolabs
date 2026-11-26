@@ -20,10 +20,12 @@ import {
 
 interface SceneLibraryViewProps {
   project: AnimationProject;
+  currentTime?: number;
   builtInScenes: SceneLibraryEntry[];
   customScenes: SceneLibraryEntry[];
   onLoadScene: (sceneProject: AnimationProject) => void;
   onWatchEpisode?: (sceneProject: AnimationProject) => void;
+  onSeek?: (time: number) => void;
   onSaveCurrentScene: (name: string, category: SceneCategory) => void;
   onDeleteCustomScene: (sceneId: string) => void;
   onExportScenes: () => void;
@@ -33,10 +35,12 @@ interface SceneLibraryViewProps {
 
 export const SceneLibraryView: React.FC<SceneLibraryViewProps> = ({
   project,
+  currentTime = 0,
   builtInScenes,
   customScenes,
   onLoadScene,
   onWatchEpisode,
+  onSeek,
   onSaveCurrentScene,
   onDeleteCustomScene,
   onExportScenes,
@@ -161,57 +165,103 @@ export const SceneLibraryView: React.FC<SceneLibraryViewProps> = ({
           const featured = filteredScenes.find((s) => s.id === 'scene_idiom_town');
           if (!featured || !onWatchEpisode) return null;
           const isCurrentFeatured = project.id === featured.project.id;
+          const featuredChapters = featured.project.chapters ?? [];
           return (
             <div
-              className={`flex flex-wrap items-center justify-between gap-2 p-2.5 rounded border ${
+              className={`space-y-2 p-2.5 rounded border ${
                 isCurrentFeatured
                   ? 'bg-[#2b2e35] border-[#00a2ff]'
                   : 'bg-[#14161a] border-[#393d47]'
               }`}
             >
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 whitespace-nowrap shrink-0">
-                    Featured Episode
-                  </span>
-                  <span className="text-xs font-semibold text-white truncate">
-                    {featured.name}
-                  </span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 whitespace-nowrap shrink-0">
+                      Featured Episode
+                    </span>
+                    <span className="text-xs font-semibold text-white truncate">
+                      {featured.name}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    Comedy · 01:30 · 7 Scenes · Distinct lighting moods, gaze tracking & SFX
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-400 truncate">
-                  Comedy · 01:30 · 7 Chapters · Literal idioms, voiceover & SFX
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onWatchEpisode(featured.project);
+                      setFeedback({
+                        type: 'ok',
+                        text: `Playing "${featured.name}" in Director Camera.`,
+                      });
+                    }}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#00a2ff] border border-[#00a2ff] text-slate-950 text-[11px] font-semibold hover:bg-[#33b5ff] transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Play className="w-3 h-3" aria-hidden="true" />
+                    <span>Watch Episode</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onLoadScene(featured.project);
+                      setFeedback({
+                        type: 'ok',
+                        text: `Loaded "${featured.name}" into Studio.`,
+                      });
+                    }}
+                    className="px-2 py-1 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
+                  >
+                    Load in Studio
+                  </button>
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onWatchEpisode(featured.project);
-                    setFeedback({
-                      type: 'ok',
-                      text: `Playing "${featured.name}" in Director Camera.`,
-                    });
-                  }}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#00a2ff] border border-[#00a2ff] text-slate-950 text-[11px] font-semibold hover:bg-[#33b5ff] transition-colors whitespace-nowrap shrink-0"
-                >
-                  <Play className="w-3 h-3" aria-hidden="true" />
-                  <span>Watch Episode</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onLoadScene(featured.project);
-                    setFeedback({
-                      type: 'ok',
-                      text: `Loaded "${featured.name}" into Studio.`,
-                    });
-                  }}
-                  className="px-2 py-1 rounded bg-[#2b2e35] border border-[#393d47] text-[11px] font-medium text-slate-100 hover:bg-[#363a43] transition-colors whitespace-nowrap shrink-0"
-                >
-                  Load in Studio
-                </button>
-              </div>
+              {featuredChapters.length > 0 && (
+                <div className="flex items-center gap-1 overflow-x-auto pt-1 border-t border-[#393d47]/70">
+                  <span className="text-[10px] font-medium text-slate-400 shrink-0 mr-1">
+                    Scenes:
+                  </span>
+                  {featuredChapters.map((ch, idx) => {
+                    const nextTime =
+                      featuredChapters[idx + 1]?.time ?? featured.project.duration;
+                    const isChActive =
+                      isCurrentFeatured &&
+                      currentTime >= ch.time - 0.05 &&
+                      currentTime < nextTime;
+                    return (
+                      <button
+                        key={ch.id}
+                        type="button"
+                        onClick={() => {
+                          if (!isCurrentFeatured) {
+                            onLoadScene(featured.project);
+                          }
+                          onSeek?.(ch.time);
+                          setFeedback({
+                            type: 'ok',
+                            text: `Jumped to "${ch.title}" (${formatTimecode(ch.time)}).`,
+                          });
+                        }}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+                          isChActive
+                            ? 'bg-[#00a2ff]/20 border-[#00a2ff] text-white'
+                            : 'bg-[#1b1e24] border-[#393d47] text-slate-300 hover:text-white hover:border-slate-500'
+                        }`}
+                      >
+                        <span
+                          className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ backgroundColor: ch.color || '#00a2ff' }}
+                        />
+                        <span>{ch.title}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })()}

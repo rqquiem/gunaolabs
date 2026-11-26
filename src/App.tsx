@@ -1,10 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TopBar } from './components/TopBar';
+import { CinemaViewportHud } from './components/CinemaViewportHud';
+import { CaptionOverlay } from './components/CaptionOverlay';
 import { StudioDock } from './components/StudioDock';
 import { TimelinePanel, SelectedKeyRef } from './components/dock/TimelinePanel';
 import { ScenePanel } from './components/dock/ScenePanel';
-import { CharacterPanel } from './components/dock/CharacterPanel';
-import { CutscenePanel } from './components/dock/CutscenePanel';
+import {
+  CharacterActionDraft,
+  CharacterPanel,
+  CharacterStateDraft,
+} from './components/dock/CharacterPanel';
+import { CutscenePanel, CutsceneSubTab } from './components/dock/CutscenePanel';
 import { ExportPanel } from './components/dock/ExportPanel';
 import { CROSSROADS_SHOWDOWN_PROJECT } from './engine/presets';
 import {
@@ -19,7 +25,35 @@ import {
   ROBLOX_AVATAR_BUNDLES,
 } from './engine/robloxCatalog';
 import { StageEngine } from './engine/StageEngine';
-import { EpisodeAudioEngine } from './engine/episodeAudio';
+import {
+  countCachedProjectVoices,
+  decodeCustomVoiceoverFile,
+  decodeVoiceoverSourceAsset,
+  EpisodeAudioEngine,
+  fetchNarratorStatus,
+  getCachedCueDuration,
+  NarratorServerStatus,
+  pregenerateProjectVoices,
+  VoicePreGenProgress,
+} from './engine/episodeAudio';
+import {
+  appendVoiceoverAssetToTrack,
+  deleteVoiceoverClip,
+  ensureMultiClipVoiceoverTrack,
+  getClipDuration,
+  moveVoiceoverClip,
+  splitVoiceoverClipAtTime,
+  splitVoiceoverTrackAtPlayhead,
+  syncVoiceoverTrackSummary,
+  trimVoiceoverClip,
+  updateVoiceoverClipSettings,
+} from './engine/voiceoverCutter';
+import {
+  applyCinematicPreset,
+  captureCinematicSnapshot,
+  CinematicLookSnapshot,
+  restoreCinematicSnapshot,
+} from './engine/cinematicPresets';
 import { resolveActorFaceConfig, resolveExpressionParams } from './engine/faceExpressions';
 import {
   BUILT_IN_POSES,
@@ -36,6 +70,8 @@ import {
   deleteActorKeyframe,
   deleteCameraKeyframe,
   deleteChapterMarker,
+  deleteCharacterActionKeyframe,
+  deleteCharacterStateKeyframe,
   deleteFaceKeyframe,
   deleteItemKeyframe,
   deleteLightingKeyframe,
@@ -46,9 +82,12 @@ import {
   evaluateLightingAt,
   evaluateProceduralClipPose,
   evaluateStageAt,
+  evaluateSubtitleAt,
   getChapterBounds,
   moveActorKeyframeTime,
   moveCameraKeyframeTime,
+  moveCharacterActionKeyframeTime,
+  moveCharacterStateKeyframeTime,
   moveFaceKeyframeTime,
   moveItemKeyframeTime,
   moveLightingKeyframeTime,
@@ -59,6 +98,8 @@ import {
   upsertActorKeyframe,
   upsertCameraKeyframe,
   upsertChapterMarker,
+  upsertCharacterActionKeyframe,
+  upsertCharacterStateKeyframe,
   upsertFaceKeyframe,
   upsertItemKeyframe,
   upsertLightingKeyframe,
@@ -100,9 +141,13 @@ import {
   CameraFramingPreset,
   CameraKeyframe,
   CameraMode,
+  CaptionSettings,
   ChapterMarker,
   CharacterHeldItems,
+  CharacterModelBuildId,
+  CinematicPresetId,
   ClothingConfig,
+  CustomVoiceoverTrack,
   DockTab,
   EasingType,
   ExpressionParams,
@@ -113,6 +158,7 @@ import {
   ItemEasingMode,
   ItemId,
   MapDefinition,
+  NarratorSettings,
   OrnamentSlot,
   PoseCategory,
   PoseClipId,
@@ -124,11 +170,12 @@ import {
   SceneLibraryEntry,
   StageLightConfig,
   SubtitleCue,
-  SubtitleRole,
   UpperBodyClipId,
   Vec3Tuple,
   VideoExportOptions,
   VideoRecordingState,
+  VoiceoverClip,
+  VoiceoverSourceAsset,
 } from './engine/types';
 
 function getActiveActorKeyframe(
@@ -171,6 +218,8 @@ export default function App() {
     overrides: Partial<ExpressionParams>;
   } | null>(null);
   const [itemDraft, setItemDraft] = useState<CharacterHeldItems | null>(null);
+  const [stateDraft, setStateDraft] = useState<CharacterStateDraft | null>(null);
+  const [actionDraft, setActionDraft] = useState<CharacterActionDraft | null>(null);
   const [customPoses, setCustomPoses] = useState<PosePreset[]>(() => loadCustomPoses());
   const [customMaps, setCustomMaps] = useState<MapDefinition[]>(() => loadCustomMaps());
   const [customScenes, setCustomScenes] = useState<SceneLibraryEntry[]>(() =>
@@ -180,17 +229,36 @@ export default function App() {
   const [activePosePreviewId, setActivePosePreviewId] = useState<string | null>(null);
   const [poseMirrored, setPoseMirrored] = useState(false);
   const [includePoseExpression, setIncludePoseExpression] = useState(true);
-  const [activeSubtitle, setActiveSubtitle] = useState<{
-    speaker: string | null;
-    text: string;
-    role?: SubtitleRole;
-  } | null>(null);
+  const [narratorStatus, setNarratorStatus] = useState<NarratorServerStatus | null>(null);
+  const [isGeneratingVoices, setIsGeneratingVoices] = useState(false);
+  const [voiceGenProgress, setVoiceGenProgress] = useState<VoicePreGenProgress | null>(null);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [voiceCacheVersion, setVoiceCacheVersion] = useState(0);
+  const [cinematicUndoSnapshot, setCinematicUndoSnapshot] =
+    useState<CinematicLookSnapshot | null>(null);
+  const [transcriptConfirmed, setTranscriptConfirmed] = useState(false);
+  const [customVoiceover, setCustomVoiceover] = useState<CustomVoiceoverTrack | null>(null);
+  const [isDecodingVoiceover, setIsDecodingVoiceover] = useState(false);
+  const [voiceoverError, setVoiceoverError] = useState<string | null>(null);
+  const [isAuditioningCustomVo, setIsAuditioningCustomVo] = useState(false);
+  const [selectedVoClipId, setSelectedVoClipId] = useState<string | null>(null);
+  const [voHistory, setVoHistory] = useState<{
+    past: VoiceoverClip[][];
+    future: VoiceoverClip[][];
+  }>({ past: [], future: [] });
+  const [requestedCutsceneSubTab, setRequestedCutsceneSubTab] =
+    useState<CutsceneSubTab | null>(null);
   const [screenBlackout, setScreenBlackout] = useState(0);
   const [audioMuted, setAudioMuted] = useState(false);
+  const [showRuleOfThirds, setShowRuleOfThirds] = useState(false);
+  const [forceLetterbox, setForceLetterbox] = useState(false);
   const [exportOptions, setExportOptions] = useState<VideoExportOptions>({
+    format: 'mp4',
+    aspectRatio: '16:9',
     resolution: '720p',
     fps: 30,
     bitrateMbps: 8,
+    includeAudio: true,
     burnSubtitles: true,
     burnLetterbox: true,
   });
@@ -201,7 +269,18 @@ export default function App() {
     durationSec: CROSSROADS_SHOWDOWN_PROJECT.duration,
     currentFrame: 0,
     totalFrames: Math.round(CROSSROADS_SHOWDOWN_PROJECT.duration * 30),
+    estimatedRemainingSec: null,
     encoderBackend: null,
+    format: null,
+    requestedFormat: null,
+    fallbackUsed: false,
+    fallbackReason: null,
+    videoCodec: null,
+    audioCodec: null,
+    hasAudio: false,
+    width: null,
+    height: null,
+    aspectRatio: null,
     blobUrl: null,
     mimeType: null,
     fileExtension: null,
@@ -235,11 +314,15 @@ export default function App() {
         setHipTiltDraft(null);
         setFaceDraft(null);
         setItemDraft(null);
+        setStateDraft(null);
+        setActionDraft(null);
         setActivePosePreviewId(null);
         setPoseMirrored(false);
         engineRef.current?.setPoseOverride(null, null);
         engineRef.current?.setFaceOverride(null, null);
         engineRef.current?.setItemOverride(null, null);
+        engineRef.current?.setCharacterStateOverride(null, null);
+        engineRef.current?.setCharacterActionOverride(null, null);
       },
       onActorTransformCommit: (actorId, position, rotation, scale) => {
         const proj = projectRef.current;
@@ -263,7 +346,7 @@ export default function App() {
           }),
         );
       },
-      onTimeUpdate: (time, subtitleText, subtitleSpeaker, subtitleRole, blackout) => {
+      onTimeUpdate: (time, _subtitleText, _subtitleSpeaker, _subtitleRole, blackout) => {
         setCurrentTime(time);
         setScreenBlackout(blackout ?? 0);
         audioEngineRef.current?.sync(
@@ -272,15 +355,6 @@ export default function App() {
           isPlayingRef.current,
           playbackSpeedRef.current,
         );
-        if (subtitleText) {
-          setActiveSubtitle({
-            speaker: subtitleSpeaker,
-            text: subtitleText,
-            role: subtitleRole,
-          });
-        } else {
-          setActiveSubtitle(null);
-        }
       },
       onPlaybackEnded: () => {
         isPlayingRef.current = false;
@@ -324,6 +398,10 @@ export default function App() {
   }, [project]);
 
   useEffect(() => {
+    audioEngineRef.current?.setCustomVoiceover(customVoiceover);
+  }, [customVoiceover]);
+
+  useEffect(() => {
     saveCustomPoses(customPoses);
   }, [customPoses]);
 
@@ -351,6 +429,8 @@ export default function App() {
         setHipTiltDraft(null);
         setFaceDraft(null);
         setItemDraft(null);
+        setStateDraft(null);
+        setActionDraft(null);
         setActivePosePreviewId(null);
         setPoseMirrored(false);
       }
@@ -374,17 +454,35 @@ export default function App() {
     });
   }, []);
 
+  const handleToggleZenMode = useCallback(() => {
+    setIsDockCollapsed((prev) => {
+      const next = !prev;
+      if (next) {
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } else if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+      return next;
+    });
+  }, []);
+
   const handleSeek = useCallback((time: number) => {
     setJointDraft({});
     setHipTiltDraft(null);
     setFaceDraft(null);
     setItemDraft(null);
+    setStateDraft(null);
+    setActionDraft(null);
     setActivePosePreviewId(null);
     setPoseMirrored(false);
     audioEngineRef.current?.resetPlayback(time);
     engineRef.current?.setPoseOverride(null, null);
     engineRef.current?.setFaceOverride(null, null);
     engineRef.current?.setItemOverride(null, null);
+    engineRef.current?.setCharacterStateOverride(null, null);
+    engineRef.current?.setCharacterActionOverride(null, null);
     engineRef.current?.setTime(time);
     setCurrentTime(time);
   }, []);
@@ -395,11 +493,15 @@ export default function App() {
     setHipTiltDraft(null);
     setFaceDraft(null);
     setItemDraft(null);
+    setStateDraft(null);
+    setActionDraft(null);
     setActivePosePreviewId(null);
     setPoseMirrored(false);
     engineRef.current?.setPoseOverride(null, null);
     engineRef.current?.setFaceOverride(null, null);
     engineRef.current?.setItemOverride(null, null);
+    engineRef.current?.setCharacterStateOverride(null, null);
+    engineRef.current?.setCharacterActionOverride(null, null);
     engineRef.current?.selectActor(actorId);
   }, []);
 
@@ -428,8 +530,8 @@ export default function App() {
       if (e.code === 'Space') {
         e.preventDefault();
         handleTogglePlay();
-      } else if (e.key === 'h' || e.key === 'H') {
-        setIsDockCollapsed((v) => !v);
+      } else if (e.key === 'h' || e.key === 'H' || e.key === 'f' || e.key === 'F') {
+        handleToggleZenMode();
       } else if (e.key === 'g' || e.key === 'G') {
         handleSetGizmoMode('translate');
       } else if (e.key === 'r' || e.key === 'R') {
@@ -442,7 +544,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [cameraMode, handleSetCameraMode, handleSetGizmoMode, handleTogglePlay]);
+  }, [cameraMode, handleSetCameraMode, handleSetGizmoMode, handleTogglePlay, handleToggleZenMode]);
 
   const evaluatedSelectedActor = useMemo(() => {
     if (!selectedActorId) return null;
@@ -1084,6 +1186,130 @@ export default function App() {
     engineRef.current?.setFaceOverride(null, null);
   }, []);
 
+  const handlePreviewCharacterState = useCallback(
+    (draft: CharacterStateDraft) => {
+      if (!selectedActorId) return;
+      setStateDraft(draft);
+      engineRef.current?.setCharacterStateOverride(selectedActorId, draft);
+    },
+    [selectedActorId],
+  );
+
+  const handleReplayCharacterState = useCallback(() => {
+    if (!selectedActorId) return;
+    const active = stateDraft ??
+      (evaluatedSelectedActor?.characterState
+        ? {
+            stateId: evaluatedSelectedActor.characterState.stateId,
+            intensity: evaluatedSelectedActor.characterState.intensity,
+            targetLimb: evaluatedSelectedActor.characterState.targetLimb,
+            seed: evaluatedSelectedActor.characterState.seed,
+          }
+        : null);
+    if (!active) return;
+    setStateDraft({ ...active });
+    engineRef.current?.setCharacterStateOverride(selectedActorId, { ...active });
+  }, [selectedActorId, stateDraft, evaluatedSelectedActor]);
+
+  const handleResetCharacterStateDraft = useCallback(() => {
+    setStateDraft(null);
+    engineRef.current?.setCharacterStateOverride(null, null);
+  }, []);
+
+  const handleCommitCharacterStateKeyframe = useCallback(() => {
+    if (!selectedActorId) return;
+    const actor = project.actors.find((a) => a.id === selectedActorId);
+    if (!actor || actor.kind !== 'character') return;
+    const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+    const active = stateDraft ?? {
+      stateId: evalState.characterState?.stateId ?? 'normal',
+      intensity: evalState.characterState?.intensity ?? 1,
+      targetLimb: evalState.characterState?.targetLimb ?? 'rightLeg',
+      seed: evalState.characterState?.seed ?? 1,
+    };
+
+    setProject((prev) =>
+      upsertCharacterStateKeyframe(prev, selectedActorId, {
+        id: `skf_${Date.now()}`,
+        time: currentTime,
+        stateId: active.stateId,
+        intensity: active.intensity,
+        targetLimb: active.targetLimb,
+        seed: active.seed,
+      }),
+    );
+    setStateDraft(null);
+    engineRef.current?.setCharacterStateOverride(null, null);
+  }, [selectedActorId, project.actors, project.subtitles, currentTime, stateDraft]);
+
+  const handleChangeModelBuild = useCallback(
+    (actorId: string, modelBuild: CharacterModelBuildId) => {
+      setProject((prev) => ({
+        ...prev,
+        actors: prev.actors.map((a) =>
+          a.id === actorId ? { ...a, modelBuild } : a,
+        ),
+      }));
+    },
+    [],
+  );
+
+  const handlePreviewCharacterAction = useCallback(
+    (draft: CharacterActionDraft) => {
+      if (!selectedActorId) return;
+      setActionDraft(draft);
+      engineRef.current?.setCharacterActionOverride(selectedActorId, draft);
+    },
+    [selectedActorId],
+  );
+
+  const handleReplayCharacterAction = useCallback(() => {
+    if (!selectedActorId) return;
+    const active = actionDraft ??
+      (evaluatedSelectedActor?.characterAction
+        ? {
+            actionId: evaluatedSelectedActor.characterAction.actionId,
+            intensity: evaluatedSelectedActor.characterAction.intensity,
+            source: evaluatedSelectedActor.characterAction.source,
+            seed: evaluatedSelectedActor.characterAction.seed,
+          }
+        : null);
+    if (!active) return;
+    setActionDraft({ ...active });
+    engineRef.current?.setCharacterActionOverride(selectedActorId, { ...active });
+  }, [selectedActorId, actionDraft, evaluatedSelectedActor]);
+
+  const handleResetCharacterActionDraft = useCallback(() => {
+    setActionDraft(null);
+    engineRef.current?.setCharacterActionOverride(null, null);
+  }, []);
+
+  const handleCommitCharacterActionKeyframe = useCallback(() => {
+    if (!selectedActorId) return;
+    const actor = project.actors.find((a) => a.id === selectedActorId);
+    if (!actor || actor.kind !== 'character') return;
+    const evalState = evaluateActorAt(actor, currentTime, project.subtitles);
+    const active = actionDraft ?? {
+      actionId: evalState.characterAction?.actionId ?? 'none',
+      intensity: evalState.characterAction?.intensity ?? 1,
+      source: evalState.characterAction?.source ?? 'mouth',
+      seed: evalState.characterAction?.seed ?? 1,
+    };
+
+    setProject((prev) =>
+      upsertCharacterActionKeyframe(prev, selectedActorId, {
+        id: `akf_${Date.now()}`,
+        time: currentTime,
+        actionId: active.actionId,
+        intensity: active.intensity,
+        source: active.source,
+        seed: active.seed,
+      }),
+    );
+    setActionDraft(null);
+    engineRef.current?.setCharacterActionOverride(null, null);
+  }, [selectedActorId, project.actors, project.subtitles, currentTime, actionDraft]);
+
   const handleFocusActorFace = useCallback((actorId: string) => {
     setCameraMode('orbit');
     engineRef.current?.focusActorFace(actorId);
@@ -1525,7 +1751,12 @@ export default function App() {
             ),
           };
         }
-        if (ref.kind === 'item' || ref.kind === 'map') {
+        if (
+          ref.kind === 'item' ||
+          ref.kind === 'map' ||
+          ref.kind === 'state' ||
+          ref.kind === 'action'
+        ) {
           return prev;
         }
         return {
@@ -1580,15 +1811,22 @@ export default function App() {
     engineRef.current?.snapOrbitToDirectorCamera();
     setSelectedActorId(cloned.actors[0]?.id ?? null);
     setSelectedMapModuleId(null);
+    setCinematicUndoSnapshot(null);
+    setTranscriptConfirmed(false);
+    setVoiceoverError(null);
     setJointDraft({});
     setHipTiltDraft(null);
     setFaceDraft(null);
     setItemDraft(null);
+    setStateDraft(null);
+    setActionDraft(null);
     setActivePosePreviewId(null);
     setPoseMirrored(false);
     engineRef.current?.setPoseOverride(null, null);
     engineRef.current?.setFaceOverride(null, null);
     engineRef.current?.setItemOverride(null, null);
+    engineRef.current?.setCharacterStateOverride(null, null);
+    engineRef.current?.setCharacterActionOverride(null, null);
   }, []);
 
   const handleWatchEpisode = useCallback(
@@ -1850,7 +2088,18 @@ export default function App() {
         durationSec: clipDuration,
         currentFrame: 0,
         totalFrames,
+        estimatedRemainingSec: null,
         encoderBackend: null,
+        format: resolvedOpts.format,
+        requestedFormat: resolvedOpts.format,
+        fallbackUsed: false,
+        fallbackReason: null,
+        videoCodec: null,
+        audioCodec: null,
+        hasAudio: false,
+        width: null,
+        height: null,
+        aspectRatio: resolvedOpts.aspectRatio,
         streamedBytes: 0,
         blobUrl: null,
         mimeType: null,
@@ -1869,7 +2118,15 @@ export default function App() {
           durationSec: info.durationSec,
           currentFrame: info.currentFrame,
           totalFrames: info.totalFrames,
+          estimatedRemainingSec: info.estimatedRemainingSec,
           encoderBackend: info.encoderBackend,
+          format: info.format,
+          videoCodec: info.videoCodec,
+          audioCodec: info.audioCodec,
+          hasAudio: info.hasAudio,
+          width: info.width,
+          height: info.height,
+          aspectRatio: info.aspectRatio,
           streamedBytes: info.streamedBytes ?? prev.streamedBytes,
           progress:
             info.totalFrames > 0
@@ -1881,6 +2138,7 @@ export default function App() {
         setRecordingState((prev) => ({
           ...prev,
           status: 'processing',
+          estimatedRemainingSec: 0,
           encoderBackend,
         }));
       },
@@ -1892,7 +2150,18 @@ export default function App() {
           progress: 1,
           elapsedSec: prev.elapsedSec || clipDuration,
           durationSec: clipDuration,
+          estimatedRemainingSec: null,
           encoderBackend: result.encoderBackend,
+          format: result.format,
+          requestedFormat: result.requestedFormat,
+          fallbackUsed: result.fallbackUsed,
+          fallbackReason: result.fallbackReason,
+          videoCodec: result.videoCodec,
+          audioCodec: result.audioCodec,
+          hasAudio: result.hasAudio,
+          width: result.width,
+          height: result.height,
+          aspectRatio: result.aspectRatio,
           streamedBytes: result.fileSizeBytes,
           blobUrl: result.blobUrl,
           mimeType: result.mimeType,
@@ -1906,11 +2175,12 @@ export default function App() {
         setRecordingState((prev) => ({
           ...prev,
           status: 'error',
+          estimatedRemainingSec: null,
           error: msg,
         }));
       },
-    });
-  }, [exportOptions, project.chapters, project.duration]);
+    }, customVoiceover);
+  }, [exportOptions, project.chapters, project.duration, customVoiceover]);
 
   const handleStopExport = useCallback(() => {
     engineRef.current?.stopMp4Export();
@@ -1925,6 +2195,7 @@ export default function App() {
       progress: 0,
       elapsedSec: 0,
       currentFrame: 0,
+      estimatedRemainingSec: null,
       encoderBackend: null,
       streamedBytes: 0,
       error: null,
@@ -1941,7 +2212,18 @@ export default function App() {
         durationSec: projectRef.current.duration,
         currentFrame: 0,
         totalFrames: Math.round(projectRef.current.duration * exportOptions.fps),
+        estimatedRemainingSec: null,
         encoderBackend: null,
+        format: null,
+        requestedFormat: null,
+        fallbackUsed: false,
+        fallbackReason: null,
+        videoCodec: null,
+        audioCodec: null,
+        hasAudio: false,
+        width: null,
+        height: null,
+        aspectRatio: null,
         streamedBytes: 0,
         blobUrl: null,
         mimeType: null,
@@ -1973,12 +2255,477 @@ export default function App() {
       setExportOptions((prev) => ({ ...prev, range: undefined }));
       engineRef.current?.setTime(0);
       setSelectedActorId(parsed.actors[0]?.id ?? null);
+      setCinematicUndoSnapshot(null);
+      setTranscriptConfirmed(false);
+      setVoiceoverError(null);
       setItemDraft(null);
+      setStateDraft(null);
+      setActionDraft(null);
       engineRef.current?.setItemOverride(null, null);
+      engineRef.current?.setCharacterStateOverride(null, null);
+      engineRef.current?.setCharacterActionOverride(null, null);
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : 'Unable to parse project file.';
     }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void fetchNarratorStatus().then((status) => {
+      if (active) setNarratorStatus(status);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const activeSubtitleCue = useMemo(
+    () => evaluateSubtitleAt(project.subtitles, currentTime),
+    [project.subtitles, currentTime],
+  );
+
+  const activeSubtitleOverrideDuration = useMemo(() => {
+    if (!activeSubtitleCue) return undefined;
+    void voiceCacheVersion;
+    return getCachedCueDuration(activeSubtitleCue, project.narratorSettings);
+  }, [activeSubtitleCue, project.narratorSettings, voiceCacheVersion]);
+
+  const cachedVoiceStats = useMemo(() => {
+    void voiceCacheVersion;
+    return countCachedProjectVoices(project);
+  }, [project, voiceCacheVersion]);
+
+  const handleUpdateCaptionSettings = useCallback((next: CaptionSettings) => {
+    setProject((prev) => ({ ...prev, captionSettings: next }));
+  }, []);
+
+  const handleUpdateNarratorSettings = useCallback((next: NarratorSettings) => {
+    setProject((prev) => ({ ...prev, narratorSettings: next }));
+    setVoiceNotice(null);
+  }, []);
+
+  const handleAuditionCue = useCallback(
+    async (cue: SubtitleCue) => {
+      setVoiceNotice(null);
+      const engine = audioEngineRef.current;
+      if (!engine) return;
+      const skipAiFetch = narratorStatus?.aiAvailable === false;
+      const res = await engine.auditionVoice(cue, projectRef.current.narratorSettings, {
+        skipAiFetch,
+      });
+      setVoiceCacheVersion((v) => v + 1);
+      if (res.error) {
+        setVoiceNotice(`Browser voice used (${res.error})`);
+      } else if (skipAiFetch && projectRef.current.narratorSettings?.engine !== 'browser') {
+        setVoiceNotice('Previewing via browser voice fallback.');
+      }
+    },
+    [narratorStatus?.aiAvailable],
+  );
+
+  const handlePregenerateVoices = useCallback(async () => {
+    setVoiceNotice(null);
+    setIsGeneratingVoices(true);
+    try {
+      const result = await pregenerateProjectVoices(
+        projectRef.current,
+        undefined,
+        (prog) => setVoiceGenProgress(prog),
+      );
+      setVoiceCacheVersion((v) => v + 1);
+      if (result.failed > 0 && result.lastError) {
+        setVoiceNotice(
+          `Generated ${result.completed}/${result.total} clips. ${result.lastError}`,
+        );
+      } else if (result.completed > 0) {
+        setVoiceNotice(
+          `All ${result.completed} studio voice clips cached for playback and export.`,
+        );
+      }
+    } finally {
+      setIsGeneratingVoices(false);
+    }
+  }, []);
+
+  const handleApplyCinematicPreset = useCallback(
+    (presetId: CinematicPresetId) => {
+      const snapshot = captureCinematicSnapshot(projectRef.current, forceLetterbox);
+      setCinematicUndoSnapshot(snapshot);
+      const { project: nextProject, enableLetterbox } = applyCinematicPreset(
+        projectRef.current,
+        presetId,
+      );
+      setProject(nextProject);
+      setForceLetterbox(enableLetterbox);
+      handleSetCameraMode('director');
+      setExportOptions((prev) => ({ ...prev, burnLetterbox: enableLetterbox }));
+    },
+    [forceLetterbox, handleSetCameraMode],
+  );
+
+  const handleUndoCinematicPreset = useCallback(() => {
+    if (!cinematicUndoSnapshot) return;
+    const { project: restored, forceLetterbox: prevLetterbox } =
+      restoreCinematicSnapshot(projectRef.current, cinematicUndoSnapshot);
+    setProject(restored);
+    setForceLetterbox(prevLetterbox);
+    setExportOptions((prev) => ({ ...prev, burnLetterbox: prevLetterbox }));
+    setCinematicUndoSnapshot(null);
+  }, [cinematicUndoSnapshot]);
+
+  const handleUpdateCustomTranscriptText = useCallback((text: string | null) => {
+    setProject((prev) => ({
+      ...prev,
+      customTranscriptText: text,
+    }));
+  }, []);
+
+  const pushVoClipsUpdate = useCallback(
+    (
+      updater: (
+        prevTrack: CustomVoiceoverTrack,
+        prevClips: VoiceoverClip[],
+      ) => { clips: VoiceoverClip[]; nextSelectedClipId?: string | null },
+    ) => {
+      setCustomVoiceover((prev) => {
+        if (!prev) return prev;
+        const normalized = ensureMultiClipVoiceoverTrack(prev);
+        const prevClips = (normalized.clips ?? []).map((c) => ({ ...c }));
+        const { clips: nextClips, nextSelectedClipId } = updater(
+          normalized,
+          prevClips,
+        );
+
+        setVoHistory((h) => ({
+          past: [...h.past.slice(-24), prevClips],
+          future: [],
+        }));
+
+        if (nextSelectedClipId !== undefined) {
+          setSelectedVoClipId(nextSelectedClipId);
+        }
+
+        if (nextClips.length === 0) {
+          audioEngineRef.current?.stopCustomVoiceover();
+          setIsAuditioningCustomVo(false);
+          setSelectedVoClipId(null);
+          return null;
+        }
+
+        return syncVoiceoverTrackSummary({
+          ...normalized,
+          clips: nextClips,
+        });
+      });
+    },
+    [],
+  );
+
+  const handleUploadCustomVoiceover = useCallback(async (file: File) => {
+    setVoiceoverError(null);
+    setIsDecodingVoiceover(true);
+    try {
+      const track = await decodeCustomVoiceoverFile(file);
+      audioEngineRef.current?.stopCustomVoiceover();
+      setIsAuditioningCustomVo(false);
+      setCustomVoiceover(track);
+      setSelectedVoClipId(track.clips?.[track.clips.length - 1]?.id ?? null);
+      setVoHistory({ past: [], future: [] });
+      setTranscriptConfirmed(true);
+      setExportOptions((prev) => ({ ...prev, includeAudio: true }));
+    } catch (err) {
+      setVoiceoverError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to decode audio file. Please try MP3, WAV, M4A, or WebM.',
+      );
+    } finally {
+      setIsDecodingVoiceover(false);
+    }
+  }, []);
+
+  const handleUploadCustomVoiceoverFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const fileArray = Array.from(files);
+      if (fileArray.length === 0) return;
+      setVoiceoverError(null);
+      setIsDecodingVoiceover(true);
+      try {
+        const decodedAssets: VoiceoverSourceAsset[] = [];
+        for (const f of fileArray) {
+          const asset = await decodeVoiceoverSourceAsset(f);
+          decodedAssets.push(asset);
+        }
+        audioEngineRef.current?.stopCustomVoiceover();
+        setIsAuditioningCustomVo(false);
+
+        setCustomVoiceover((prev) => {
+          const prevClips = prev?.clips
+            ? prev.clips.map((c) => ({ ...c }))
+            : null;
+          let working = prev ? ensureMultiClipVoiceoverTrack(prev) : null;
+          for (const asset of decodedAssets) {
+            working = appendVoiceoverAssetToTrack(working, asset, 0);
+          }
+          if (working) {
+            const newestClip =
+              working.clips?.[working.clips.length - 1] ?? null;
+            setSelectedVoClipId(newestClip?.id ?? null);
+            if (prevClips && prevClips.length > 0) {
+              setVoHistory((h) => ({
+                past: [...h.past.slice(-24), prevClips],
+                future: [],
+              }));
+            } else {
+              setVoHistory({ past: [], future: [] });
+            }
+          }
+          return working;
+        });
+
+        setTranscriptConfirmed(true);
+        setExportOptions((prev) => ({ ...prev, includeAudio: true }));
+      } catch (err) {
+        setVoiceoverError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to decode audio file(s). Please try MP3, WAV, M4A, or WebM.',
+        );
+      } finally {
+        setIsDecodingVoiceover(false);
+      }
+    },
+    [],
+  );
+
+  const handleUpdateCustomVoiceover = useCallback(
+    (
+      patch: Partial<
+        Pick<CustomVoiceoverTrack, 'offsetSec' | 'volume' | 'autoDuckSfx'>
+      >,
+    ) => {
+      setCustomVoiceover((prev) => {
+        if (!prev) return prev;
+        const normalized = ensureMultiClipVoiceoverTrack(prev);
+        let nextClips = normalized.clips ?? [];
+        if (patch.offsetSec !== undefined && nextClips.length > 0) {
+          const firstClip = nextClips[0];
+          const clampedOffset = Math.max(0, patch.offsetSec);
+          nextClips = moveVoiceoverClip(
+            nextClips,
+            firstClip.id,
+            clampedOffset,
+            true,
+          );
+        }
+        return syncVoiceoverTrackSummary({
+          ...normalized,
+          ...patch,
+          clips: nextClips,
+        });
+      });
+    },
+    [],
+  );
+
+  const handleRemoveCustomVoiceover = useCallback(() => {
+    audioEngineRef.current?.stopCustomVoiceover();
+    setIsAuditioningCustomVo(false);
+    setCustomVoiceover(null);
+    setSelectedVoClipId(null);
+    setVoHistory({ past: [], future: [] });
+    setVoiceoverError(null);
+  }, []);
+
+  const handleToggleAuditionCustomVoiceover = useCallback(
+    (clipId?: string) => {
+      const audioEngine = audioEngineRef.current;
+      if (!audioEngine || !customVoiceover) return;
+      if (isAuditioningCustomVo) {
+        audioEngine.stopCustomVoiceover();
+        setIsAuditioningCustomVo(false);
+      } else {
+        audioEngine.unlock();
+        setIsAuditioningCustomVo(true);
+        audioEngine.auditionCustomVoiceover(
+          customVoiceover,
+          () => {
+            setIsAuditioningCustomVo(false);
+          },
+          clipId,
+        );
+      }
+    },
+    [customVoiceover, isAuditioningCustomVo],
+  );
+
+  const handleSplitVoClipAtTime = useCallback(
+    (clipId: string, splitTimeSec: number) => {
+      pushVoClipsUpdate((_track, prevClips) => {
+        const res = splitVoiceoverClipAtTime(prevClips, clipId, splitTimeSec);
+        return {
+          clips: res.clips,
+          nextSelectedClipId: res.rightClipId ?? clipId,
+        };
+      });
+    },
+    [pushVoClipsUpdate],
+  );
+
+  const handleSplitVoAtPlayhead = useCallback(() => {
+    pushVoClipsUpdate((_track, prevClips) => {
+      const t = currentTimeRef.current;
+      const atPlayhead = splitVoiceoverTrackAtPlayhead(
+        prevClips,
+        t,
+        selectedVoClipId,
+      );
+      if (atPlayhead.splitClipIds) {
+        return {
+          clips: atPlayhead.clips,
+          nextSelectedClipId: atPlayhead.splitClipIds[1],
+        };
+      }
+      // Fallback: if playhead is not inside any clip, split the selected clip (or first clip) at its midpoint
+      const fallbackTarget =
+        prevClips.find((c) => c.id === selectedVoClipId) ?? prevClips[0];
+      if (!fallbackTarget) {
+        return { clips: prevClips };
+      }
+      const midTime =
+        fallbackTarget.startSec + getClipDuration(fallbackTarget) * 0.5;
+      const res = splitVoiceoverClipAtTime(
+        prevClips,
+        fallbackTarget.id,
+        midTime,
+      );
+      return {
+        clips: res.clips,
+        nextSelectedClipId: res.rightClipId ?? fallbackTarget.id,
+      };
+    });
+  }, [pushVoClipsUpdate, selectedVoClipId]);
+
+  const handleTrimVoClip = useCallback(
+    (clipId: string, edge: 'start' | 'end', deltaSec: number) => {
+      pushVoClipsUpdate((track, prevClips) => {
+        const target = prevClips.find((c) => c.id === clipId);
+        const assetDur = target
+          ? track.assets?.[target.assetId]?.durationSec ?? target.sourceEndSec
+          : 0;
+        const nextClips = trimVoiceoverClip(
+          prevClips,
+          clipId,
+          edge,
+          deltaSec,
+          assetDur,
+          track.rippleMode ?? true,
+        );
+        return { clips: nextClips };
+      });
+    },
+    [pushVoClipsUpdate],
+  );
+
+  const handleMoveVoClip = useCallback(
+    (clipId: string, newStartSec: number) => {
+      pushVoClipsUpdate((track, prevClips) => ({
+        clips: moveVoiceoverClip(
+          prevClips,
+          clipId,
+          newStartSec,
+          track.rippleMode ?? true,
+        ),
+      }));
+    },
+    [pushVoClipsUpdate],
+  );
+
+  const handleDeleteVoClip = useCallback(
+    (clipId: string, rippleDelete = false) => {
+      pushVoClipsUpdate((_track, prevClips) => {
+        const nextClips = deleteVoiceoverClip(prevClips, clipId, rippleDelete);
+        const nextSel =
+          nextClips.find((c) => c.id === selectedVoClipId)?.id ??
+          nextClips[0]?.id ??
+          null;
+        return { clips: nextClips, nextSelectedClipId: nextSel };
+      });
+    },
+    [pushVoClipsUpdate, selectedVoClipId],
+  );
+
+  const handleUpdateVoClipSettings = useCallback(
+    (
+      clipId: string,
+      patch: Partial<
+        Pick<
+          VoiceoverClip,
+          'name' | 'startSec' | 'volume' | 'fadeInSec' | 'fadeOutSec' | 'muted'
+        >
+      >,
+    ) => {
+      pushVoClipsUpdate((_track, prevClips) => ({
+        clips: updateVoiceoverClipSettings(prevClips, clipId, patch),
+      }));
+    },
+    [pushVoClipsUpdate],
+  );
+
+  const handleToggleVoRippleMode = useCallback(() => {
+    setCustomVoiceover((prev) =>
+      prev ? { ...prev, rippleMode: !(prev.rippleMode ?? true) } : prev,
+    );
+  }, []);
+
+  const handleUndoVoEdit = useCallback(() => {
+    setVoHistory((h) => {
+      if (h.past.length === 0) return h;
+      const previousClips = h.past[h.past.length - 1];
+      const remainingPast = h.past.slice(0, -1);
+      setCustomVoiceover((prev) => {
+        if (!prev) return prev;
+        const currentClips = (prev.clips ?? []).map((c) => ({ ...c }));
+        setVoHistory({
+          past: remainingPast,
+          future: [currentClips, ...h.future.slice(0, 24)],
+        });
+        setSelectedVoClipId(previousClips[0]?.id ?? null);
+        return syncVoiceoverTrackSummary({
+          ...prev,
+          clips: previousClips,
+        });
+      });
+      return h;
+    });
+  }, []);
+
+  const handleRedoVoEdit = useCallback(() => {
+    setVoHistory((h) => {
+      if (h.future.length === 0) return h;
+      const nextClips = h.future[0];
+      const remainingFuture = h.future.slice(1);
+      setCustomVoiceover((prev) => {
+        if (!prev) return prev;
+        const currentClips = (prev.clips ?? []).map((c) => ({ ...c }));
+        setVoHistory({
+          past: [...h.past, currentClips],
+          future: remainingFuture,
+        });
+        setSelectedVoClipId(nextClips[0]?.id ?? null);
+        return syncVoiceoverTrackSummary({
+          ...prev,
+          clips: nextClips,
+        });
+      });
+      return h;
+    });
+  }, []);
+
+  const handleOpenVoiceoverCutter = useCallback(() => {
+    setActiveTab('cutscene');
+    setRequestedCutsceneSubTab('cutter');
   }, []);
 
   return (
@@ -1999,62 +2746,53 @@ export default function App() {
       />
 
       <main className="relative flex-1 min-h-0 w-full">
+        <CinemaViewportHud
+          project={project}
+          currentTime={currentTime}
+          isPlaying={isPlaying}
+          cameraMode={cameraMode}
+          audioMuted={audioMuted}
+          isZenMode={isDockCollapsed}
+          showRuleOfThirds={showRuleOfThirds}
+          forceLetterbox={forceLetterbox}
+          onTogglePlay={handleTogglePlay}
+          onSeek={handleSeek}
+          onSetCameraMode={handleSetCameraMode}
+          onToggleAudio={handleToggleAudio}
+          onToggleZenMode={handleToggleZenMode}
+          onToggleRuleOfThirds={() => setShowRuleOfThirds((v) => !v)}
+          onToggleLetterbox={() => setForceLetterbox((v) => !v)}
+        />
+
         <div
           ref={canvasMountRef}
           data-testid="stage-canvas"
           className="w-full h-full"
         />
 
-        {cameraMode === 'director' && (
+        {(cameraMode === 'director' || forceLetterbox) && (
           <>
-            <div className="pointer-events-none absolute top-0 left-0 right-0 h-6 bg-black/95 z-10" />
-            <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-6 bg-black/95 z-10" />
+            <div className="pointer-events-none absolute top-9 left-0 right-0 h-5 bg-black/95 z-10" />
+            <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-5 bg-black/95 z-10" />
           </>
         )}
 
         {screenBlackout > 0.001 && (
           <div
             data-testid="screen-blackout"
-            className="pointer-events-none absolute inset-0 bg-black z-20"
+            className="pointer-events-none absolute inset-0 bg-black z-15"
             style={{ opacity: screenBlackout }}
           />
         )}
 
-        {activeSubtitle && (
-          <div
-            data-testid="cutscene-subtitle"
-            className={`pointer-events-none fixed left-1/2 -translate-x-1/2 z-25 max-w-2xl w-[min(640px,92vw)] px-5 py-2.5 rounded-lg bg-[#14161a]/92 border text-center transition-all ${
-              activeSubtitle.role === 'voiceover'
-                ? 'border-amber-500/45'
-                : 'border-[#393d47]'
-            } ${
-              isDockCollapsed
-                ? 'bottom-14'
-                : 'top-20 md:top-auto md:bottom-[296px]'
-            }`}
-          >
-            {activeSubtitle.speaker && (
-              <span
-                className={`text-xs font-semibold mr-2 ${
-                  activeSubtitle.role === 'voiceover'
-                    ? 'text-amber-400'
-                    : 'text-[#00a2ff]'
-                }`}
-              >
-                {activeSubtitle.speaker}:
-              </span>
-            )}
-            <span
-              className={`text-sm font-medium ${
-                activeSubtitle.role === 'voiceover'
-                  ? 'italic text-amber-100'
-                  : 'text-slate-100'
-              }`}
-            >
-              {activeSubtitle.text}
-            </span>
-          </div>
-        )}
+        <CaptionOverlay
+          cue={activeSubtitleCue}
+          currentTime={currentTime}
+          settings={project.captionSettings}
+          overrideDurationSec={activeSubtitleOverrideDuration}
+          hasLetterbox={cameraMode === 'director' || forceLetterbox}
+          isDockCollapsed={isDockCollapsed}
+        />
 
         {contextLost && (
           <div
@@ -2088,6 +2826,12 @@ export default function App() {
             selectedActorId={selectedActorId}
             builtInMaps={BUILT_IN_MAPS}
             customMaps={customMaps}
+            customVoiceover={customVoiceover}
+            selectedVoClipId={selectedVoClipId}
+            onSelectVoClip={setSelectedVoClipId}
+            onMoveVoClip={handleMoveVoClip}
+            onSplitVoAtPlayhead={handleSplitVoAtPlayhead}
+            onOpenVoiceoverCutter={handleOpenVoiceoverCutter}
             onTogglePlay={handleTogglePlay}
             onToggleAudio={handleToggleAudio}
             onSeek={handleSeek}
@@ -2103,6 +2847,8 @@ export default function App() {
             onKeyActorAtCurrentTime={handleKeyActorAtCurrentTime}
             onKeyFaceAtCurrentTime={handleCommitFaceKeyframe}
             onKeyItemAtCurrentTime={() => handleCommitItemKeyframe('equipPop')}
+            onKeyStateAtCurrentTime={handleCommitCharacterStateKeyframe}
+            onKeyActionAtCurrentTime={handleCommitCharacterActionKeyframe}
             onKeyCameraAtCurrentTime={handleKeyCameraAtCurrentTime}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
             onKeyMapAtCurrentTime={handleKeyMapAtCurrentTime}
@@ -2114,6 +2860,12 @@ export default function App() {
             }
             onMoveItemKeyframe={(actorId, kfId, newTime) =>
               setProject((p) => moveItemKeyframeTime(p, actorId, kfId, newTime))
+            }
+            onMoveStateKeyframe={(actorId, kfId, newTime) =>
+              setProject((p) => moveCharacterStateKeyframeTime(p, actorId, kfId, newTime))
+            }
+            onMoveActionKeyframe={(actorId, kfId, newTime) =>
+              setProject((p) => moveCharacterActionKeyframeTime(p, actorId, kfId, newTime))
             }
             onMoveCameraKeyframe={(kfId, newTime) =>
               setProject((p) => moveCameraKeyframeTime(p, kfId, newTime))
@@ -2134,6 +2886,12 @@ export default function App() {
             }
             onDeleteItemKeyframe={(actorId, kfId) =>
               setProject((p) => deleteItemKeyframe(p, actorId, kfId))
+            }
+            onDeleteStateKeyframe={(actorId, kfId) =>
+              setProject((p) => deleteCharacterStateKeyframe(p, actorId, kfId))
+            }
+            onDeleteActionKeyframe={(actorId, kfId) =>
+              setProject((p) => deleteCharacterActionKeyframe(p, actorId, kfId))
             }
             onDeleteCameraKeyframe={(kfId) =>
               setProject((p) => deleteCameraKeyframe(p, kfId))
@@ -2165,6 +2923,7 @@ export default function App() {
             onUpdateProject={(updater) => setProject(updater)}
             onLoadPreset={handleLoadPreset}
             onWatchEpisode={handleWatchEpisode}
+            onSeek={handleSeek}
             onKeyLightingAtCurrentTime={handleKeyLightingAtCurrentTime}
             onKeyMapAtCurrentTime={handleKeyMapAtCurrentTime}
             onToggleLightHelpers={() => {
@@ -2207,6 +2966,8 @@ export default function App() {
             hipTiltDraft={hipTiltDraft}
             faceDraft={faceDraft}
             itemDraft={itemDraft}
+            stateDraft={stateDraft}
+            actionDraft={actionDraft}
             onSelectActor={handleSelectActor}
             onAddCharacter={handleAddCharacter}
             onAddProp={handleAddProp}
@@ -2238,6 +2999,16 @@ export default function App() {
             onPreviewHeldItems={handlePreviewHeldItems}
             onResetItemDraft={handleResetItemDraft}
             onCommitItemKeyframe={handleCommitItemKeyframe}
+            onPreviewCharacterState={handlePreviewCharacterState}
+            onReplayCharacterState={handleReplayCharacterState}
+            onResetCharacterStateDraft={handleResetCharacterStateDraft}
+            onCommitCharacterStateKeyframe={handleCommitCharacterStateKeyframe}
+            onChangeModelBuild={handleChangeModelBuild}
+            onPreviewCharacterAction={handlePreviewCharacterAction}
+            onReplayCharacterAction={handleReplayCharacterAction}
+            onResetCharacterActionDraft={handleResetCharacterActionDraft}
+            onCommitCharacterActionKeyframe={handleCommitCharacterActionKeyframe}
+            onSeekToTime={handleSeek}
             onSpawnItemAsProp={handleSpawnItemAsProp}
             onChangeClip={handleChangeClip}
             onUpdateActorAnimSettings={handleUpdateActorAnimSettings}
@@ -2269,6 +3040,22 @@ export default function App() {
             currentTime={currentTime}
             cameraMode={cameraMode}
             showCameraRig={showCameraRig}
+            narratorStatus={narratorStatus}
+            cachedVoiceStats={cachedVoiceStats}
+            isGeneratingVoices={isGeneratingVoices}
+            voiceGenProgress={voiceGenProgress}
+            voiceNotice={voiceNotice}
+            canUndoCinematicPreset={cinematicUndoSnapshot !== null}
+            transcriptConfirmed={transcriptConfirmed}
+            customVoiceover={customVoiceover}
+            isDecodingVoiceover={isDecodingVoiceover}
+            voiceoverError={voiceoverError}
+            isAuditioningCustomVo={isAuditioningCustomVo}
+            selectedVoClipId={selectedVoClipId}
+            canUndoVoEdit={voHistory.past.length > 0}
+            canRedoVoEdit={voHistory.future.length > 0}
+            requestedSubTab={requestedCutsceneSubTab}
+            onSubTabHandled={() => setRequestedCutsceneSubTab(null)}
             onSetCameraMode={handleSetCameraMode}
             onToggleCameraRig={() => {
               const next = !showCameraRig;
@@ -2290,9 +3077,36 @@ export default function App() {
             onAddSubtitle={(cue: SubtitleCue) =>
               setProject((prev) => upsertSubtitleCue(prev, cue))
             }
+            onUpdateSubtitle={(cue: SubtitleCue) =>
+              setProject((prev) => upsertSubtitleCue(prev, cue))
+            }
             onDeleteSubtitle={(cueId) =>
               setProject((prev) => deleteSubtitleCue(prev, cueId))
             }
+            onUpdateCaptionSettings={handleUpdateCaptionSettings}
+            onUpdateNarratorSettings={handleUpdateNarratorSettings}
+            onAuditionCue={handleAuditionCue}
+            onPregenerateVoices={handlePregenerateVoices}
+            onApplyCinematicPreset={handleApplyCinematicPreset}
+            onUndoCinematicPreset={handleUndoCinematicPreset}
+            onUpdateCustomTranscriptText={handleUpdateCustomTranscriptText}
+            onToggleTranscriptConfirmed={setTranscriptConfirmed}
+            onUploadCustomVoiceover={handleUploadCustomVoiceover}
+            onUploadCustomVoiceoverFiles={handleUploadCustomVoiceoverFiles}
+            onUpdateCustomVoiceover={handleUpdateCustomVoiceover}
+            onRemoveCustomVoiceover={handleRemoveCustomVoiceover}
+            onToggleAuditionCustomVoiceover={handleToggleAuditionCustomVoiceover}
+            onSelectVoClip={setSelectedVoClipId}
+            onSplitVoClipAtTime={handleSplitVoClipAtTime}
+            onSplitVoAtPlayhead={handleSplitVoAtPlayhead}
+            onTrimVoClip={handleTrimVoClip}
+            onMoveVoClip={handleMoveVoClip}
+            onDeleteVoClip={handleDeleteVoClip}
+            onUpdateVoClipSettings={handleUpdateVoClipSettings}
+            onToggleVoRippleMode={handleToggleVoRippleMode}
+            onUndoVoEdit={handleUndoVoEdit}
+            onRedoVoEdit={handleRedoVoEdit}
+            onGoToExport={() => setActiveTab('export')}
           />
         )}
 
@@ -2301,6 +3115,7 @@ export default function App() {
             project={project}
             exportOptions={exportOptions}
             recordingState={recordingState}
+            customVoiceover={customVoiceover}
             onChangeExportOptions={setExportOptions}
             onCapturePng={handleCapturePng}
             onStartExport={handleStartExport}
